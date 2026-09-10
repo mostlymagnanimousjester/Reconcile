@@ -65,17 +65,13 @@ Draft is **not** an acceptance. Refresh does not turn draft into accepted.
 
 ---
 
-## 5. “All actions default to draft”
+## 5. Immediate vs draft
 
-**Reading A (strict):** every column-accept path — one roster row, detail “accept column”, regex, Polars — only **adds to / sets draft**. Nothing is accepted until Confirm.
+**Single-column accept stays immediate.** Roster or detail “accept this column” snapshots that column’s **current pending** mismatches now. It does not wait for Confirm. It does not require the draft.
 
-**Reading B (narrow):** only **batch/power** actions (regex, Polars, select-all) go through draft+toggle+confirm. Single-column accept on roster/detail stays immediate.
+**Power/batch selectors** (regex, Polars) never accept. They only fill a draft (all hits checked). The user toggles, then Confirm. Confirm snapshots **pending** mismatches only, same as single-column accept.
 
-This feature’s headline is batch/power. Strict reading also adds a review step to the simple case.
-
-**Open — must decide before merge.** See Q1.
-
-Until decided, this draft specifies the **mechanism** (selector → checked draft → toggle → confirm) for power actions, and flags single-column as unresolved.
+Draft checkboxes and Confirm exist for the batch path. They are not a gate in front of one-column accept.
 
 ---
 
@@ -89,22 +85,22 @@ Until decided, this draft specifies the **mechanism** (selector → checked draf
 - Footer or bar: `draft N` + **Confirm accept** + **Clear draft**.
 - Confirm is explicit (not implicit on leaving the panel).
 
-Column **detail** does not run regex/Polars (those are multi-column). If strict reading of §5: detail “accept column” only checks that column into draft.
+Column **detail** does not run regex/Polars (those are multi-column). Detail “accept column” remains **immediate** (pending mismatches in that column only).
 
 ---
 
 ## 7. Selector: regex on column name
 
 - Applied to **exact** comparable column names (the same strings as pairing).
-- **PROVISIONAL dialect:** Python `re.search` (substring unless the user anchors with `^` `$`).
-- **PROVISIONAL:** case-sensitive, to match exact-name pairing. `(?i)` if they want insensitive.
+- Dialect: Python `re.search` (substring unless the user anchors with `^` `$`).
+- Case-sensitive. `(?i)` in the pattern if they want insensitive.
 - Invalid pattern: in-TUI error, draft unchanged.
-- Empty pattern: in-TUI error, draft unchanged (**PROVISIONAL**).
+- Empty pattern: in-TUI error, draft unchanged.
 - Result: every comparable name that matches; **all of them enter the draft, checked**.
 
 Does not look at values. Does not include key columns or extras.
 
-**Open:** Run replaces the draft, or unions with the current draft? See Q3.
+How a second Run combines with an existing draft is still open (see §13 Q3, restated).
 
 ---
 
@@ -121,22 +117,17 @@ For each comparable column, independently, a two-column Polars frame of **raw st
 | `a` | Side A value |
 | `b` | Side B value |
 
-**Row universe (open — Q2), two candidates:**
+**Row universe: pending mismatches only.** Matched keys where this column’s A ≠ B and that mismatch is **not** already accepted. Equal rows and already-accepted snapshots are not in `{a, b}`. A-only / B-only keys are not in the frame.
 
-| Universe | Rows in `{a, b}` |
-|---|---|
-| **Pending only** | Matched keys where this column is a **pending** cell mismatch |
-| **All matched** | Every matched key, including equal and accepted |
+So `(pl.col("b") == "——").all()` means: **among this column’s pending mismatches**, every B value is `——`. It does not mean “every B cell in the whole file.”
 
-The example “B is all `——`” is a statement about the **whole column on B**, which is **all matched** (and still does not include A-only / B-only rows; those are not cell diffs). **All matched** is the better fit for that example. Pending-only would miss columns where some rows already equal `——` on both sides.
-
-**Not in the frame (v1):** key columns, other fields, extras, A-only/B-only rows, insight flags.
+**Not in the frame (v1):** key columns, other fields, extras, A-only/B-only rows, insight flags, equal cells, accepted cells.
 
 ### 8.2 What the expression must return
 
 The user writes a Polars expression that **reduces to a single boolean per comparable column** (include in draft or not).
 
-Example for “B is all `——`” on all-matched rows:
+Example for “every **pending** B value is `——`”:
 
 ```text
 (pl.col("b") == "——").all()
@@ -161,7 +152,7 @@ If the expression returns non-boolean scalar: in-TUI error.
 - Reference to a name other than `a` / `b`: in-TUI error, draft unchanged.
 - Timeout / engine error: in-TUI error, draft unchanged.
 
-This is still **selection**, not compare. A column can match `(pl.col("b") == "——").all()` and still have exact A vs B diffs (e.g. A has real text, B is all `——`). Confirm then snapshot those diffs.
+This is still **selection**, not compare. A column can match `(pl.col("b") == "——").all()` because every *pending* B is `——` while A still has other text. Confirm then snapshots those pending pairs.
 
 ### 8.4 Empty pending / empty matched
 
@@ -187,11 +178,11 @@ Manual toggles always win until the next Run.
 
 ## 10. Conflicts with `REQUIREMENTS.md` (do not merge until resolved)
 
-1. **Immediate column accept** on roster and detail (§9.2, §15.2) vs mandatory draft+confirm for “all actions.”
+1. **Immediate column accept** on roster/detail stays as in the main spec. This feature **adds** a batch path; it does not replace one-column accept. Compatible.
 2. **Insights remain view-only** — this feature is a separate, explicit selector, not insight-accept. Compatible if we keep that split.
 3. **Polars-owns-data:** expression evaluation must stay in Polars (long/unpivot + group, or per-column frame). Do not pull full columns into Python to test the predicate. Roster checkboxes are a small name set; that part may be Python.
-4. **Session zip** today has acceptances, not a draft set. Merge needs a persist decision (§4).
-5. **Footer** would gain `draft N` and Confirm/Clear, in addition to pending counts.
+4. **Session zip** today has acceptances, not a draft set. Persist-draft is still open (§13 Q5).
+5. **Footer** would gain `draft N` and Confirm/Clear when a draft is non-empty, in addition to pending counts.
 
 ---
 
@@ -212,41 +203,52 @@ On Confirm, for each name in the draft:
 
 | Topic | Status |
 |---|---|
-| Selector → draft, not accept | Locked for this draft |
+| Selector → draft, not accept | Locked |
 | Individual toggle before confirm | Locked |
-| Regex on exact comparable names | Locked as a selector type |
-| Polars on values as a selector type | Locked as a selector type |
+| Single-column accept | Locked: immediate; pending mismatches only |
+| Batch confirm / expression universe | Locked: pending mismatches only |
+| Regex | Locked: Python `re.search`, case-sensitive, empty/invalid refused |
+| Polars on values as a selector | Locked as a selector type |
 | Confirm = existing column-accept snapshots | Locked |
 | Expression namespace `a` / `b` only | Proposed |
 | Must reduce to boolean scalar | Proposed |
-| Row universe all matched vs pending | Open |
-| Replace vs add vs restrict | Open |
-| Single-column accept through draft? | Open |
-| Regex dialect / case | Open |
-| Persist draft in zip | Open (lean no) |
-| Zero-row `.all()` | Open (lean exclude) |
+| Second Run vs existing draft | Open — question restated in §13 |
+| Persist draft in zip | Open — question restated in §13 |
+| Zero-row `.all()` | Open — question restated in §13 |
 
 ---
 
-## 13. Open questions
+## 13. Remaining questions (restated)
 
-**Q1. Single-column accept**  
-Does clicking accept on one roster/detail column still accept immediately, or does it only check that column into the draft until Confirm?
+**Q3. You already have a draft, then you Run again**
 
-**Q2. Row universe for Polars**  
-Should `(pl.col("b") == "——").all()` mean all **matched** keys, or only **pending** mismatches in that column?
+Suppose the roster has `Amount`, `Status`, `Note`, `Flag`.
 
-**Q3. Successive Runs**  
-Does a new regex/expression **replace** the draft, **add** to it, or **restrict** it? Need one default. Extra modes?
+1. You run regex `^S` → draft checkboxes: **Status** checked.
+2. Without Confirm, you run `(pl.col("b") == "——").all()`, which matches **Amount** and **Flag**.
 
-**Q4. Regex**  
-Python `re.search`, case-sensitive, empty pattern refused — confirm or change.
+What should the checkboxes be?
 
-**Q5. Draft persistence**  
-Discard draft on refresh/quit (only confirmed snapshots go to `.recon.zip`), or save draft too?
+- **Replace:** Amount and Flag checked; Status cleared (the last Run is the whole draft)
+- **Add:** Status, Amount, and Flag all checked (Runs pile up)
+- **Restrict:** nothing checked (only columns that were already drafted *and* matched this Run — here Status did not match the expression)
 
-**Q6. Zero-row columns**  
-Exclude from expression matches when the universe has no rows?
+Need one of these as the v1 default. Extra modes can wait.
 
-**Q7. Roster filter after Run**  
-Show full roster with checkboxes, or temporarily only drafted columns?
+**Q5. You quit with a draft and never hit Confirm**
+
+You checked eight columns via regex, did not Confirm, and either quit or exported `.recon.zip`.
+
+Next launch (same zip or a new process): should those eight still be checked, or should the draft start empty and only **confirmed** accepts come back from the zip?
+
+This is only about the **checkboxes**. Real accepts already persist as snapshots.
+
+**Q6. A column has nothing pending**
+
+`Comment` has zero pending mismatches (every matched key already has A = B for `Comment`). You run `(pl.col("b") == "——").all()`.
+
+In Polars, “all rows satisfy X” on **zero rows** is True. So `Comment` would match even though there is nothing to accept.
+
+Should `Comment` be checked in the draft anyway, or should a column with zero pending rows be skipped even if the expression would be vacuously true?
+
+**Q7 (optional).** After Run, show the full roster with checkboxes, or only the drafted columns until Clear?
