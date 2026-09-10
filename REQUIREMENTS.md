@@ -13,7 +13,7 @@ An investigation TUI for two-sided data reconciliation.
 The user loads two sources (A and B), inspects exact differences, and either:
 
 - shrinks remaining differences to zero by editing sources **outside this TUI** and refreshing, or
-- accepts known variations in-session (principally at the column level, also exact value-pairs within a column) until remaining **pending** count is 0.
+- accepts known variations in-session (column, exact value-pair, unmatched key, extra) until remaining **pending** count is 0.
 
 This TUI **never acts on the sources**. It only reads them (load/refresh). This is **not** an audit, sign-off, or certification tool. It does not produce a signed report as a product goal.
 
@@ -197,7 +197,7 @@ Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses up
 | A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
 | Polars batch selector | **One side** (`A` or `B`) plus expression on that side’s pending values as series `s`. Not a name prefix. `.all()` cannot target both sides (those rows would not be pending) |
 
-The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two rows on **Schema extras**, each with its `Side`.
+The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two roster rows (`kind` `extra`) and two rows on **Schema extras**, each with its `Side`.
 
 Speculative near-misses on extras may *suggest* that `cust_id` (Side `A`) is like `customer_id` (Side `B`). That does not rename or re-pair them.
 
@@ -220,12 +220,14 @@ Remaining work is the **pending** set. The session is “done” when pending co
 
 ### 9.1 Kinds of difference
 
-| Kind | Meaning |
-|---|---|
-| Cell mismatch | Matched key; comparable column; `A` string ≠ `B` string |
-| A-only key | Key tuple exists only on A |
-| B-only key | Key tuple exists only on B |
-| Extra column | Name on one side only |
+| Kind | Meaning | Counts toward remaining pending as |
+|---|---|---|
+| Cell mismatch | Matched key; comparable column; `A` string ≠ `B` string | 1 per pending cell |
+| A-only key | Key tuple exists only on A | 1 per pending key |
+| B-only key | Key tuple exists only on B | 1 per pending key |
+| Extra column | Name on one side only | 1 per pending extra |
+
+**Remaining pending total** is the sum of those four. Exit `0` requires this total to be 0. Unmatched keys and extras are remaining work, not a side room.
 
 ### 9.2 Accept actions
 
@@ -236,12 +238,12 @@ Remaining work is the **pending** set. The session is “done” when pending co
 | Confirm drafted columns | Same snapshot rule as accept entire column, applied to every **still-checked** column in the in-flight **column** draft (§9.5). Then the draft is empty |
 | Accept entire pair | Snapshot every current pending cell in this column with exact `valA`, `valB`. Immediate from the pair list (`a`). Then **next lever** |
 | Confirm drafted pair | Snapshot every **still-checked** pending cell in the in-flight **pair** draft (§9.6). Then the draft is empty; then **next lever** |
-| Accept one unmatched key | Snapshot `(side, key, row snapshot)` |
-| Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys |
-| Accept one extra column | Snapshot `(side, column name)` |
+| Accept one unmatched key | Snapshot `(side, key, row snapshot)`. On the unmatched-key grid, then the next pending key in that grid (not next lever) |
+| Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys. Immediate from the roster row or `A` on that grid. Then **next lever** |
+| Accept one extra column | Snapshot `(side, column name)`. Immediate from the roster extra row or Schema extras. Then **next lever** |
 | Undo | That snapshot returns to pending (same session) |
 
-Accept entire column is available immediately from the **column roster** and from **column detail** (one column, no draft).
+Accept entire column is available immediately from the **roster** (on a comparable-column row) and from **column detail** (one column, no draft).
 
 Batch column accept uses a **column draft** on the roster only (§9.5). Pair accept uses a **pair draft** on column detail only (§9.6). At most **one** draft in flight in the session (column XOR pair). Insights cannot accept. There is no “accept this insight group.”
 
@@ -266,7 +268,7 @@ Session lives in the process. Export/reload persists it (§13).
 
 Refresh is manual.
 
-On success: recompute counts and pages; show a short **delta in the footer** (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the column roster.
+On success: recompute counts and pages; show a short **delta in the footer** (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the roster.
 
 Do **not** open a jump-list overlay. Rows that **returned to pending** are marked in the lists already on screen (reverse video / standout, red-lens safe §15.8) until the next successful refresh replaces the set.
 
@@ -276,7 +278,7 @@ On failure (locked file, parse error, missing key column, non-text Excel, etc.):
 
 ### 9.5 Power-user batch column accept
 
-On the **column roster**, a power user can select many comparable columns, review a **draft**, then Confirm. Selectors never accept by themselves. Compare stays exact raw text.
+On the **roster**, a power user can select many comparable columns, review a **draft**, then Confirm. Selectors never accept by themselves. Compare stays exact raw text. Unmatched-key and extra rows are never part of a column draft.
 
 **Single-column accept stays immediate.** It does not wait for Confirm and does not require a draft.
 
@@ -288,7 +290,7 @@ One in-session **column draft**: a set of comparable names (non-key A∩B). Defa
 |---|---|
 | After a selector Run | Draft := hits that currently have **at least one pending** mismatch, all **checked**. User then unchecks exceptions |
 | Zero pending | Column is already reconciled for remaining-work. **Not** drafted. No snapshots. Vacuous Polars `.all()` on zero rows must not check it. **Not** a standing ignore: after refresh, new pending cells are pending |
-| Toggle | Space flips the focused roster row in/out of the draft (only while a draft is in flight) |
+| Toggle | Space flips the focused **comparable-column** roster row in/out of the draft (only while a draft is in flight). No-op on `A-only` / `B-only` / `extra` rows |
 | Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle. Then **next lever** (§15.9) |
 | Cancel (`Esc` on roster) | Draft empty; no accepts |
 | In-flight | At most one draft in the session. Confirm or Cancel before another regex/Polars Run, and before starting a **pair** draft (§9.6) |
@@ -508,9 +510,9 @@ Contents (**PROVISIONAL** layout):
 - Detected encoding and delimiter per delimited side
 - Per-column context-column sets (§15.3)
 - Acceptance snapshots: type, key tuple, column, `valA`, `valB`, side, row snapshot as needed
-- **Place:** last screen, last comparable column (if any), detail step (pair list vs cell step / view tab), roster name-filter string, last pair `(column, valA, valB)` for `.` repeat
+- **Place:** last screen (roster, Overview, pair list / cell step, A-only, B-only, Schema extras), last comparable column (if any), last extra `(side, name)` if on extras, detail step (pair list vs cell step / view tab), roster name-filter string, last pair `(column, valA, valB)` for `.` repeat
 
-No copied row payload. No in-flight **draft** (column or pair). Reload always live-rereads files and restores **confirmed** snapshots, then restores **place** if those objects still exist (else the **column roster**). Context columns already persist per column.
+No copied row payload. No in-flight **draft** (column or pair). Reload always live-rereads files and restores **confirmed** snapshots, then restores **place** if those objects still exist (else the **roster**). Context columns already persist per column.
 
 Missing path on load: hard fail (stderr+exit if before TUI; in-TUI error if already running and this was an Open).
 
@@ -532,11 +534,11 @@ Export and open from the TUI. Also `--session` on CLI.
 
 Do not use the word “summary” for two different screens. Names below are canonical.
 
-**Happy path (the product):** launch → **column roster** (row 1 is the work) → `Enter` → **top pair** → `a` to accept that recode, or `Enter` to uncheck exceptions then `y` → **next lever** → `r` after the user saves the workbook in another tool. Regex `/`, Polars `=`, Equal/All-matched tabs, A-only, B-only, extras: real, behind glass.
+**Happy path (the product):** launch → **roster** (row 1 is the largest remaining pending pile) → `Enter` into that pile → knock it down (`a` / `A` / pair `y`) → **next lever** → `r` after the user saves the workbook in another tool. Regex `/`, Polars `=`, Equal/All-matched tabs: real, behind glass. A-only keys, B-only keys, and extras are remaining-work rows on the roster, not a side room.
 
 A footer/status line is **always visible** (§15.6).
 
-**Home is the work.** After a successful initial load, land on the **column roster**, not Overview. `--session` restore: saved place if valid, else roster.
+**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: saved place if valid, else roster.
 
 ### 15.1 Overview (counts, not home)
 
@@ -546,35 +548,56 @@ Shows:
 
 - Frozen job identity (absolute paths, sheets, keys, detected encoding/delimiter)
 - Exact remaining counts (pending vs accepted): matched keys, A-only, B-only, extras, mismatched cells, **remaining pending total**
-- Entry points: **A-only keys**, **B-only keys**, **Schema extras** (roster is `Esc` away already)
+- Entry points: **A-only keys**, **B-only keys**, **Schema extras** (same lists as `Enter` from the matching roster row)
 - Speculative chips only as secondary, labeled `speculative`
 
 No separate biggest-lever widget. The roster’s first row is that lever.
 
-### 15.2 Column roster (home)
+### 15.2 Roster (home)
 
-One row per **comparable column** only (non-key intersection). Not extras, not keys.
+The roster is **all remaining work**, not comparable columns only. One row per:
 
-**Concentration** for a column: pending count of its largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0).
+| Kind | When the row exists | `name` | Pending count on the row |
+|---|---|---|---|
+| `column` | Every non-key name on both sides | Exact header | Pending mismatched cells in that column |
+| `A-only` | Current join has ≥ 1 A-only key (pending or still-accepted) | `A-only keys` | Pending A-only keys |
+| `B-only` | Current join has ≥ 1 B-only key (pending or still-accepted) | `B-only keys` | Pending B-only keys |
+| `extra` | Each current extra `(side, name)` (pending or still-accepted) | Exact header | `1` if that extra is pending, else `0` |
 
-**One sort (not a key):** concentration descending, then pending descending, then exact column name. No sort-cycle.
+Hide `A-only` / `B-only` when that side’s unmatched set is empty. Vanished extras drop. New comparable columns and new extras appear on refresh.
 
-**Filter box (always visible):** case-insensitive substring on the exact header. View only; does not change pairing or drafts. Focus the box to type; `Esc` returns focus to the list (does not have to clear the text). Empty box = all rows. `/` is **not** this filter; `/` opens regex → column **draft**.
+**Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**. Non-column rows show `—`. Concentration is a visible statistic, **not** the sort.
+
+**One sort (not a key):** pending descending, then concentration descending (treat `—` as 0), then exact `name`. No sort-cycle.
+
+Row 1 is the biggest lever because it has the most remaining pending, not the purest recode. Example: column `Status` pending 4000 at 5% top-pair, `A-only keys` pending 50, column `Flag` pending 1 at 100% top-pair → order is `Status`, `A-only keys`, `Flag`. Clearing comparable columns is not “done” while unmatched keys or extras remain.
+
+**Filter box (always visible):** case-insensitive substring on `name` (exact headers and the unmatched labels). View only; does not change pairing or drafts. Focus the box to type; `Esc` returns focus to the list (does not have to clear the text). Empty box = all rows. `/` is **not** this filter; `/` opens regex → column **draft**.
 
 Columns on the roster:
 
-- draft check (visible / active only while a column draft is in flight)
+- draft check (visible / active only while a column draft is in flight; only `column` rows are checkable)
+- **kind** (`column` / `A-only` / `B-only` / `extra`)
 - name
+- **side** (`A` or `B` for extras and unmatched-key rows; `—` for comparable columns)
 - pending count
-- **top-pair %** (concentration)
-- accepted count
-- equal count
-- categorical yes/no
+- **top-pair %** (concentration; `—` unless `kind` is `column`)
+- accepted count (cells, keys, or `1`/`0` for an extra)
+- equal count (`—` unless `kind` is `column`)
+- categorical yes/no (`—` unless `kind` is `column`)
 - compact speculative tags
 
-Row 1 is the biggest lever (bold + underline, §15.8). Columns that contain **returned-to-pending** cells after the last refresh: standout/reverse on the row until the next successful refresh.
+Row 1 is the biggest lever (bold + underline, §15.8). Rows that contain **returned-to-pending** items after the last refresh: standout/reverse on the row until the next successful refresh.
 
-**Immediate:** `Enter` pair list for this column; `a` accept this column now. **Batch:** `/` or `=` → draft → `Space` / `y` / `Esc`.
+**Immediate** on the focused row:
+
+| Kind | `Enter` | `a` / `A` |
+|---|---|---|
+| `column` | Pair list | Accept entire column now |
+| `A-only` / `B-only` | That side’s unmatched-key grid | Accept all unmatched keys on that side now, then next lever |
+| `extra` | Schema extras, focused on this extra | Accept this extra now, then next lever |
+
+**Batch:** `/` or `=` → draft of **comparable columns only** → `Space` / `y` / `Esc`. `Space` on a non-`column` row is a no-op.
 
 Roster is not Polars-paged.
 
@@ -609,19 +632,19 @@ Returned-to-pending cells (and pairs/columns that contain them): standout until 
 
 ### 15.4 A-only keys / B-only keys
 
-Reachable from **Overview**. Behind glass.
+Reachable by `Enter` on the matching roster row, or from Overview. Same grid either way.
 
 100-row pages. Order: composite key tuple of raw strings.
 
 Each row: key columns + all other columns on that side, raw — comparable **and** extras only on that side.
 
-`a` accept one key; `A` accept all unmatched on this side; `u` undo; `Esc` Overview.
+`a` accept one key (then the next pending key in this grid; do not jump the roster); `A` accept all unmatched on this side then **next lever**; `u` undo; `Esc` roster.
 
 ### 15.5 Schema extras
 
-Reachable from **Overview**. Behind glass.
+Reachable by `Enter` on an extra roster row, or from Overview. Same list either way.
 
-Exact header + **Side** `A` or `B`; speculative near-misses labeled `speculative`. Order: exact name. `a` / `u` that extra; `Esc` Overview.
+Exact header + **Side** `A` or `B`; speculative near-misses labeled `speculative`. Order: exact name. `a` / `u` that extra; `a` then **next lever**. `Esc` roster.
 
 ### 15.6 Footer (always on)
 
@@ -642,11 +665,11 @@ Apply when focus is **not** in a text input (filter box, regex/Polars modal). In
 
 | Key | Meaning |
 |---|---|
-| `Enter` | Drill: roster → pair list; pair → cell step (draft); Overview entry → that list; modal → Run |
-| `Esc` | Back: close modal → cancel draft (cell step → pair list, or roster draft → roster) → parent screen (pair list → roster → Overview) |
-| `Space` | Toggle focused row in the current draft; no-op if none |
-| `a` | Accept **focused grain** now: column (roster), pair (pair list), cell (cell step), unmatched key, extra |
-| `A` | Accept **entire column** (roster/detail) or **all unmatched on this side** (A-only/B-only) |
+| `Enter` | Drill: roster row → its child (column → pair list; A-only/B-only → that grid; extra → Schema extras); pair → cell step (draft); Overview entry → that list; modal → Run |
+| `Esc` | Back: close modal → cancel draft (cell step → pair list, or roster draft → roster) → parent screen (pair list / A-only / B-only / extras → roster → Overview) |
+| `Space` | Toggle focused **column** row in the current column draft; no-op if none, or if the focused roster row is not `kind` `column` |
+| `a` | Accept **focused grain** now: entire column (roster `column` row), pair (pair list), cell (cell step), one unmatched key (in that grid), all unmatched on a side (roster `A-only`/`B-only` row), extra |
+| `A` | Accept **entire column** (roster `column` row / detail) or **all unmatched on this side** (roster `A-only`/`B-only` row, or A-only/B-only grid) |
 | `y` | Confirm current draft; no-op if none; then next lever |
 | `u` | Undo focused grain (`U` undo entire column on cell step) |
 | `r` | Refresh (stay put; mark returned-to-pending) |
@@ -686,13 +709,16 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
 
 ### 15.9 Deadline navigation
 
-**Next lever** after a bulk accept (pair `y` or pair-list `a`, column-draft `y`, immediate whole-column `A` / roster `a`):
+**Next lever** after a bulk accept (pair `y` or pair-list `a`, column-draft `y`, immediate whole-column `A` / roster `a` on a `column` row, roster `a`/`A` on an unmatched-key row, `A` on an unmatched-key grid, roster or extras-list `a` on an extra):
 
 1. If the current column still has pending pairs, focus the next-highest-count pair on that column’s pair list.
-2. Else the next roster column with pending > 0 (fixed sort: concentration, then pending, then name), pair list, top pair focused.
+2. Else the next roster row with pending > 0 (fixed sort: pending, then concentration, then name):
+   - `column` → that pair list, top pair focused
+   - `A-only` / `B-only` → that grid, first pending key focused
+   - `extra` → roster, that extra focused (ready for `a`)
 3. Else the roster (including pending total 0).
 
-Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid.
+Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid. Single-key `a` on an unmatched-key grid does not jump the roster; it advances to the next pending key in that grid.
 
 **Repeat last pair** `.` — §9.6. In-session and in `.recon.zip`. Never auto-accepts.
 
@@ -760,8 +786,8 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Undo | Yes, in session |
 | Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, pair vs cell step, filter string, last pair). No drafts, no sort mode |
 | Visual | Red-lens safe (§15.8): luminance/underline/reverse; no blue/green as sole signal |
-| Fluency | Work is home (roster); one sort; pair-first detail; unified `Enter`/`Esc`/`a`/`y`; no jump list / `f` / `s` / `j` |
-| Deadline nav | Next lever; `.` repeat pair; returned-to-pending marked in place (§15.9) |
+| Fluency | Work is home (roster of all remaining-work kinds); one sort (pending then concentration then name); pair-first detail; unified `Enter`/`Esc`/`a`/`y`; no jump list / `f` / `s` / `j` |
+| Deadline nav | Next lever walks the same roster sort (columns, unmatched keys, extras); `.` repeat pair; returned-to-pending marked in place (§15.9) |
 | Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is pair-list **layout** only; no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; persisted |
@@ -769,7 +795,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Ragged CSV | Hard fail |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
-| Roster | Home screen. Concentration then pending then name. Persistent filter box. Immediate `a`; `/` `=` behind glass |
+| Roster | Home screen of remaining work (comparable columns, A-only, B-only, extras). Sort: pending then concentration then name. Concentration is a visible top-pair % only. Persistent filter box. Immediate `a`; `/` `=` behind glass |
 | Batch column accept | Independent regex `/` or Polars `=`; Polars `.all()` is **one side** (`A` or `B`) on series `s`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--session` alone OK; refuse mix with identity flags |
