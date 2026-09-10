@@ -12,7 +12,6 @@ from typing import Any, Literal
 
 import polars as pl
 
-from reconcile.delimited import Detection
 from reconcile.errors import HardFail, format_key_tuple
 from reconcile.insights import (
     cell_insights,
@@ -797,8 +796,12 @@ class Engine:
                 )
             if isinstance(node, ast.Name) and node.id in banned:
                 raise InTuiError("ERROR: Polars expression is not allowed")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in banned:
-                raise InTuiError("ERROR: Polars expression is not allowed")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "col":
+                if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value != "s":
+                    raise InTuiError(
+                        "ERROR: Polars expression may only use pl and series s, "
+                        f"not {node.args[0].value!r}"
+                    )
         if re.search(r"map_elements|scan_|read_|write_|sink_|__import__", src):
             raise InTuiError("ERROR: Polars expression cannot use IO or map_elements")
 

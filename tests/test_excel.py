@@ -29,6 +29,18 @@ def test_excel_non_text_hard_fail(tmp_path: Path):
         load_excel(p, "Sheet1")
 
 
+def test_excel_formula_hard_fail(tmp_path: Path):
+    p = tmp_path / "a.xlsx"
+    write_xlsx(
+        p,
+        "Sheet1",
+        [["id", "val"], ["1", "a"]],
+        formula_cells={(1, 1)},
+    )
+    with pytest.raises(HardFail, match="formula"):
+        load_excel(p, "Sheet1")
+
+
 def test_excel_merged_hard_fail(tmp_path: Path):
     p = tmp_path / "a.xlsx"
     write_xlsx(p, "Sheet1", [["id", "val"], ["1", "a"]], merges=["A1:B1"])

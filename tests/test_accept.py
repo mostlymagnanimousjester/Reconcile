@@ -120,6 +120,15 @@ def test_regex_draft_pending_only(tmp_path: Path):
     assert eng.pending_cells_n() == 0
 
 
+def test_polars_rejects_other_names(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n")
+    write_csv(pb, "id,val\n1,b\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    with pytest.raises(InTuiError, match="only use pl"):
+        eng.start_polars_draft("A", '(pl.col("a") == "x").all()')
+
+
 def test_polars_selector_one_side(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,——\n2,——\n")
@@ -141,7 +150,6 @@ def test_refresh_error_keeps_last_state(tmp_path: Path):
     assert eng.pending_total() == 0
     write_csv(pa, "THIS IS NOT,A,VALID\n1\n")
     with pytest.raises(InTuiError, match="ERROR"):
-        eng.refresh()
         eng.refresh()
     assert eng.pending_total() == 0
     assert eng.accepted_cells.height == 1
@@ -172,3 +180,17 @@ def test_session_place_restored(tmp_path: Path):
     loaded = Engine.from_session(str(z))
     assert loaded.place.column == "val"
     assert loaded.place.roster_filter == "val"
+
+
+def test_session_zip_roundtrip(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    eng.accept_column("val")
+    z = tmp_path / "job.recon.zip"
+    eng.export_zip(str(z))
+    loaded = Engine.from_session(str(z))
+    assert loaded.pending_total() == 0
+    assert loaded.keys == ["id"]
+    assert loaded.a.path == eng.a.path
