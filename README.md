@@ -22,3 +22,4 @@ python Reconcile.py --session C:\data\job.recon.zip
 - Stack (planned): Python 3.13, Polars, fastexcel, Textual
 - Platform: Windows / PowerShell
 - Not a web app; not an audit/sign-off tool
+- TUI colors are specified for red blue-blocker lenses (no blue/green-only signals)

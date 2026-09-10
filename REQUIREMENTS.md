@@ -667,7 +667,7 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 |---|---|
 | `Enter` | Column detail for the focused row |
 | `Esc` | Back to Overview |
-| `a` | **Immediate** accept this column (pending mismatches) |
+| `a` | **Immediate** accept this column (pending mismatches); then **next lever** |
 | `u` | Undo this column’s acceptances |
 | `/` | Open **name regex** modal (column **draft**, not a view filter) |
 | `=` | Open **Polars expression** modal |
