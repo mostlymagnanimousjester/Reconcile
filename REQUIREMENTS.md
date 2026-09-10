@@ -244,9 +244,11 @@ Session lives in the process. Export/reload persists it (§13).
 
 Refresh is manual.
 
-On success: stay on the same screen if it still exists; recompute counts and the current page; show a short delta (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). If the current column or page no longer exists, go to the column roster if possible, otherwise Overview. In-flight **column** draft: drop names that vanished or now have pending 0; do not re-run selectors. In-flight **pair** draft: drop cells that are no longer pending or whose `valA`/`valB` changed; if none remain, the pair draft is cancelled.
+On success: recompute counts and pages; show a short delta (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). Then, if any cells **returned to pending** or any **new** pending cell pairs/unmatched keys/extras appeared, open the **Refresh jump list** (§15.9) before restoring place. If that list is empty, restore place: same screen if it still exists; else column roster if possible, else Overview.
 
-On failure (locked file, parse error, missing key column, non-text Excel, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case.
+In-flight **column** draft: drop names that vanished or now have pending 0; do not re-run selectors. In-flight **pair** draft: drop cells that are no longer pending or whose `valA`/`valB` changed; if none remain, the pair draft is cancelled.
+
+On failure (locked file, parse error, missing key column, non-text Excel, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case. Error text must include the same raw identifiers as §16 (keys, column names, types, paths).
 
 ### 9.5 Power-user batch column accept
 
@@ -263,14 +265,14 @@ One in-session **column draft**: a set of comparable names (non-key A∩B). Defa
 | After a selector Run | Draft := hits that currently have **at least one pending** mismatch, all **checked**. User then unchecks exceptions |
 | Zero pending | Column is already reconciled for remaining-work. **Not** drafted. No snapshots. Vacuous Polars `.all()` on zero rows must not check it. **Not** a standing ignore: after refresh, new pending cells are pending |
 | Toggle | Space flips the focused roster row in/out of the draft (only while a draft is in flight) |
-| Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle |
+| Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle. Then **next lever** (§15.9) |
 | Cancel (`Esc` on roster) | Draft empty; no accepts |
 | In-flight | At most one draft in the session. Confirm or Cancel before another regex/Polars Run, and before starting a **pair** draft (§9.6) |
 | Zip / quit | Draft is **never** persisted. `.recon.zip` restores **confirmed** snapshots only. Quit discards an unconfirmed draft |
 
 Refresh does not re-run the selector. Drop from draft: name gone, or pending count now 0. New comparable columns are not added.
 
-If the user **immediately** accepts a column that is in the draft (`a` on roster), that column is snapshotted now and **removed** from the draft; other drafted names remain.
+If the user **immediately** accepts a column that is in the draft (`a` on roster), that column is snapshotted now and **removed** from the draft; other drafted names remain. Immediate accept of the last drafted column (or immediate `a`/`A` with no draft) also goes to **next lever** (§15.9).
 
 #### Selectors (independent)
 
@@ -333,14 +335,16 @@ Selecting a pair (not Confirm) fills a **pair draft**: every current pending cel
 |---|---|
 | After selecting a pair | Draft := matching pending cells, all checked. If that set is empty, do not start a draft (already reconciled for that pair) |
 | Toggle | Space flips the focused **grid** row in/out of the draft |
-| Confirm (`y`) | Snapshot every still-checked cell `(key, column, valA, valB)`. Undo is **per cell**, not one bundle. Draft empty |
+| Confirm (`y`) | Snapshot every still-checked cell `(key, column, valA, valB)`. Undo is **per cell**, not one bundle. Draft empty. Remember this pair as **last pair**. Then **next lever** (§15.9) |
 | Cancel (`Esc` on detail) | Draft empty; stay on column detail; pair list + full pending grid restored |
 | In-flight | Session has no other draft. Confirm or Cancel before another pair, and before roster regex/Polars |
 | Zip / quit | Pair draft is **never** persisted. Confirmed cell snapshots only |
 
 Immediate `a` on a drafted cell: snapshot that cell now; drop it from the pair draft.
 
-Immediate `A` (whole column) while a pair draft is in flight: accept **all** current pending cells in the column (not only the pair); pair draft is discarded.
+Immediate `A` (whole column) while a pair draft is in flight: accept **all** current pending cells in the column (not only the pair); pair draft is discarded; then **next lever**.
+
+`.` **Repeat last pair** (column detail, no pair draft in flight): start a pair draft for the remembered `(column, valA, valB)` if that column still exists and any pending cells still have those exact strings. Does **not** auto-accept. New pending rows with that pair after refresh are included only when `.` is pressed. If none remain, go to next lever. If last pair was on another column, jump to that column’s Pending view first. Refused if a **column** draft is in flight.
 
 Refresh: §9.4. New pending cells that happen to have the same two strings are **not** auto-drafted or auto-accepted.
 
@@ -456,7 +460,7 @@ Rules:
 - Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
 
-Initial load/parse/schema/dup-key/non-text/ambiguous-delimiter/missing-path failures **before the TUI is up**: message on **stderr**, process **exit**.
+Initial load/parse/schema/dup-key/non-text/ambiguous-delimiter/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
 
 Once the TUI is up: errors stay in the TUI with last good state (§9.4). Stderr+exit only if Textual cannot start.
 
@@ -477,8 +481,9 @@ Contents (**PROVISIONAL** layout):
 - Detected encoding and delimiter per delimited side
 - Per-column context-column sets (§15.3)
 - Acceptance snapshots: type, key tuple, column, `valA`, `valB`, side, row snapshot as needed
+- **Place:** last screen, last comparable column (if any), detail view tab, roster sort mode, roster name-filter string, last pair `(column, valA, valB)` for `.` repeat
 
-No copied row payload. No in-flight **draft** (column or pair). Reload always live-rereads files and restores **confirmed** snapshots only.
+No copied row payload. No in-flight **draft** (column or pair). Reload always live-rereads files and restores **confirmed** snapshots, then restores **place** if those objects still exist (else Overview). Context columns already persist per column.
 
 Missing path on load: hard fail (stderr+exit if before TUI; in-TUI error if already running and this was an Open).
 
@@ -522,20 +527,29 @@ Shows:
   - **B-only keys**
   - **Schema extras**
 - Speculative chips only as secondary, labeled `speculative`
+- **Biggest lever** (exact, not speculative): the pending cell group `(column, valA, valB)` with the largest count. One line: column name, `A` string, `B` string, count, percent of all pending cells. Default focus on Overview. `Enter` opens that column’s detail on Pending with that pair **focused** in the pair list (does not start a draft)
 
-This is the screen A-only / B-only / extras hang off. The column roster is a separate screen.
+This is the screen A-only / B-only / extras hang off. The column roster is a separate screen. After `--session` restore, land on saved **place** if valid; else Overview.
 
 ### 15.2 Column roster
 
 One row per **comparable column** only (non-key intersection). Not extras, not keys.
 
-Sort: **pending count descending, then exact column name**.
+**Concentration** for a column: pending count of its largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0).
+
+Sort (cycle with `s`):
+
+1. **Pending** (default): pending count descending, then exact column name
+2. **Concentration**: concentration descending, then pending descending, then exact column name
+
+**Name filter** (`f`): view-only typeahead. Case-insensitive substring on the exact header. Does **not** change pairing, drafts, or compare. `/` remains regex → column draft. `Esc` in the filter field clears focus; empty filter shows all.
 
 Columns on the roster:
 
 - draft check (visible / active only while a batch draft is in flight)
 - name
 - pending count
+- **top-pair %** (concentration)
 - accepted count
 - equal count (matched keys where A=B for this column)
 - categorical yes/no
@@ -583,6 +597,8 @@ Grid (100-row pages):
 **Transition / pending pairs (§9.6):** exact `A → B` pending counts. Categorical (§10.5) → full matrix; otherwise paged pair list. `Enter` on a pair starts a **pair draft** (not an accept). Speculative chips on a pair are labels only.
 
 Long strings **wrap** in the grid (no max-width ellipsis). A page is still 100 data rows; wrapped rows may occupy multiple screen lines. Selected cell: full raw A and B strings in a **footer pane**, also wrapped to the pane width (exact text, no ellipsis).
+
+**First-difference caret:** in that footer pane (and on the focused grid `A`/`B` cells), mark the first character index where the two strings differ (Python `str` code points after null→`""`). Reverse/standout those characters on both sides. If one string is a prefix of the other, mark the first extra character on the longer side. Length-only difference (equal prefix) is a difference. This is exact, not speculative. Style must remain readable through red lenses (§15.8).
 
 Paging: 100 rows from Polars. Page order: **composite key as a tuple of raw strings** (stable, exact). Pair list paging: 100 pairs when not a full matrix.
 
@@ -633,14 +649,16 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 | `?` | Help (this map) |
 | `q` | Quit. Unconfirmed draft (column or pair) is discarded (not an accept) |
 | `r` | Refresh |
-| `e` | Export `.recon.zip` (confirmed snapshots only) |
+| `.` | Repeat last pair as a **new draft** (§9.6). Global when last pair is set; jumps to that column if needed. Refused if any draft is in flight (Confirm or Cancel first) |
+| `j` | Open **Refresh jump list** if the last refresh produced one; no-op if none |
+| `e` | Export `.recon.zip` (confirmed snapshots only; includes place) |
 | `o` | Open `.recon.zip` (refused / in-TUI error if any draft is in flight: Confirm or Cancel first) |
 
 **Overview:**
 
 | Key | Action |
 |---|---|
-| `Enter` | Open the focused entry (roster / A-only / B-only / extras) |
+| `Enter` | If biggest lever focused: column detail, Pending, that pair focused. Else open the focused entry (roster / A-only / B-only / extras) |
 | `Esc` | No-op (already landing) |
 
 **Column roster — no draft:**
@@ -651,8 +669,10 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 | `Esc` | Back to Overview |
 | `a` | **Immediate** accept this column (pending mismatches) |
 | `u` | Undo this column’s acceptances |
-| `/` | Open **name regex** modal |
+| `/` | Open **name regex** modal (column **draft**, not a view filter) |
 | `=` | Open **Polars expression** modal |
+| `f` | Name **typeahead filter** (view only) |
+| `s` | Cycle roster sort (pending vs concentration) |
 
 **Column roster — draft in flight:**
 
@@ -665,6 +685,8 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 | `a` | **Immediate** accept focused column; if it was drafted, drop it from the draft |
 | `u` | Undo this column |
 | `/` `=` | Disabled until Confirm or Cancel |
+| `f` | Name typeahead filter (view only) |
+| `s` | Cycle roster sort |
 
 **Regex / Polars modal:**
 
@@ -680,8 +702,9 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 |---|---|
 | `Esc` | Back to roster |
 | `Enter` | If pair list focused: start **pair draft** for that exact `(valA, valB)` (§9.6). Refused if a **column** draft is in flight |
-| `a` | Accept **focused cell** |
-| `A` | **Immediate** accept **entire column** |
+| `.` | Repeat last pair as a new draft (§9.6) |
+| `a` | Accept **focused cell**. Then move to the next pending row in this grid; do **not** change column |
+| `A` | **Immediate** accept **entire column**; then **next lever** |
 | `u` | Undo focused cell |
 | `U` | Undo entire column (this column’s acceptances) |
 | `c` | Context-column picker |
@@ -693,10 +716,10 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 | Key | Action |
 |---|---|
 | `Space` | Toggle focused grid row in/out of the pair draft |
-| `y` | Confirm: snapshot every still-checked drafted cell; draft clears |
+| `y` | Confirm: snapshot every still-checked drafted cell; draft clears; **next lever** |
 | `Esc` | Cancel pair draft; stay on column detail |
-| `a` | **Immediate** accept focused cell; if drafted, drop it from the pair draft |
-| `A` | **Immediate** accept **entire column**; pair draft discarded |
+| `a` | **Immediate** accept focused cell; if drafted, drop it from the pair draft; stay on grid |
+| `A` | **Immediate** accept **entire column**; pair draft discarded; **next lever** |
 | `n` / `p` | Next/prev page of drafted cells |
 | View-filter tabs | Stay on **Pending**; other tabs disabled until Confirm or Cancel |
 
@@ -712,15 +735,74 @@ Bindings are **mode-aware**. Keys below apply when focus is **not** in a text in
 
 View-filter on column detail is **tabs**, not a `v` cycle.
 
+**Refresh jump list** (after `r` if non-empty, or `j`):
+
+| Key | Action |
+|---|---|
+| `Enter` | Jump to the focused item (column detail + cell, or A-only/B-only/extras row) |
+| `Esc` | Dismiss; land where §9.4 would have without the list |
+| `n` / `p` | Page |
+
+### 15.8 Visual language (red-lens safe)
+
+The TUI is used with **maximally blue-blocking glasses (red lenses)**. Blue, cyan, and green are unreliable or invisible. **Hue must never be the only signal.** Encode meaning with luminance, weight, underline, reverse video, and glyphs first; warm hues only as extras.
+
+| Role | Signal (must work in red/amber/black) | Allowed extra hue |
+|---|---|---|
+| Pending / remaining work | **Bold** + high luminance | Bright yellow or bright white |
+| Accepted | Dim (lower luminance) | — |
+| Equal / not a diff | Dimmer than accepted | — |
+| Drafted / checked | **Reverse video** (fg/bg swap) and/or underline | Orange/amber underline |
+| Focused row | Reverse or a `>` glyph in the gutter, not a blue bar | — |
+| Speculative chips | Dim + the word `speculative`; optional italic | No blue |
+| Biggest lever | Bold + underline | Yellow |
+| First-difference | Reverse/standout on the disagreeing characters | Yellow/white, not blue |
+| Error | Bold + the word `ERROR` | Red (still reads as bright through red lenses) |
+| Pending = 0 | Bold high luminance, not a green “success” | White/yellow |
+
+Palette: dark background; foreground default, bright white, yellow, orange/amber, red; gray luminance steps. Do **not** use blue, cyan, or green as the sole distinguisher of pending vs accepted vs equal vs error vs success.
+
+### 15.9 Deadline navigation
+
+Power-user path to pending → 0 without hunting.
+
+**Biggest lever.** Exact `group_by` of pending cells: max count `(column, valA, valB)`. Shown on Overview. `Enter` focuses that pair (no draft).
+
+**Next lever** after a bulk accept (pair Confirm, column-draft Confirm, immediate whole-column `A` / roster `a`):
+
+1. If the current column still has pending pairs, focus the next-highest-count pair on that column’s Pending view.
+2. Else open the next roster column with pending > 0, using the **current roster sort**, Pending view, its top pair focused.
+3. Else Overview (including pending total 0).
+
+Single-cell `a` does not jump columns; it advances to the next pending row in the current grid.
+
+**Refresh jump list.** Exact items, 100 per page, key-tuple / name order: each cell that **returned to pending**; new pending pairs (column + valA + valB + count); new A-only/B-only keys; new extras. `Enter` jumps. Empty list is not shown.
+
+**Repeat last pair** `.` — §9.6. Remembered in-session and in `.recon.zip`. Never auto-accepts.
+
+**Roster typeahead** `f` — view filter only. **Roster sort** `s` — pending vs concentration.
+
 ---
 
 ## 16. Hard fail vs in-TUI error
 
+Hard-fail and in-TUI error text must include **raw identifiers** so the user can find the row in the source file themselves (this TUI will not open or copy into the file):
+
+| Failure | Must print |
+|---|---|
+| Duplicate key | Side (`A`/`B`), exact key tuple strings, occurrence count |
+| Ragged delimited row | Path, 1-based row number, header field count, actual field count |
+| Non-text Excel | Path, sheet, exact column header, type seen (and cell address if the engine provides it) |
+| Missing key column | Exact name, which side lacks it |
+| Duplicate column names | Side, exact duplicated header |
+| Ambiguous delimiter | Each candidate (comma, tilde, pipe, tab) and full-file field-count consistency |
+| Missing path | The absolute path |
+
 | Situation | Behavior |
 |---|---|
 | Textual cannot start | stderr + exit `2` |
-| Initial CLI load fails (missing file, ambiguous delimiter/encoding, ragged row, dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + exit `2` |
-| After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error |
+| Initial CLI load fails (missing file, ambiguous delimiter/encoding, ragged row, dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
+| After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
 
@@ -760,14 +842,17 @@ View-filter on column detail is **tabs**, not a `v` cycle.
 | Detect | Encoding + delimiter; hard fail if ambiguous; no override. Delimiters checked comma, tilde, pipe, tab (full file profiled before conclude). Semicolon not a candidate. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
-| Persist | `.recon.zip`, absolute paths, live reread; **confirmed snapshots only** (no drafts) |
+| Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, tab, roster sort/filter, last pair). No drafts |
+| Visual | Red-lens safe (§15.8): luminance/underline/reverse; no blue/green as sole signal |
+| Deadline nav | Biggest lever, next lever, refresh jump list, `.` repeat pair, roster `f`/`s` (§15.9) |
+| Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is pair-list **layout** only; no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; persisted |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Hard fail |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
-| Roster | Comparable intersection only; sort pending desc then name; **immediate** one-column accept; batch via column draft (§9.5) |
+| Roster | Comparable intersection only; sort pending **or** concentration; typeahead `f`; **immediate** one-column accept; batch via column draft (§9.5) |
 | Batch column accept | Independent regex `/` or Polars `=`; Polars `.all()` is **one side** (`A` or `B`) on series `s`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
 | Pair accept | Exact pending `(valA, valB)` on column detail; pair draft → toggle → confirm; same cell snapshots; one draft in session (§9.6) |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--session` alone OK; refuse mix with identity flags |
