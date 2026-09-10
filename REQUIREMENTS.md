@@ -79,7 +79,7 @@ Duplicate column names on one side: **hard fail**.
 
 ### 4.3 Excel types
 
-Every cell in the used header+data range must be **text**. Any non-text type (number, date, bool, cached formula result, etc.): **hard fail**.
+Every cell in the used header+data range must be **text**. Any non-text type (number, date, bool, cached formula result, unused/trailing columns in the used range, etc.): **hard fail**. No special case for “probably unused” trailing columns.
 
 Blank Excel cells are true nulls → `""`.
 
@@ -110,7 +110,7 @@ Detect encoding and delimiter. **Hard fail if ambiguous.** No in-tool override. 
 
 Must work on **Windows**. UTF-8 is not guaranteed.
 
-**PROVISIONAL detection:**
+**PROVISIONAL detector scoring** (candidate lists locked; how “clear winner” is scored is still open):
 
 - Delimiters tried: comma, tab, semicolon, pipe. One clear winner or hard fail.
 - Encodings tried: UTF-8 with BOM, UTF-8, then Windows-1252, only if unambiguous. If UTF-8 decodes cleanly, UTF-8 wins. Do **not** silently fall back to latin-1 (it always “decodes”).
@@ -121,8 +121,8 @@ Excel encoding is not a separate concern; fastexcel supplies cell strings.
 
 ## 7. Keys and join
 
-- Keys are **required**, specified on the CLI (`--key`, repeatable).
-- Composite keys are allowed. Order is the CLI order.
+- Keys are **required**, specified on the CLI as a single comma-separated `--keys` value (e.g. `--keys id,year`). No repeated `--key` flags.
+- Composite keys are allowed. Order is left-to-right in `--keys`. Names are split on commas only; there is no quoting. After split, surrounding whitespace on each name is stripped; internal spaces are kept (`--keys id, year` → `id`, `year`). Column names that contain a comma are not supported.
 - Every key column must exist on **both** sides (exact names) or **hard fail**.
 - Duplicate key on a side (after empty-row drop): **hard fail**.
 - A key value of `""` is legal. Multiple rows with key `""` on one side: hard fail.
@@ -243,7 +243,7 @@ They may be used as **filters/explanations**, not as accept actions.
 Try a fixed list:
 
 - `YYYY-MM-DD`
-- `YYYY-MM-DDTHH:MM:SS` (optional fractional seconds **PROVISIONAL**)
+- `YYYY-MM-DDTHH:MM:SS`
 - `M/D/YYYY`
 - `D/M/YYYY`
 - `YYYYMMDD`
@@ -260,7 +260,7 @@ A comparable column is treated as **categorical** when, among **pending** cells 
 
 Then the column detail view shows a **transition table**: counts of `A value → B value` for **pending mismatches only**. Speculative. Not a recode.
 
-Thresholds are a starting point and may be tuned.
+These thresholds and the date format list in §10.4 are locked for v1.
 
 ### 10.6 Not v1
 
@@ -273,7 +273,7 @@ Thresholds are a starting point and may be tuned.
 
 ## 11. Architecture: Polars owns the data
 
-Stack: **Python, Polars, fastexcel, Textual**. Must run on Windows.
+Stack: **Python 3.13**, Polars, fastexcel, Textual. Must run on Windows. Launch from **PowerShell** via `Reconcile.py` (see §12, §17).
 
 - Load, join, compare, counts, remaining sets, and insights stay in Polars.
 - The TUI must **not** convert full frames to Python objects.
@@ -288,7 +288,12 @@ Roster is one row per comparable column (small); it may be fully materialized. C
 
 The TUI does not collect paths, sheets, or keys. Job identity is CLI (or a session zip).
 
-**PROVISIONAL flag names:**
+Invoked from PowerShell:
+
+```powershell
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
+python Reconcile.py --session C:\data\job.recon.zip
+```
 
 | Flag | Meaning |
 |---|---|
@@ -296,15 +301,15 @@ The TUI does not collect paths, sheets, or keys. Job identity is CLI (or a sessi
 | `--b PATH` | Side B file |
 | `--a-sheet NAME` | Required if A is `.xlsx`/`.xlsm` |
 | `--b-sheet NAME` | Required if B is `.xlsx`/`.xlsm` |
-| `--key NAME` | Repeatable; composite key in this order |
+| `--keys NAMES` | Comma-separated key column names, in order. Exclusive form; not repeatable `--key`. |
 | `--session PATH` | Load `*.recon.zip` and live-reread sources |
 
 Rules:
 
 - `--session` alone is valid (zip contains paths, sheets, keys, detections, snapshots, context sets).
-- Without `--session`: `--a`, `--b`, and at least one `--key` are required. Sheet flags required per Excel side.
-- **PROVISIONAL:** mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--key` is a hard fail. The zip is the identity.
-- Duplicate `--key` names: hard fail.
+- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side.
+- Mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` is a **hard fail**. The zip is the identity. Refuse; do not override or merge.
+- Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
 
 Initial load/parse/schema/dup-key/non-text/ambiguous-delimiter/missing-path failures **before the TUI is up**: message on **stderr**, process **exit**.
@@ -333,7 +338,7 @@ No copied row payload of the source data. Reload always live-rereads files.
 
 Missing path on load: hard fail (stderr+exit if before TUI; in-TUI error if already running and this was an Open).
 
-Export and open from the TUI. **PROVISIONAL:** also `--session` on CLI.
+Export and open from the TUI. Also `--session` on CLI.
 
 ---
 
@@ -380,7 +385,7 @@ This is the screen A-only / B-only / extras hang off. The column roster is a sep
 
 One row per **comparable column** only (non-key intersection). Not extras, not keys.
 
-**PROVISIONAL** sort: pending count descending, then exact column name.
+Sort: **pending count descending, then exact column name**.
 
 Columns on the roster:
 
@@ -410,12 +415,12 @@ One comparable column.
 | **Equal** | Matched keys where this column’s A string **equals** B |
 | **All matched** | Every key present on both sides, for this column, regardless of equal/pending/accepted |
 
-How the filter is presented in the UI (cycle key vs labeled menu vs tabs) is **PROVISIONAL** — pick whatever is obvious in Textual. The four names above are the requirement; a rotating unlabeled control is not sufficient.
+The four filters are **tabs** on column detail, labeled with those names. Default tab: **Pending**. Not an unlabeled cycle.
 
 Grid (100-row pages):
 
 - key columns (always; not optional)
-- A value and B value for this column (raw strings; truncated in the grid)
+- A value and B value for this column (raw strings; **wrap**, do not ellipsis-truncate)
 - speculative labels for that cell, when the row is a mismatch
 - **context columns** the user has added
 
@@ -430,19 +435,19 @@ Grid (100-row pages):
 
 **Transition table** (if categorical, §10.5): pending-only `A → B` counts, labeled speculative.
 
-Selected cell: full raw A and B strings in a **footer pane** (no truncation). Grid cells truncate to a max width.
+Long strings **wrap** in the grid (no max-width ellipsis). A page is still 100 data rows; wrapped rows may occupy multiple screen lines. Selected cell: full raw A and B strings in a **footer pane**, also wrapped to the pane width (exact text, no ellipsis).
 
-Paging: 100 rows from Polars. **PROVISIONAL** page order: composite key as a tuple of raw strings (stable, exact).
+Paging: 100 rows from Polars. Page order: **composite key as a tuple of raw strings** (stable, exact).
 
-Actions: accept/undo one cell; accept/undo entire column; add/remove context; change view filter; next/prev page; back to roster.
+Actions: accept/undo one cell; accept/undo entire column; add/remove context; switch view-filter **tabs**; next/prev page; back to roster.
 
 ### 15.4 A-only keys / B-only keys
 
 Reachable from **Overview**.
 
-100-row pages. **PROVISIONAL** order: composite key tuple of raw strings.
+100-row pages. Order: **composite key tuple of raw strings**.
 
-Each row: key columns + **all comparable columns** (intersection minus keys) from the side that has the row, raw. (Not extras.)
+Each row: key columns + **all other columns on that side**, raw — comparable (intersection minus keys) **and extras that exist only on that side**.
 
 Actions: accept one unmatched key; accept all unmatched on this side; undo.
 
@@ -463,7 +468,7 @@ Actions: accept/undo that extra.
 - Remaining pending total
 - Breakdown: A-only pending, B-only pending, extras pending, cell pending
 - Current page `n/m` when on a paged list
-- Current detail view filter when on column detail (`pending` / `accepted` / `equal` / `all matched`)
+- Current detail view filter when on column detail (which **tab**: pending / accepted / equal / all matched)
 - Any insight fragment labeled `speculative`
 
 ### 15.7 Commands / keys
@@ -481,9 +486,10 @@ User was unsure about keybindings. **PROVISIONAL:** visible footer actions plus 
 | Export session | e |
 | Open session | o |
 | Context columns | c |
-| View filter (detail) | v |
 | Help | ? |
 | Quit | q |
+
+View filter on column detail is **tabs**, not a key cycle.
 
 ---
 
@@ -499,28 +505,22 @@ User was unsure about keybindings. **PROVISIONAL:** visible footer actions plus 
 
 ---
 
-## 17. Packaging (PROVISIONAL)
+## 17. Packaging
 
-- `pyproject.toml` console script (name TBD)
-- Windows-supported Python (version TBD; 3.11+ intended)
+- Entry: `Reconcile.py`, launched from **PowerShell** (`python Reconcile.py ...`)
+- **Python 3.13**
+- Dependencies: Polars, fastexcel, Textual (and their transitive deps)
+- `pyproject.toml` for the environment/deps is fine; the user-facing command is the script, not a separate console-script name
 - No extra services, no database, no auth
 
 ---
 
 ## 18. Open items for review
 
-1. Exact CLI flag names and `--key` vs comma-separated `--keys`.
-2. Mixing `--session` with identity flags (proposed: refuse).
-3. Detail **view filter** control (tabs vs menu vs cycle with visible label).
-4. Page order for detail / A-only / B-only (proposed: raw key tuple).
-5. Roster sort (proposed: pending desc, then name).
-6. Keybinding map.
-7. Categorical thresholds (30 / 30 / 50) and date format list.
-8. Delimiter/encoding detector scoring.
-9. Console script name, Python version, Windows terminal assumptions (Windows Terminal vs conhost).
-10. Whether A-only/B-only rows should also show extra-only columns from that side.
-11. Max truncated cell width in the grid.
-12. Behavior if Excel reports a used range with non-text in unused/trailing columns after empty-row drop.
+1. Keybinding map (footer actions + `?` still proposed; view-filter is tabs, not a `v` cycle).
+2. Delimiter/encoding detector scoring (candidate lists are locked in §6; what counts as a “clear winner” vs ambiguous is not).
+3. Schema-extras list sort (still exact name).
+4. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
 
 ---
 
@@ -531,26 +531,27 @@ User was unsure about keybindings. **PROVISIONAL:** visible footer actions plus 
 | Sides | Always 2 |
 | Inputs | Delimited + xlsx/xlsm; 2 sheets max compared |
 | Compare | Exact raw text; null → `""` only |
-| Keys | Required, composite OK; A-only/B-only reviewed; dups hard fail |
+| Keys | Required, composite OK via `--keys a,b`; A-only/B-only reviewed; dups hard fail |
 | Column pair | Exact name; extras surfaced |
 | Product | Investigation TUI; session acceptances; shrink or accept |
-| Excel | Text cells only; fastexcel; no formulas |
+| Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
 | Headers | Required |
-| Platform | Windows; UTF-8 not guaranteed |
+| Platform | Windows PowerShell; Python 3.13; UTF-8 not guaranteed |
 | Detect | Encoding + delimiter; hard fail if ambiguous; no override |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
 | Persist | `.recon.zip`, absolute paths, live reread |
-| Insights | Speculative, view/filter only; dates yes; no fuzzy keys; categorical transitions pending-only |
+| Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 pending-only; no fuzzy keys |
 | Context columns | Both-sides intersection only; per column; persisted |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Hard fail |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
-| Roster | Comparable intersection only; accept column on roster and detail |
-| Launch | CLI identity; `--session` alone OK |
-| Detail default | Pending only; extra views helpful, not default |
-| Paging | 100 rows from Polars |
+| Roster | Comparable intersection only; sort pending desc then name; accept column on roster and detail |
+| Launch | `python Reconcile.py`; `--keys` comma-separated; `--session` alone OK; refuse mix with identity flags |
+| Detail | Pending tab default; tabs: pending / accepted / equal / all matched |
+| Paging | 100 rows from Polars; order raw key tuple |
+| A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
 | Fatal before TUI | stderr + exit |
 | Fatal after TUI | Keep last state |
-| Long strings | Truncate in grid; full raw in footer pane |
+| Long strings | Wrap in grid and footer pane; no ellipsis truncate |
 | Exit codes | 0 / 1 / 2 as §14 |
