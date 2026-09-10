@@ -30,6 +30,8 @@ This is **not** an audit, sign-off, or certification tool. It does not produce a
 - A “New job” action (quit and relaunch)
 - File watching (refresh is manual)
 - Blanket “ignore this column forever” (acceptances are snapshots; see §9)
+- Stacking regex and Polars into one column-accept draft
+- Accept-by-insight-group
 
 ---
 
@@ -190,15 +192,16 @@ Remaining work is the **pending** set. The session is “done” when pending co
 | Action | Effect |
 |---|---|
 | Accept one cell | Snapshot this `(key, column, valA, valB)` |
-| Accept entire column | Bulk-accept **all current** cell mismatches in that column, each as its own snapshot. Does **not** mean “never compare this column again.” |
+| Accept entire column | Bulk-accept **all current pending** cell mismatches in that column, each as its own snapshot. Does **not** mean “never compare this column again.” Immediate from roster or detail on a **single** column |
+| Confirm drafted columns | Same snapshot rule as accept entire column, applied to every **still-checked** column in the in-flight draft (§9.5). Then the draft is empty |
 | Accept one unmatched key | Snapshot `(side, key, row snapshot)` |
 | Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys |
 | Accept one extra column | Snapshot `(side, column name)` |
 | Undo | That snapshot returns to pending (same session) |
 
-Accept entire column is available from the **column roster** and from **column detail**.
+Accept entire column is available immediately from the **column roster** and from **column detail** (one column, no draft).
 
-Insights cannot accept. There is no “accept this insight group.”
+Batch column accept uses a **draft** on the roster only (§9.5). Insights cannot accept. There is no “accept this insight group.”
 
 ### 9.3 Acceptance identity and refresh
 
@@ -221,9 +224,59 @@ Session lives in the process. Export/reload persists it (§13).
 
 Refresh is manual.
 
-On success: stay on the same screen if it still exists; recompute counts and the current page; show a short delta (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). If the current column or page no longer exists, go to the column roster if possible, otherwise Overview.
+On success: stay on the same screen if it still exists; recompute counts and the current page; show a short delta (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). If the current column or page no longer exists, go to the column roster if possible, otherwise Overview. In-flight column draft: drop names that vanished or now have pending 0; do not re-run selectors.
 
 On failure (locked file, parse error, missing key column, non-text Excel, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case.
+
+### 9.5 Power-user batch column accept
+
+On the **column roster**, a power user can select many comparable columns, review a **draft**, then Confirm. Selectors never accept by themselves. Compare stays exact raw text.
+
+**Single-column accept stays immediate.** It does not wait for Confirm and does not require a draft.
+
+#### Draft
+
+One in-session **column draft**: a set of comparable names (non-key A∩B). Default empty.
+
+| Rule | |
+|---|---|
+| After a selector Run | Draft := hits that currently have **at least one pending** mismatch, all **checked**. User then unchecks exceptions |
+| Zero pending | Column is already reconciled for remaining-work. **Not** drafted. No snapshots. Vacuous Polars `.all()` on zero rows must not check it. **Not** a standing ignore: after refresh, new pending cells are pending |
+| Toggle | Space flips the focused roster row in/out of the draft (only while a draft is in flight) |
+| Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle |
+| Cancel (`Esc` on roster) | Draft empty; no accepts |
+| In-flight | At most one selector result. Confirm or Cancel before another regex or Polars Run |
+| Zip / quit | Draft is **never** persisted. `.recon.zip` restores **confirmed** snapshots only. Quit discards an unconfirmed draft |
+
+Refresh does not re-run the selector. Drop from draft: name gone, or pending count now 0. New comparable columns are not added.
+
+If the user **immediately** accepts a column that is in the draft (`a` on roster), that column is snapshotted now and **removed** from the draft; other drafted names remain.
+
+#### Selectors (independent)
+
+Regex and Polars do **not** stack, union, or intersect. Each Run starts from an empty draft.
+
+**Name regex** (roster `/`):
+
+- Applied to exact comparable names only (not keys, not extras, not values).
+- Python `re.search`, case-sensitive; user may put `(?i)` or `^` `$` in the pattern.
+- Empty or invalid pattern: in-TUI error, draft unchanged.
+
+**Polars expression** (roster `=`):
+
+- Per comparable column, a frame of pending mismatches only, columns `a` and `b` (raw strings, nulls already `""`). Not equals, not already-accepted, not A-only/B-only, not other fields.
+- Expression must reduce to a **single boolean** per column (e.g. `(pl.col("b") == "——").all()`). A per-row Series or non-boolean scalar: in-TUI error; do not silently `.all()`.
+- Namespace **`a` / `b` only**. No IO, no scans, no `map_elements`, no original field names.
+- Evaluated in **Polars** (unpivot/group or equivalent). Invalid/engine error: in-TUI, draft unchanged.
+
+While a draft is in flight, `/` and `=` are disabled (or error: confirm or cancel first).
+
+#### UX (roster)
+
+- Full roster stays visible (not a drafted-only list). Drafted rows show a check.
+- Opening `/` or `=` opens a **modal**: type pattern or expression; `Enter` Runs; `Esc` closes the modal without changing the draft.
+- After Run, footer shows `draft N` plus Confirm / Cancel / toggle.
+- Column **detail** has no regex/Polars. Detail accept column remains immediate (`A`).
 
 ---
 
@@ -291,8 +344,9 @@ Stack: **Python 3.13**, Polars, fastexcel, Textual. Must run on Windows. Launch 
 
 - Load, join, compare, counts, remaining sets, and insights stay in Polars.
 - The TUI must **not** convert full frames to Python objects.
-- The TUI **requests pages** (100 rows) and small summaries (roster, counts, transition table).
+- The TUI **requests pages** (100 rows) and small summaries (roster, counts, transition table, batch-selector booleans).
 - Python/Polars round-trips must be minimized and explicit (page structs / small aggregate frames only).
+- Batch Polars selectors (§9.5) run **in Polars** on pending `{a, b}` per comparable column (or one unpivot + group). Do not pull full columns into Python to test the predicate. Draft checkboxes are a small name set; that part may be Python.
 
 Roster is one row per comparable column (small); it may be fully materialized. Cell/key lists are paged at **100**.
 
@@ -348,7 +402,7 @@ Contents (**PROVISIONAL** layout):
 - Per-column context-column sets (§15.3)
 - Acceptance snapshots: type, key tuple, column, `valA`, `valB`, side, row snapshot as needed
 
-No copied row payload of the source data. Reload always live-rereads files.
+No copied row payload. No in-flight **column draft** (checkboxes). Reload always live-rereads files and restores **confirmed** snapshots only.
 
 Missing path on load: hard fail (stderr+exit if before TUI; in-TUI error if already running and this was an Open).
 
@@ -403,6 +457,7 @@ Sort: **pending count descending, then exact column name**.
 
 Columns on the roster:
 
+- draft check (visible / active only while a batch draft is in flight)
 - name
 - pending count
 - accepted count
@@ -410,7 +465,9 @@ Columns on the roster:
 - categorical yes/no
 - compact speculative tags (e.g. `trim 80%`, `same-date 12`, `Y→Yes 400`)
 
-Actions: open **column detail**; accept/undo **entire column** without opening detail.
+**Immediate actions:** open **column detail**; accept/undo **this one column** (pending snapshots now). `a` / `u` do not use the draft.
+
+**Batch actions (§9.5):** `/` name regex or `=` Polars expression → checked draft → Space toggles → `y` Confirm or `Esc` Cancel. Full roster remains visible. While a draft is in flight, `/` and `=` are blocked; footer shows `draft N`.
 
 Roster is not Polars-paged (column count is small).
 
@@ -453,7 +510,7 @@ Long strings **wrap** in the grid (no max-width ellipsis). A page is still 100 d
 
 Paging: 100 rows from Polars. Page order: **composite key as a tuple of raw strings** (stable, exact).
 
-Actions: accept/undo one cell; accept/undo entire column; add/remove context; switch view-filter **tabs**; next/prev page; back to roster.
+Actions: accept/undo one **cell** (`a`); accept/undo **entire column** immediate (`A`); add/remove context; switch view-filter **tabs**; next/prev page; back to roster (`Esc`). No batch selectors on this screen.
 
 ### 15.4 A-only keys / B-only keys
 
@@ -484,26 +541,85 @@ Actions: accept/undo that extra.
 - Current page `n/m` when on a paged list
 - Current detail view filter when on column detail (which **tab**: pending / accepted / equal / all matched)
 - Any insight fragment labeled `speculative`
+- **When a column draft is in flight (roster):** `draft N`, plus Confirm / Cancel / toggle hints (`y` / `Esc` / `Space`)
+
+Bindings in the footer must match §15.7 for the current screen and mode. The command bar is visible; users are not expected to memorize keys. `?` lists the same map.
 
 ### 15.7 Commands / keys
 
-User was unsure about keybindings. **PROVISIONAL:** visible footer actions plus `?` help. Suggested bindings (replaceable):
+Bindings are **mode-aware**. Keys below apply when focus is **not** in a text input. Inside the regex/Polars modal, typing goes to the field; `Enter` / `Esc` are modal only.
 
-| Action | Suggested |
+**Global** (TUI up, not in text input):
+
+| Key | Action |
 |---|---|
-| Drill / confirm | Enter |
-| Back | Esc |
-| Next/prev page | n / p |
-| Accept | a |
-| Undo | u |
-| Refresh | r |
-| Export session | e |
-| Open session | o |
-| Context columns | c |
-| Help | ? |
-| Quit | q |
+| `?` | Help (this map) |
+| `q` | Quit. Unconfirmed draft is discarded (not an accept) |
+| `r` | Refresh |
+| `e` | Export `.recon.zip` (confirmed snapshots only) |
+| `o` | Open `.recon.zip` (refused / in-TUI error if a draft is in flight: Confirm or Cancel first) |
 
-View filter on column detail is **tabs**, not a key cycle.
+**Overview:**
+
+| Key | Action |
+|---|---|
+| `Enter` | Open the focused entry (roster / A-only / B-only / extras) |
+| `Esc` | No-op (already landing) |
+
+**Column roster — no draft:**
+
+| Key | Action |
+|---|---|
+| `Enter` | Column detail for the focused row |
+| `Esc` | Back to Overview |
+| `a` | **Immediate** accept this column (pending mismatches) |
+| `u` | Undo this column’s acceptances |
+| `/` | Open **name regex** modal |
+| `=` | Open **Polars expression** modal |
+
+**Column roster — draft in flight:**
+
+| Key | Action |
+|---|---|
+| `Enter` | Column detail (draft remains in flight on return) |
+| `Space` | Toggle focused row in/out of the draft |
+| `y` | Confirm: column-accept every still-checked drafted column; draft clears |
+| `Esc` | Cancel draft; stay on roster |
+| `a` | **Immediate** accept focused column; if it was drafted, drop it from the draft |
+| `u` | Undo this column |
+| `/` `=` | Disabled until Confirm or Cancel |
+
+**Regex / Polars modal:**
+
+| Key | Action |
+|---|---|
+| `Enter` | Run selector; on success, close modal, fill draft (all hits with pending checked) |
+| `Esc` | Close modal; draft unchanged |
+
+**Column detail:**
+
+| Key | Action |
+|---|---|
+| `Esc` | Back to roster |
+| `a` | Accept **focused cell** |
+| `A` | **Immediate** accept **entire column** |
+| `u` | Undo focused cell |
+| `U` | Undo entire column (this column’s acceptances) |
+| `c` | Context-column picker |
+| `n` / `p` | Next/prev page |
+| Tab keys / click | View-filter **tabs** (Pending / Accepted / Equal / All matched) |
+
+**A-only / B-only / extras:**
+
+| Key | Action |
+|---|---|
+| `Esc` | Overview |
+| `a` | Accept focused item (one key or one extra) |
+| `A` | Accept all unmatched on this side (A-only / B-only screens only) |
+| `u` | Undo focused item |
+| `n` / `p` | Next/prev page |
+
+View-filter on column detail is **tabs**, not a `v` cycle.
 
 ---
 
@@ -513,7 +629,7 @@ View filter on column detail is **tabs**, not a key cycle.
 |---|---|
 | Textual cannot start | stderr + exit `2` |
 | Initial CLI load fails (missing file, ambiguous delimiter/encoding, ragged row, dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + exit `2` |
-| After TUI is up: refresh fail, open-session fail | Stay in TUI, last good state, show error |
+| After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
 
@@ -531,10 +647,9 @@ View filter on column detail is **tabs**, not a key cycle.
 
 ## 18. Open items for review
 
-1. Keybinding map (footer actions + `?` still proposed; view-filter is tabs, not a `v` cycle).
-2. Encoding detector scoring (delimiter *candidates*, check order, and full-file profile are locked in §6.1; encoding “clear winner” vs ambiguous is not).
-3. Schema-extras list sort (still exact name).
-4. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
+1. Encoding detector scoring (delimiter *candidates*, check order, and full-file profile are locked in §6.1; encoding “clear winner” vs ambiguous is not).
+2. Schema-extras list sort (still exact name).
+3. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
 
 ---
 
@@ -554,15 +669,17 @@ View filter on column detail is **tabs**, not a key cycle.
 | Detect | Encoding + delimiter; hard fail if ambiguous; no override. Delimiters checked comma, tilde, pipe, tab (full file profiled before conclude). Semicolon not a candidate. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
-| Persist | `.recon.zip`, absolute paths, live reread |
+| Persist | `.recon.zip`, absolute paths, live reread; **confirmed snapshots only** (no column draft) |
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 pending-only; no fuzzy keys |
 | Context columns | Both-sides intersection only; per column; persisted |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Hard fail |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
-| Roster | Comparable intersection only; sort pending desc then name; accept column on roster and detail |
+| Roster | Comparable intersection only; sort pending desc then name; **immediate** one-column accept; batch via draft (§9.5) |
+| Batch column accept | Independent regex `/` or Polars `=`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--session` alone OK; refuse mix with identity flags |
-| Detail | Pending tab default; tabs: pending / accepted / equal / all matched |
+| Detail | Pending tab default; tabs: pending / accepted / equal / all matched; `a` cell / `A` column |
+| Keybindings | Mode-aware map in §15.7; visible footer; `?` help |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
 | Fatal before TUI | stderr + exit |
