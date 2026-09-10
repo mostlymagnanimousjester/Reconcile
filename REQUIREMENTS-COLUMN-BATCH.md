@@ -47,21 +47,22 @@ A session has one **column draft**: a set of comparable column names (non-key A�
 
 | Property | Rule |
 |---|---|
-| Default | Empty until a selector or a manual toggle adds members |
-| After any selector | Draft is the selector’s result, **all members included** (checked). That is the default. The user then unchecks exceptions |
-| Toggle | Each roster row (or a draft list) can be flipped in/out without re-running the selector |
-| Confirm | Column-accept every drafted column that currently has pending cell mismatches. Empty-pending drafted columns are no-ops and drop from needing accept |
-| Clear | Draft becomes empty; no accepts |
-| Not confirm | Leaving the power-user UI without confirm **PROVISIONAL:** keep the draft for this session until clear/confirm/quit |
+| Default | Empty |
+| After a selector Run | Draft := that Run’s hits with pending mismatches, **all checked**. Columns with zero pending are already reconciled (§8.4) and are **not** drafted |
+| Toggle | Each drafted (or roster) row can be flipped in/out without re-running the selector |
+| Confirm | Column-accept every **still-checked** drafted column (pending snapshots only). Then draft is empty |
+| Cancel | Draft becomes empty; no accepts |
+| In-flight | At most one selector result at a time. Confirm or Cancel before another regex or Polars Run (§9) |
+| Quit / `.recon.zip` | Draft is **not** saved. Load restores **confirmed** snapshots only. Draft starts empty |
 
-Draft is **not** an acceptance. Refresh does not turn draft into accepted.
+Draft is **not** an acceptance. Refresh does not convert draft into accepted.
 
-**PROVISIONAL refresh vs draft:**
+On refresh (in-session, last good state if refresh fails):
 
+- Selector is not re-run
 - Column gone from comparable set → drop from draft
-- New comparable column → not added unless the user runs a selector again
-- Selector is not re-run on refresh
-- Draft is **PROVISIONAL** for `.recon.zip` (lean: do not persist draft; persist only real acceptances)
+- Drafted column now has zero pending → drop from draft (already reconciled; nothing to accept)
+- New comparable column → not added
 
 ---
 
@@ -81,9 +82,10 @@ Draft checkboxes and Confirm exist for the batch path. They are not a gate in fr
 
 - Roster rows gain a draft checkbox (in/out of draft).
 - A command opens a **power select** panel: regex field, expression field (or two tabs), Run, resulting draft count.
-- After Run, roster is filtered or sorted to show drafted columns first **PROVISIONAL**, all drafted checked.
-- Footer or bar: `draft N` + **Confirm accept** + **Clear draft**.
-- Confirm is explicit (not implicit on leaving the panel).
+- After Run, drafted columns are checked. **PROVISIONAL:** full roster remains visible (not a drafted-only filter).
+- Footer or bar: `draft N` + **Confirm accept** + **Cancel**.
+- Confirm and Cancel are explicit.
+- While a draft is in flight, regex Run and Polars Run are **disabled** until Confirm or Cancel.
 
 Column **detail** does not run regex/Polars (those are multi-column). Detail “accept column” remains **immediate** (pending mismatches in that column only).
 
@@ -100,7 +102,7 @@ Column **detail** does not run regex/Polars (those are multi-column). Detail “
 
 Does not look at values. Does not include key columns or extras.
 
-How a second Run combines with an existing draft is still open (see §13 Q3, restated).
+Regex Run is refused (in-TUI, draft unchanged) if a draft is already in flight. Confirm or Cancel first. Same for Polars (§9).
 
 ---
 
@@ -137,7 +139,6 @@ Other examples (illustrative, not extra product):
 
 ```text
 (pl.col("b") == "").all()
-(pl.col("a") == pl.col("b")).all()
 (pl.col("b").str.len_chars() == 0).all()
 ```
 
@@ -154,35 +155,47 @@ If the expression returns non-boolean scalar: in-TUI error.
 
 This is still **selection**, not compare. A column can match `(pl.col("b") == "——").all()` because every *pending* B is `——` while A still has other text. Confirm then snapshots those pending pairs.
 
-### 8.4 Empty pending / empty matched
+### 8.4 Columns with zero pending rows
 
-If the row universe has **zero rows** for a column, `.all()` is true in Polars and `.any()` is false. **PROVISIONAL:** zero-row columns are **not** selected (treat as no evidence), so a vacant column is not drafted by accident.
+If a column has **no pending mismatches**, there is nothing to reconcile for that column. It is already complete (pending count 0).
 
----
+- Do **not** add it to the draft (including when Polars `.all()` would be vacuously true on zero rows).
+- Do **not** write accept snapshots (there are no pending cells).
+- It is already in the done state for remaining-work. This is **not** a standing “ignore column on future refresh” flag. After refresh, any **new** pending mismatches in that column are pending, per the main spec.
 
-## 9. Combining selectors and toggles
-
-**PROVISIONAL apply modes** when Run is pressed (need Q3):
-
-| Mode | Effect on draft |
-|---|---|
-| Replace | Draft := selector result (all checked) |
-| Add | Draft := draft ∪ result |
-| Restrict | Draft := draft ∩ result |
-
-v1 can ship **Replace only** if we do not want three modes yet. Toggle-after-replace covers “uncheck a few.” Add/Restrict matter when stacking regex then expression.
-
-Manual toggles always win until the next Run.
+Selectors only propose columns that currently have at least one pending mismatch.
 
 ---
 
-## 10. Conflicts with `REQUIREMENTS.md` (do not merge until resolved)
+## 9. Selectors are independent
 
-1. **Immediate column accept** on roster/detail stays as in the main spec. This feature **adds** a batch path; it does not replace one-column accept. Compatible.
-2. **Insights remain view-only** — this feature is a separate, explicit selector, not insight-accept. Compatible if we keep that split.
-3. **Polars-owns-data:** expression evaluation must stay in Polars (long/unpivot + group, or per-column frame). Do not pull full columns into Python to test the predicate. Roster checkboxes are a small name set; that part may be Python.
-4. **Session zip** today has acceptances, not a draft set. Persist-draft is still open (§13 Q5).
-5. **Footer** would gain `draft N` and Confirm/Clear when a draft is non-empty, in addition to pending counts.
+Regex and Polars are **separate operations**. They do not stack, union, or intersect.
+
+Flow:
+
+1. Draft is empty.
+2. User Runs **either** a name regex **or** a Polars expression.
+3. Hits with pending mismatches become the draft, all checked. User may uncheck individuals.
+4. User **Confirm** (accept pending snapshots) or **Cancel** (discard draft).
+5. Only then may they Run the other selector (or the same kind again).
+
+If a draft is in flight, a second Run is an in-TUI error (or the control is disabled): confirm or cancel the current selection first.
+
+Example: regex `^S` checks **Status**. Polars is not available until Status’s draft is Confirmed or Canceled. After that, `(pl.col("b") == "——").all()` is a new, empty-started operation.
+
+Manual uncheck is the only refinement inside one operation.
+
+---
+
+## 10. Conflicts with `REQUIREMENTS.md` (do not merge until asked)
+
+1. **Immediate column accept** on roster/detail stays. This feature **adds** a batch path. Compatible.
+2. **Insights remain view-only.** Compatible.
+3. **Polars-owns-data:** evaluate expressions in Polars. Roster checkboxes are a small name set.
+4. **Session zip:** no draft in the zip. Confirmed snapshots only. Compatible with current zip contents.
+5. **Footer:** `draft N` + Confirm + Cancel while a draft is in flight.
+
+Ready to merge when you say so. Remaining nits: expression must be a boolean scalar (proposed), `a`/`b` namespace (proposed), per-column vs one-batch undo after Confirm (lean: existing per-column undo), roster filter vs full list while drafting (lean: full roster, checks on).
 
 ---
 
@@ -193,9 +206,9 @@ On Confirm, for each name in the draft:
 - Run **accept entire column** as already defined: snapshot every **current pending** cell mismatch in that column.
 - Do not snapshot equals.
 - Do not snapshot accepted-already cells again.
-- Then clear those names from draft (they are no longer pending-mismatch columns, or still are if something failed — should not fail per column except keep last state on catastrophic error).
+- Then clear the draft.
 
-**PROVISIONAL:** Confirm is one undo granule or per-column undo still? Main spec undo is per column/cell. Lean: after confirm, undo is the existing per-column undo, not “undo whole batch as one.”
+Undo after Confirm is the existing **per-column** undo, not one undo for the whole batch.
 
 ---
 
@@ -208,47 +221,18 @@ On Confirm, for each name in the draft:
 | Single-column accept | Locked: immediate; pending mismatches only |
 | Batch confirm / expression universe | Locked: pending mismatches only |
 | Regex | Locked: Python `re.search`, case-sensitive, empty/invalid refused |
-| Polars on values as a selector | Locked as a selector type |
+| Polars on values as a selector | Locked |
+| Selectors | Locked: independent; Confirm or Cancel before the next Run |
+| Zip | Locked: restore confirmed snapshots only; draft never persisted |
+| Zero pending | Locked: already reconciled; not drafted; no snapshots; not a future-ignore |
 | Confirm = existing column-accept snapshots | Locked |
 | Expression namespace `a` / `b` only | Proposed |
 | Must reduce to boolean scalar | Proposed |
-| Second Run vs existing draft | Open — question restated in §13 |
-| Persist draft in zip | Open — question restated in §13 |
-| Zero-row `.all()` | Open — question restated in §13 |
 
 ---
 
-## 13. Remaining questions (restated)
+## 13. Remaining nits (optional)
 
-**Q3. You already have a draft, then you Run again**
-
-Suppose the roster has `Amount`, `Status`, `Note`, `Flag`.
-
-1. You run regex `^S` → draft checkboxes: **Status** checked.
-2. Without Confirm, you run `(pl.col("b") == "——").all()`, which matches **Amount** and **Flag**.
-
-What should the checkboxes be?
-
-- **Replace:** Amount and Flag checked; Status cleared (the last Run is the whole draft)
-- **Add:** Status, Amount, and Flag all checked (Runs pile up)
-- **Restrict:** nothing checked (only columns that were already drafted *and* matched this Run — here Status did not match the expression)
-
-Need one of these as the v1 default. Extra modes can wait.
-
-**Q5. You quit with a draft and never hit Confirm**
-
-You checked eight columns via regex, did not Confirm, and either quit or exported `.recon.zip`.
-
-Next launch (same zip or a new process): should those eight still be checked, or should the draft start empty and only **confirmed** accepts come back from the zip?
-
-This is only about the **checkboxes**. Real accepts already persist as snapshots.
-
-**Q6. A column has nothing pending**
-
-`Comment` has zero pending mismatches (every matched key already has A = B for `Comment`). You run `(pl.col("b") == "——").all()`.
-
-In Polars, “all rows satisfy X” on **zero rows** is True. So `Comment` would match even though there is nothing to accept.
-
-Should `Comment` be checked in the draft anyway, or should a column with zero pending rows be skipped even if the expression would be vacuously true?
-
-**Q7 (optional).** After Run, show the full roster with checkboxes, or only the drafted columns until Clear?
+- After Run, keep the full roster with checkboxes, or show only drafted columns until Confirm/Cancel?
+- Expression must return a boolean scalar (proposed yes).
+- Undo batch Confirm as many per-column undos (locked lean above) vs one bundle.
