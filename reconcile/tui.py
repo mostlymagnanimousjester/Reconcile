@@ -1,0 +1,1263 @@
+"""Textual TUI: roster home, pair-first detail, unmatched grids, extras."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Input, Static
+
+from reconcile.engine import Engine, InTuiError, Place, RosterRow
+from reconcile.errors import HardFail
+
+HELP = """\
+KEYS (same everywhere; type in a field when focused)
+
+Enter  drill (roster row, pair → cell step, modal Run)
+Esc    back (close modal → cancel draft → parent → Overview)
+Space  toggle focused column/cell in the current draft
+a      accept focused grain now
+A      accept entire column / all unmatched on this side
+y      confirm current draft
+u      undo focused grain   U  undo entire column (cell step)
+r      refresh (re-read live files; last good state on failure)
+.      repeat last pair as a new draft
+/      regex column draft (roster)     =  Polars selector (side A|B, series s)
+c      context-column picker (cell step)
+n / p  next / previous page
+e      export .recon.zip     o  open zip (refused while a draft is in flight)
+q      quit (discards unconfirmed draft)
+?      this help
+
+This TUI never writes, opens, or copies into the source files.
+Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
+Insights are labeled speculative and never change remaining counts.
+"""
+
+CSS = """
+Screen {
+    background: #1a120c;
+    color: #f4efe4;
+}
+#banner {
+    background: #3a1510;
+    color: #ffcc99;
+    text-style: bold;
+    height: auto;
+    padding: 0 1;
+}
+#banner.hidden {
+    display: none;
+}
+#filter-row {
+    height: 3;
+    padding: 0 1;
+}
+#filter-row Input {
+    background: #2a2218;
+    color: #f4efe4;
+    border: tall #6a5a40;
+}
+#work {
+    height: 1fr;
+}
+#pane {
+    height: auto;
+    max-height: 8;
+    padding: 0 1;
+    color: #f4efe4;
+    background: #22180f;
+}
+#footer {
+    dock: bottom;
+    height: auto;
+    min-height: 1;
+    padding: 0 1;
+    background: #2a1a10;
+    color: #ffe566;
+    text-style: bold;
+}
+#tabs {
+    height: 3;
+    padding: 0 1;
+}
+DataTable {
+    height: 1fr;
+}
+DataTable > .datatable--cursor {
+    background: #5a4030;
+    color: #fff8e8;
+    text-style: reverse;
+}
+.lever {
+    text-style: bold underline;
+    color: #ffe566;
+}
+.pending {
+    text-style: bold;
+    color: #ffe566;
+}
+.accepted {
+    color: #8a8070;
+}
+.returned {
+    text-style: reverse;
+    color: #ffaa33;
+}
+.error {
+    text-style: bold;
+    color: #ff5533;
+}
+#modal {
+    width: 80;
+    height: auto;
+    max-height: 90%;
+    background: #2a1c12;
+    border: heavy #ffaa33;
+    padding: 1 2;
+}
+#modal Input {
+    margin: 1 0;
+}
+#help {
+    height: auto;
+    max-height: 32;
+    padding: 1;
+}
+.dim {
+    color: #8a8070;
+}
+"""
+
+
+def _diff_text(label: str, value: str, other: str) -> Text:
+    t = Text()
+    t.append(f"{label} ", style="bold")
+    i = 0
+    n = min(len(value), len(other))
+    while i < n and value[i] == other[i]:
+        i += 1
+    t.append(value[:i])
+    if i < len(value):
+        t.append(value[i], style="reverse bold")
+        t.append(value[i + 1 :])
+    elif len(value) != len(other):
+        t.append("∎", style="reverse bold")
+    return t
+
+
+class HelpModal(ModalScreen[None]):
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("question_mark", "close", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static(HELP, id="help")
+            yield Static("Esc to close", classes="dim")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class PathModal(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "ok", "OK", priority=True),
+    ]
+
+    def __init__(self, title: str, placeholder: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static(self.title_text)
+            yield Input(placeholder=self.placeholder, id="path")
+            yield Static("Enter confirm · Esc cancel", classes="dim")
+
+    def on_mount(self) -> None:
+        self.query_one("#path", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_ok(self) -> None:
+        self.dismiss(self.query_one("#path", Input).value.strip() or None)
+
+
+class RegexModal(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "ok", "Run", priority=True),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static("Name regex (comparable columns only). Python re.search, case-sensitive.")
+            yield Input(placeholder="(?i)status|flag", id="pat")
+            yield Static("Enter Run · Esc cancel without changing the draft", classes="dim")
+
+    def on_mount(self) -> None:
+        self.query_one("#pat", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_ok(self) -> None:
+        self.dismiss(self.query_one("#pat", Input).value)
+
+
+class PolarsModal(ModalScreen[tuple[str, str] | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "ok", "Run", priority=True),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static("Polars selector on pending values as series s. Choose exactly one side.")
+            with Horizontal():
+                yield Button("A", id="side-a")
+                yield Button("B", id="side-b")
+            yield Input(placeholder='(pl.col("s") == "——").all()', id="expr")
+            yield Static("Enter Run · Esc cancel. Run is refused until a side is selected.", classes="dim")
+        self._side: str | None = None
+
+    def on_mount(self) -> None:
+        self._side = None
+        self.query_one("#expr", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "side-a":
+            self._side = "A"
+            event.button.label = "[A]"
+            self.query_one("#side-b", Button).label = "B"
+        elif event.button.id == "side-b":
+            self._side = "B"
+            event.button.label = "[B]"
+            self.query_one("#side-a", Button).label = "A"
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_ok(self) -> None:
+        if self._side is None:
+            return
+        self.dismiss((self._side, self.query_one("#expr", Input).value))
+
+
+class ContextModal(ModalScreen[list[str] | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "ok", "OK"),
+        Binding("space", "toggle", "Toggle"),
+        Binding("y", "ok", "OK"),
+    ]
+
+    def __init__(self, names: list[str], selected: set[str]) -> None:
+        super().__init__()
+        self.names = names
+        self.selected = set(selected)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static("Context columns (intersection, not keys, not this column). Space toggle.")
+            table: DataTable = DataTable(cursor_type="row", id="ctx")
+            table.add_columns("on", "name")
+            yield table
+            yield Static("Enter/y confirm · Esc cancel", classes="dim")
+
+    def on_mount(self) -> None:
+        self._fill()
+        self.query_one("#ctx", DataTable).focus()
+
+    def _fill(self) -> None:
+        table = self.query_one("#ctx", DataTable)
+        table.clear()
+        for n in self.names:
+            mark = "[x]" if n in self.selected else "[ ]"
+            table.add_row(mark, n, key=n)
+
+    def _name(self) -> str | None:
+        table = self.query_one("#ctx", DataTable)
+        if not self.names:
+            return None
+        row = table.get_row_at(table.cursor_row)
+        return str(row[1])
+
+    def action_toggle(self) -> None:
+        name = self._name()
+        if not name:
+            return
+        if name in self.selected:
+            self.selected.discard(name)
+        else:
+            self.selected.add(name)
+        row = self.query_one("#ctx", DataTable).cursor_row
+        self._fill()
+        self.query_one("#ctx", DataTable).move_cursor(row=row)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_ok(self) -> None:
+        self.dismiss(sorted(self.selected))
+
+
+class ReconcileApp(App[int]):
+    CSS = CSS
+    TITLE = "Reconcile"
+    AUTO_FOCUS = "#grid"
+    BINDINGS = [
+        Binding("enter", "drill", "Enter", show=False, priority=True),
+        Binding("escape", "back", "Back", show=False, priority=True),
+        Binding("space", "toggle", "Toggle", show=False),
+        Binding("a", "accept", "Accept", show=False),
+        Binding("A", "accept_all", "Accept all", show=False),
+        Binding("y", "confirm", "Confirm", show=False),
+        Binding("u", "undo", "Undo", show=False),
+        Binding("U", "undo_column", "Undo column", show=False),
+        Binding("r", "refresh", "Refresh", show=False),
+        Binding("n", "page_next", "Next", show=False),
+        Binding("p", "page_prev", "Prev", show=False),
+        Binding("e", "export", "Export", show=False),
+        Binding("o", "open_zip", "Open", show=False),
+        Binding("q", "quit_app", "Quit", show=False),
+        Binding("c", "context", "Context", show=False),
+        Binding("slash", "regex", "Regex", show=False),
+        Binding("equals", "polars", "Polars", show=False),
+        Binding("full_stop", "repeat_pair", "Repeat", show=False),
+        Binding("question_mark", "help", "Help", show=False),
+        Binding("question", "help", "Help", show=False),
+        Binding(".", "repeat_pair", "Repeat", show=False),
+        Binding("/", "regex", "Regex", show=False),
+        Binding("=", "polars", "Polars", show=False),
+        Binding("?", "help", "Help", show=False),
+    ]
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__()
+        self.engine = engine
+        self._roster_index = 0
+        self._table_keys: list[Any] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="banner", classes="hidden")
+        with Horizontal(id="filter-row"):
+            yield Static("filter ", classes="dim")
+            yield Input(placeholder="substring on name (always on; / is regex draft)", id="filter")
+        yield Vertical(id="work")
+        yield Static("", id="pane")
+        yield Static("", id="footer")
+
+    def on_mount(self) -> None:
+        if self.engine.place.screen == "roster" or not self.engine.place.screen:
+            self.engine.place.screen = "roster"
+        filt = self.query_one("#filter", Input)
+        filt.value = self.engine.place.roster_filter
+        self.render_all()
+        self.call_after_refresh(self.set_focus_work)
+
+    def _in_input(self) -> bool:
+        focused = self.focused
+        if not isinstance(focused, Input):
+            return False
+        if focused.id == "filter" and self.engine.place.screen != "roster":
+            return False
+        return True
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._in_input() and action not in {"back", "drill"}:
+            return False
+        return True
+
+    def set_error(self, msg: str | None) -> None:
+        banner = self.query_one("#banner", Static)
+        if msg:
+            banner.update(msg if msg.startswith("ERROR") else f"ERROR: {msg}")
+            banner.set_class(False, "hidden")
+            banner.add_class("error")
+        else:
+            banner.update("")
+            banner.set_class(True, "hidden")
+        self.engine.tui_error = msg
+
+    def set_focus_work(self) -> None:
+        if self.query("#grid"):
+            self.query_one("#grid").focus()
+        elif self.query("#filter-row"):
+            pass
+
+    def render_all(self) -> None:
+        self._sync_filter_visibility()
+        self._render_work()
+        self._render_pane()
+        self._render_footer()
+        if self.engine.tui_error:
+            self.set_error(self.engine.tui_error)
+        self.call_after_refresh(self.set_focus_work)
+
+    def _sync_filter_visibility(self) -> None:
+        row = self.query_one("#filter-row")
+        row.display = self.engine.place.screen == "roster"
+
+    def _render_footer(self) -> None:
+        e = self.engine
+        p = e.place
+        bits = [
+            f"pending {e.pending_total()}",
+            f"cells {e.pending_cells_n()}",
+            f"A-only {e.pending_a_only_n()}",
+            f"B-only {e.pending_b_only_n()}",
+            f"extras {e.pending_extras_n()}",
+        ]
+        if e.pending_total() == 0:
+            bits[0] = "pending 0"
+        if e.column_draft:
+            bits.append(f"draft {len(e.column_draft)}  y confirm  Esc cancel  Space toggle")
+        elif e.pair_draft_keys is not None:
+            bits.append(f"draft {len(e.pair_draft_keys)}  y confirm  Esc cancel  Space toggle")
+        if p.screen == "pair_list":
+            bits.append("pair list")
+        elif p.screen == "cell_step":
+            bits.append("cell step")
+        if p.page is not None and p.screen in {
+            "pair_list",
+            "cell_step",
+            "accepted",
+            "equal",
+            "all_matched",
+            "a_only",
+            "b_only",
+        }:
+            bits.append(f"page {p.page + 1}")
+        if e.last_refresh_delta:
+            bits.append(e.last_refresh_delta.message)
+        spec = ""
+        if p.screen in ("pair_list", "cell_step") and p.pair_val_a is not None:
+            tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
+            if tags:
+                spec = "  " + ", ".join(tags)
+        hint = "  ? help  q quit"
+        self.query_one("#footer", Static).update(" · ".join(bits) + spec + hint)
+
+    def _render_pane(self) -> None:
+        p = self.engine.place
+        pane = self.query_one("#pane", Static)
+        if p.screen == "cell_step" and p.pair_val_a is not None:
+            va, vb = p.pair_val_a, p.pair_val_b or ""
+            t = Text()
+            t.append_text(_diff_text("A:", va, vb))
+            t.append("\n")
+            t.append_text(_diff_text("B:", vb, va))
+            if p.column:
+                ctx = self.engine.context_values(p.focused_key or (), p.column)
+                for name, a, b in ctx:
+                    t.append(f"\n{name}  A|{a}  B|{b}")
+            pane.update(t)
+        elif p.screen == "overview":
+            pane.update("")
+        else:
+            pane.update("")
+
+    def _render_work(self) -> None:
+        work = self.query_one("#work", Vertical)
+        for child in list(work.children):
+            child.remove()
+        screen = self.engine.place.screen
+        if screen == "roster":
+            work.mount(self._roster_table())
+        elif screen == "overview":
+            work.mount(self._overview())
+        elif screen == "pair_list":
+            work.mount(self._pair_view())
+        elif screen in ("cell_step", "accepted", "equal", "all_matched"):
+            work.mount(self._cell_grid())
+        elif screen == "a_only":
+            work.mount(self._unmatched("A"))
+        elif screen == "b_only":
+            work.mount(self._unmatched("B"))
+        elif screen == "extras":
+            work.mount(self._extras())
+        else:
+            work.mount(Static("Empty."))
+
+    def _roster_table(self) -> DataTable:
+        table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
+        table.add_columns(" ", "kind", "name", "side", "pending", "top-pair %", "accepted", "equal", "cat", "speculative")
+        rows = self.engine.roster(self.engine.place.roster_filter)
+        self._table_keys = []
+        if not rows:
+            table.add_row("", "", "(no rows — empty filter or no remaining-work kinds)", "—", "0", "—", "0", "—", "—", "")
+            self._table_keys = [None]
+            return table
+        for i, r in enumerate(rows):
+            check = " "
+            if self.engine.column_draft:
+                if r.kind == "column":
+                    check = "[x]" if r.name in self.engine.column_draft else "[ ]"
+            name = r.name
+            styles = []
+            if i == 0:
+                styles.append("bold underline")
+            if r.returned:
+                styles.append("reverse")
+            if r.pending == 0:
+                styles.append("dim")
+            label = Text(name, style=" ".join(styles) if styles else "")
+            key = (r.kind, r.name, r.side)
+            table.add_row(
+                check,
+                r.kind,
+                label,
+                r.side,
+                str(r.pending),
+                r.top_pair_pct,
+                str(r.accepted),
+                r.equal,
+                r.categorical,
+                r.speculative,
+                key=str(key),
+            )
+            self._table_keys.append(r)
+        idx = 0
+        focus_name = self.engine.place.focused_name
+        extra = (self.engine.place.extra_side, self.engine.place.extra_name)
+        for i, r in enumerate(rows):
+            if focus_name and r.name == focus_name:
+                if r.kind == "extra" and extra[0] and r.side != extra[0]:
+                    continue
+                idx = i
+                break
+        table.move_cursor(row=idx)
+        return table
+
+    def _overview(self) -> Static:
+        e = self.engine
+        lines = ["OVERVIEW (counts — not home)", ""]
+        lines.extend(e.identity_lines())
+        lines += [
+            "",
+            f"matched keys: {e.matched_key_count()}",
+            f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
+            f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
+            f"extras pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
+            f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
+            f"remaining pending total {e.pending_total()}",
+            "",
+            "Enter on A-only / B-only / Schema extras below, or Esc back to the roster.",
+            "A-only keys · B-only keys · Schema extras (same lists as roster Enter)",
+        ]
+        body = "\n".join(lines)
+        # compact entry table
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        table.add_columns("entry")
+        table.add_row("A-only keys", key="a_only")
+        table.add_row("B-only keys", key="b_only")
+        table.add_row("Schema extras", key="extras")
+        return Vertical(Static(body), table)
+
+    def _tab_bar(self, current: str) -> Horizontal:
+        labels = [
+            ("pending", "Pending"),
+            ("accepted", "Accepted"),
+            ("equal", "Equal"),
+            ("all_matched", "All matched"),
+        ]
+        buttons = [
+            Button(f"[{label}]" if key == current else label, id=f"tab-{key}")
+            for key, label in labels
+        ]
+        return Horizontal(*buttons, id="tabs")
+
+    def _pair_view(self) -> Vertical:
+        col = self.engine.place.column or ""
+        if not col:
+            return Vertical(Static("No column."))
+        body = self._pair_matrix(col) if self.engine.is_categorical(col) else self._pair_list(col)
+        return Vertical(Static(f"COLUMN {col}"), self._tab_bar("pending"), body)
+
+    def _pair_list(self, col: str) -> DataTable:
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        table.add_columns("A", "B", "pending", "speculative")
+        recs, page, pages = self.engine.pair_page(col, self.engine.place.page)
+        self.engine.place.page = page
+        self._table_keys = []
+        if not recs:
+            table.add_row("(no pending pairs)", "", "0", "")
+            self._table_keys = [None]
+            return table
+        for rec in recs:
+            va, vb = rec["val_a"], rec["val_b"]
+            tags = ", ".join(self.engine.cell_insights(va, vb))
+            returned = any(
+                c == col for (_k, c) in self.engine.returned_cells
+            )
+            label_a = Text(va, style="reverse" if returned else "bold")
+            table.add_row(label_a, vb, str(rec["n"]), tags)
+            self._table_keys.append(rec)
+        return table
+
+    def _pair_matrix(self, col: str) -> DataTable:
+        a_vals, b_vals, matrix = self.engine.pair_matrix(col)
+        table: DataTable = DataTable(cursor_type="cell", id="grid")
+        table.add_columns("A \\ B", *[v if v else "(empty)" for v in b_vals] or ["(no B)"])
+        self._table_keys = []
+        if not a_vals or not b_vals:
+            table.add_row("(no pending pairs)")
+            self._table_keys = [None]
+            return table
+        for i, a in enumerate(a_vals):
+            table.add_row(a if a else "(empty)", *[str(n) for n in matrix[i]])
+            self._table_keys.append(a)
+        self._matrix_b = b_vals
+        return table
+
+    def _cell_grid(self) -> Vertical:
+        col = self.engine.place.column or ""
+        tab = self.engine.place.view_tab
+        title = {
+            "pending": "Pending (cell step)",
+            "accepted": "Accepted",
+            "equal": "Equal",
+            "all_matched": "All matched",
+        }.get(tab, tab)
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        headers = [*self.engine.keys, "A", "B", "speculative"]
+        table.add_columns(*headers)
+        self._table_keys = []
+        if self.engine.place.screen == "cell_step":
+            va, vb = self.engine.place.pair_val_a or "", self.engine.place.pair_val_b or ""
+            recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.engine.place.page)
+            self.engine.place.page = page
+            draft = self.engine.pair_draft_keys
+            if not recs:
+                table.add_row(*([""] * (len(self.engine.keys) + 2)), "(no pending cells for this pair)")
+                self._table_keys = [None]
+            else:
+                for rec in recs:
+                    key = self.engine.key_of(rec)
+                    mark = ""
+                    if draft is not None:
+                        mark = "[x] " if key in draft else "[ ] "
+                    returned = (key, col) in self.engine.returned_cells
+                    tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
+                    key_cells = [str(rec[k]) for k in self.engine.keys]
+                    va_t = Text(
+                        mark + rec["val_a"],
+                        style="reverse" if returned or (draft and key in draft) else "bold",
+                    )
+                    table.add_row(*key_cells, va_t, rec["val_b"], tags)
+                    self._table_keys.append(rec)
+        else:
+            recs, page, pages = self.engine.cells_for_tab(col, tab, self.engine.place.page)
+            self.engine.place.page = page
+            if not recs:
+                table.add_row(*([""] * (len(self.engine.keys) + 2)), "(empty)")
+                self._table_keys = [None]
+            else:
+                for rec in recs:
+                    tags = ""
+                    if rec.get("val_a") != rec.get("val_b"):
+                        tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
+                    key_cells = [str(rec[k]) for k in self.engine.keys]
+                    style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
+                    table.add_row(*key_cells, Text(str(rec["val_a"]), style=style), str(rec["val_b"]), tags)
+                    self._table_keys.append(rec)
+        tab_current = tab if self.engine.place.screen != "cell_step" else "pending"
+        return Vertical(Static(f"COLUMN {col}   {title}"), self._tab_bar(tab_current), table)
+
+    def _unmatched(self, side: str) -> Vertical:
+        recs, page, pages = self.engine.unmatched_page(side, self.engine.place.page)
+        self.engine.place.page = page
+        frame = self.engine.a_only if side == "A" else self.engine.b_only
+        cols = list(frame.columns)
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        table.add_columns("st", *cols)
+        self._table_keys = []
+        if not recs:
+            table.add_row(" ", *([""] * len(cols) or ["(none)"]))
+            self._table_keys = [None]
+        else:
+            for rec in recs:
+                st = "acc" if rec.get("_accepted") else "pend"
+                style = "dim" if rec.get("_accepted") else "bold"
+                if rec.get("_returned"):
+                    style = "reverse"
+                vals = [Text(str(rec[c]), style=style) for c in cols]
+                table.add_row(st, *vals)
+                self._table_keys.append(rec)
+        return Vertical(
+            Static(f"{side}-only keys  (raw columns on this side, including extras)"),
+            table,
+        )
+
+    def _extras(self) -> DataTable:
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        table.add_columns("side", "name", "pending", "speculative")
+        rows = self.engine.extras_rows()
+        self._table_keys = []
+        if not rows:
+            table.add_row("—", "(no extras)", "0", "")
+            self._table_keys = [None]
+            return table
+        for rec in rows:
+            style = "reverse" if rec["returned"] else ("bold" if rec["pending"] else "dim")
+            table.add_row(
+                rec["side"],
+                Text(rec["name"], style=style),
+                str(rec["pending"]),
+                ", ".join(rec["speculative"]),
+            )
+            self._table_keys.append(rec)
+        return table
+
+    def _focused_roster(self) -> RosterRow | None:
+        if not self._table_keys:
+            return None
+        table = self.query_one("#grid", DataTable)
+        i = table.cursor_row
+        if i < 0 or i >= len(self._table_keys):
+            return None
+        row = self._table_keys[i]
+        return row if isinstance(row, RosterRow) else None
+
+    def _focused_rec(self) -> dict[str, Any] | None:
+        if not self._table_keys:
+            return None
+        table = self.query_one("#grid", DataTable)
+        i = table.cursor_row
+        if i < 0 or i >= len(self._table_keys):
+            return None
+        rec = self._table_keys[i]
+        return rec if isinstance(rec, dict) else None
+
+    def _focused_pair(self) -> tuple[str, str] | None:
+        p = self.engine.place
+        if p.column and self.engine.is_categorical(p.column) and self.query("#grid"):
+            table = self.query_one("#grid", DataTable)
+            if table.cursor_type == "cell" and getattr(self, "_matrix_b", None):
+                row, col = table.cursor_row, table.cursor_column
+                if row < 0 or row >= len(self._table_keys):
+                    return None
+                a = self._table_keys[row]
+                if not isinstance(a, str):
+                    return None
+                if col <= 0 or col > len(self._matrix_b):
+                    return None
+                return a, self._matrix_b[col - 1]
+        rec = self._focused_rec()
+        if rec and "val_a" in rec:
+            return rec["val_a"], rec["val_b"]
+        return None
+
+    def action_help(self) -> None:
+        self.push_screen(HelpModal())
+
+    def action_quit_app(self) -> None:
+        self.engine.cancel_drafts()
+        code = 0 if self.engine.pending_total() == 0 else 1
+        self.exit(code)
+
+    def action_back(self) -> None:
+        if self._in_input():
+            self.set_focus_work()
+            self.query_one("#grid").focus() if self.query("#grid") else None
+            return
+        e = self.engine
+        p = e.place
+        if p.screen == "cell_step":
+            e.pair_draft_keys = None
+            e.pair_draft_col = None
+            e.place = Place(
+                screen="pair_list",
+                column=p.column,
+                roster_filter=p.roster_filter,
+                last_pair=p.last_pair,
+                view_tab="pending",
+            )
+        elif e.column_draft and p.screen == "roster":
+            e.column_draft = set()
+        elif p.screen in ("pair_list", "a_only", "b_only", "extras", "accepted", "equal", "all_matched"):
+            e.place = Place(
+                screen="roster",
+                roster_filter=p.roster_filter,
+                last_pair=p.last_pair,
+                focused_name=p.column or p.focused_name,
+            )
+        elif p.screen == "roster":
+            e.place = Place(screen="overview", roster_filter=p.roster_filter, last_pair=p.last_pair)
+        self.render_all()
+        self.set_focus_work()
+
+    def action_drill(self) -> None:
+        if self._in_input():
+            # Enter in filter: keep filter, return to list
+            self.engine.place.roster_filter = self.query_one("#filter", Input).value
+            self.set_focus_work()
+            self.render_all()
+            self.set_focus_work()
+            return
+        e = self.engine
+        p = e.place
+        try:
+            if p.screen == "roster":
+                row = self._focused_roster()
+                if not row:
+                    return
+                if row.kind == "column":
+                    e.place = Place(
+                        screen="pair_list",
+                        column=row.name,
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                        focused_name=row.name,
+                    )
+                elif row.kind == "A-only":
+                    e.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                elif row.kind == "B-only":
+                    e.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                elif row.kind == "extra":
+                    e.place = Place(
+                        screen="extras",
+                        extra_side=row.side,
+                        extra_name=row.name,
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                    )
+            elif p.screen == "overview":
+                table = self.query_one("#grid", DataTable)
+                key = table.get_row_at(table.cursor_row)
+                label = str(key[0])
+                if "A-only" in label:
+                    e.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                elif "B-only" in label:
+                    e.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                else:
+                    e.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            elif p.screen == "pair_list":
+                pair = self._focused_pair()
+                if not pair or not p.column:
+                    return
+                n = e.start_pair_draft(p.column, pair[0], pair[1])
+                if n == 0:
+                    self.set_error("ERROR: that pair has no pending cells")
+                    return
+                e.place = Place(
+                    screen="cell_step",
+                    column=p.column,
+                    pair_val_a=pair[0],
+                    pair_val_b=pair[1],
+                    roster_filter=p.roster_filter,
+                    last_pair=(p.column, pair[0], pair[1]),
+                    view_tab="pending",
+                    focused_key=next(iter(e.pair_draft_keys)) if e.pair_draft_keys else None,
+                )
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            self._render_footer()
+            return
+        self.render_all()
+        self.set_focus_work()
+
+    def action_toggle(self) -> None:
+        e = self.engine
+        if e.place.screen == "roster":
+            row = self._focused_roster()
+            if row and row.kind == "column":
+                e.toggle_column_draft(row.name)
+        elif e.place.screen == "cell_step":
+            rec = self._focused_rec()
+            if rec:
+                e.toggle_pair_cell(e.key_of(rec))
+        self.render_all()
+        self.set_focus_work()
+
+    def action_accept(self) -> None:
+        e = self.engine
+        p = e.place
+        try:
+            if p.screen == "roster":
+                row = self._focused_roster()
+                if not row:
+                    return
+                if row.kind == "column":
+                    e.accept_column(row.name)
+                    e.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "A-only":
+                    e.accept_all_unmatched("A")
+                    e.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "B-only":
+                    e.accept_all_unmatched("B")
+                    e.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "extra":
+                    e.accept_extra(row.side, row.name)
+                    e.place = e.next_lever_place(
+                        Place(screen="extras", extra_side=row.side, extra_name=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    )
+            elif p.screen == "pair_list":
+                pair = self._focused_pair()
+                if pair and p.column:
+                    e.accept_pair(p.column, pair[0], pair[1])
+                    e.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=(p.column, pair[0], pair[1])))
+            elif p.screen == "cell_step":
+                rec = self._focused_rec()
+                if rec and p.column:
+                    key = e.key_of(rec)
+                    e.accept_cell(key, p.column, rec["val_a"], rec["val_b"])
+                    nxt = e.next_pending_cell_in_pair(key)
+                    e.place.focused_key = nxt
+            elif p.screen == "a_only":
+                rec = self._focused_rec()
+                if rec:
+                    key = e.key_of(rec)
+                    e.accept_unmatched("A", key)
+                    e.place.focused_key = e.next_pending_key_in_grid("A", key)
+            elif p.screen == "b_only":
+                rec = self._focused_rec()
+                if rec:
+                    key = e.key_of(rec)
+                    e.accept_unmatched("B", key)
+                    e.place.focused_key = e.next_pending_key_in_grid("B", key)
+            elif p.screen == "extras":
+                rec = self._focused_rec()
+                if rec:
+                    e.accept_extra(rec["side"], rec["name"])
+                    e.place = e.next_lever_place(p)
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            return
+        self.render_all()
+        self.set_focus_work()
+
+    def action_accept_all(self) -> None:
+        e = self.engine
+        p = e.place
+        try:
+            if p.screen == "roster":
+                row = self._focused_roster()
+                if not row:
+                    return
+                if row.kind == "column":
+                    e.accept_column(row.name)
+                    e.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "A-only":
+                    e.accept_all_unmatched("A")
+                    e.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "B-only":
+                    e.accept_all_unmatched("B")
+                    e.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+            elif p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
+                if p.column:
+                    if e.pair_draft_keys is not None:
+                        e.pair_draft_keys = None
+                    e.accept_column(p.column)
+                    e.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
+            elif p.screen == "a_only":
+                e.accept_all_unmatched("A")
+                e.place = e.next_lever_place(p)
+            elif p.screen == "b_only":
+                e.accept_all_unmatched("B")
+                e.place = e.next_lever_place(p)
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            return
+        self.render_all()
+        self.set_focus_work()
+
+    def action_confirm(self) -> None:
+        e = self.engine
+        try:
+            if e.column_draft:
+                e.confirm_column_draft()
+                e.place = e.next_lever_place(e.place)
+            elif e.pair_draft_keys is not None:
+                col = e.pair_draft_col
+                e.confirm_pair_draft()
+                e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=e.place.last_pair))
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            return
+        self.render_all()
+        self.set_focus_work()
+
+    def action_undo(self) -> None:
+        e = self.engine
+        p = e.place
+        if p.screen == "roster":
+            row = self._focused_roster()
+            if not row:
+                return
+            if row.kind == "column":
+                e.undo_column(row.name)
+            elif row.kind == "A-only":
+                e.undo_unmatched("A")
+            elif row.kind == "B-only":
+                e.undo_unmatched("B")
+            elif row.kind == "extra":
+                e.undo_extra(row.side, row.name)
+        elif p.screen == "pair_list":
+            pair = self._focused_pair()
+            if pair and p.column:
+                e.undo_pair(p.column, pair[0], pair[1])
+        elif p.screen == "cell_step":
+            rec = self._focused_rec()
+            if rec and p.column:
+                e.undo_cell(e.key_of(rec), p.column)
+        elif p.screen == "a_only":
+            rec = self._focused_rec()
+            if rec:
+                e.undo_unmatched("A", e.key_of(rec))
+        elif p.screen == "b_only":
+            rec = self._focused_rec()
+            if rec:
+                e.undo_unmatched("B", e.key_of(rec))
+        elif p.screen == "extras":
+            rec = self._focused_rec()
+            if rec:
+                e.undo_extra(rec["side"], rec["name"])
+        self.render_all()
+        self.set_focus_work()
+
+    def action_undo_column(self) -> None:
+        if self.engine.place.column:
+            self.engine.undo_column(self.engine.place.column)
+            self.render_all()
+            self.set_focus_work()
+
+    def action_refresh(self) -> None:
+        try:
+            self.engine.refresh()
+            self.engine.prune_place()
+            p = self.engine.place
+            still = True
+            if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
+                if not p.column or p.column not in self.engine.comparable:
+                    still = False
+            if p.screen == "cell_step" and self.engine.pair_draft_keys is None:
+                still = False
+                self.engine.place.screen = "pair_list"
+            if not still:
+                self.engine.place = self.engine.next_lever_place(p)
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+        self.render_all()
+        self.set_focus_work()
+
+    def action_page_next(self) -> None:
+        self.engine.place.page += 1
+        self.render_all()
+        self.set_focus_work()
+
+    def action_page_prev(self) -> None:
+        self.engine.place.page = max(0, self.engine.place.page - 1)
+        self.render_all()
+        self.set_focus_work()
+
+    def action_regex(self) -> None:
+        if self.engine.place.screen != "roster":
+            return
+        if self.engine.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+
+        def done(pat: str | None) -> None:
+            if pat is None:
+                return
+            try:
+                self.engine.start_regex_draft(pat)
+                self.set_error(None)
+            except InTuiError as exc:
+                self.set_error(exc.message)
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(RegexModal(), done)
+
+    def action_polars(self) -> None:
+        if self.engine.place.screen != "roster":
+            return
+        if self.engine.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+
+        def done(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            side, expr = result
+            try:
+                self.engine.start_polars_draft(side, expr)
+                self.set_error(None)
+            except InTuiError as exc:
+                self.set_error(exc.message)
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(PolarsModal(), done)
+
+    def action_repeat_pair(self) -> None:
+        e = self.engine
+        if e.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+        lp = e.place.last_pair
+        if not lp:
+            self.set_error("ERROR: no last pair to repeat")
+            self.render_all()
+            return
+        col, va, vb = lp
+        if col not in e.comparable:
+            e.place = e.next_lever_place(e.place)
+            self.render_all()
+            return
+        try:
+            n = e.start_pair_draft(col, va, vb)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            self.render_all()
+            return
+        if n == 0:
+            e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=lp))
+        else:
+            e.place = Place(
+                screen="cell_step",
+                column=col,
+                pair_val_a=va,
+                pair_val_b=vb,
+                roster_filter=e.place.roster_filter,
+                last_pair=lp,
+                view_tab="pending",
+            )
+        self.set_error(None)
+        self.render_all()
+        self.set_focus_work()
+
+    def action_context(self) -> None:
+        e = self.engine
+        if e.place.screen != "cell_step" or not e.place.column:
+            return
+        col = e.place.column
+        names = [n for n in e.context_pool if n != col]
+        selected = set(e.context_columns.get(col, []))
+
+        def done(result: list[str] | None) -> None:
+            if result is None:
+                return
+            e.context_columns[col] = result
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(ContextModal(names, selected), done)
+
+    def action_export(self) -> None:
+        def done(path: str | None) -> None:
+            if not path:
+                return
+            try:
+                self.engine.export_zip(path)
+                self.set_error(None)
+                self.query_one("#banner", Static).update(f"Exported {path}")
+                self.query_one("#banner", Static).set_class(False, "hidden")
+            except Exception as exc:
+                self.set_error(f"ERROR: export failed: {exc}")
+            self.render_all()
+
+        self.push_screen(PathModal("Export .recon.zip (confirmed snapshots only; no drafts)", "job.recon.zip"), done)
+
+    def action_open_zip(self) -> None:
+        if self.engine.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+
+        def done(path: str | None) -> None:
+            if not path:
+                return
+            try:
+                new = Engine.from_session(path)
+            except (HardFail, InTuiError) as exc:
+                msg = getattr(exc, "message", str(exc))
+                self.set_error(f"ERROR: {msg}" if not str(msg).startswith("ERROR") else str(msg))
+                self.render_all()
+                return
+            except Exception as exc:
+                self.set_error(f"ERROR: {exc}")
+                self.render_all()
+                return
+            self.engine = new
+            self.set_error(None)
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(PathModal("Open .recon.zip (live-rereads sources)", "job.recon.zip"), done)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if self.engine.place.screen in {"roster", "overview", "pair_list"}:
+            event.stop()
+            self.action_drill()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if not bid.startswith("tab-"):
+            return
+        tab = bid[4:]
+        p = self.engine.place
+        if not p.column:
+            return
+        if tab == "pending":
+            if p.screen == "cell_step":
+                self.engine.pair_draft_keys = None
+                self.engine.pair_draft_col = None
+            self.engine.place.view_tab = "pending"
+            self.engine.place.screen = "pair_list"
+        else:
+            if p.screen == "cell_step":
+                self.engine.pair_draft_keys = None
+                self.engine.pair_draft_col = None
+            self.engine.place.view_tab = tab
+            self.engine.place.screen = tab  # accepted / equal / all_matched
+        event.stop()
+        self.render_all()
+        self.set_focus_work()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "filter":
+            self.engine.place.roster_filter = event.value
+            # re-render roster list only when on roster; keep typing focus
+            if self.engine.place.screen == "roster":
+                # don't steal focus
+                work = self.query_one("#work", Vertical)
+                focused = self.focused
+                self._render_work()
+                self._render_footer()
+                if isinstance(focused, Input):
+                    event.input.focus()
+
+    def on_key(self, event) -> None:
+        # Tab switching on column detail: 1 pending 2 accepted 3 equal 4 all
+        if self._in_input():
+            return
+        p = self.engine.place
+        if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched") and event.character in "1234":
+            mapping = {"1": ("pending", "pair_list"), "2": ("accepted", "accepted"), "3": ("equal", "equal"), "4": ("all_matched", "all_matched")}
+            tab, screen = mapping[event.character]
+            if e_col := p.column:
+                if tab != "pending" and p.screen == "cell_step":
+                    self.engine.pair_draft_keys = None
+                self.engine.place.view_tab = tab
+                self.engine.place.screen = screen if tab != "pending" else "pair_list"
+                event.stop()
+                self.render_all()
+                self.set_focus_work()

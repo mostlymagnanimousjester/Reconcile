@@ -1,0 +1,24 @@
+[project]
+name = "reconcile-tui"
+version = "0.1.0"
+description = "Strict two-sided data reconciliation TUI (exact raw text)."
+requires-python = ">=3.13"
+dependencies = [
+    "polars>=1.40",
+    "fastexcel>=0.14",
+    "textual>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["reconcile*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

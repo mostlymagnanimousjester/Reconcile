@@ -1,25 +1,70 @@
 # Strict data reconciliation TUI
 
-Provisional product: a **very strict** two-sided data reconciliation TUI (exact raw text; true nulls become empty strings). Investigation-focused: walk differences, accept known variation in-session, refresh when sources change. **Read-only vs the source files** — this TUI never writes or opens them.
+Investigation TUI for **two-sided** data reconciliation. Compare is **exact raw text** (the only cast is true null → `""`). Walk remaining differences, accept known variation as in-session snapshots, and/or edit the source files in another tool and refresh until **pending = 0**.
 
-**No application code yet.** Shape is being locked in `REQUIREMENTS.md`.
+This is **not** an audit, sign-off, or certification tool. It **never writes, patches, opens, or copies into** the files passed as `--a` / `--b`.
 
-## Requirements
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the full spec.
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the spec. Happy path: roster (home, ranked by pending count; unmatched keys and extras sit on the same list) → largest pile → accept or review → next lever. Review that document before implementation.
+## Install
 
-## Planned launch (Windows)
+Python **3.13**. From the repo root:
 
-Python **3.13**, from **PowerShell**:
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+```
+
+Linux / macOS:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Dependencies: Polars, fastexcel, Textual.
+
+## Run
+
+User-facing command is the script (not a console-script name).
+
+PowerShell:
 
 ```powershell
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Sheet1 --b-sheet Sheet1 --keys id
 python Reconcile.py --session C:\data\job.recon.zip
 ```
 
-## Status
+Linux / macOS:
 
-- Stack (planned): Python 3.13, Polars, fastexcel, Textual
-- Platform: Windows / PowerShell
-- Not a web app; not an audit/sign-off tool
-- TUI colors are specified for red blue-blocker lenses (no blue/green-only signals)
+```bash
+python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv --keys id,year
+python Reconcile.py --session ./job.recon.zip
+```
+
+`--keys` is a single comma-separated list. Surrounding spaces on each name are stripped; there is no quoting. `--session` cannot be mixed with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys`.
+
+Excel sides require `--a-sheet` / `--b-sheet`. Delimited files: comma, tilde, pipe, or tab; encoding UTF-8 BOM, else UTF-8, else Windows-1252.
+
+## In the TUI
+
+Home is the **roster** of remaining work (comparable columns, A-only keys, B-only keys, extras), sorted by pending, then top-pair %, then name. `Enter` drills in; `Esc` goes back (roster → Overview). `a` accepts the focused grain; `A` accepts a whole column or all unmatched on a side; `r` re-reads the live files; `e` / `o` export or open a `.recon.zip`; `q` quits; `?` help.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Quit with remaining pending = 0 |
+| `1` | Quit with pending remaining |
+| `2` | Hard fail (load/parse/schema). Message on stderr includes raw identifiers. |
+
+Once the TUI is up, refresh/open/selector errors stay in the TUI and keep the last good state.
+
+## Tests
+
+```bash
+python -m pytest
+```
