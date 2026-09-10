@@ -126,13 +126,33 @@ Candidates, **checked in this order**:
 
 Semicolon is **not** a candidate. Tilde is.
 
-The detector must **profile the entire file** before concluding. No prefix sniff, first-N-rows sample, or early exit on a “looks good” header line. Every candidate above is scored against the **full** file; only then is a delimiter chosen or the run failed as ambiguous.
+The detector must **profile the entire file** before concluding. No prefix sniff, first-N-rows sample, or early exit on a “looks good” header line. Every candidate above is scored against the **full** file with the **same record parser used to load** (§6.3); only then is a delimiter chosen or the run failed as ambiguous.
 
-**PROVISIONAL scoring:** a candidate is plausible if splitting every record on that delimiter yields a consistent field count equal to the header’s field count (ragged → that candidate is not a winner). After the full-file profile: exactly one plausible candidate → use it; zero or more than one → hard fail. Check order is evaluation/report order, not a silent tie-break among multiple plausible delimiters.
+**Scoring (locked):**
+
+- A candidate is plausible only if the header splits into **≥ 2** fields and **every** data record has **exactly that many** fields (ragged → that candidate loses).
+- All tables have ≥ 2 fields. A file that is 1 field under every candidate: **hard fail**.
+- After the full-file profile: **exactly one** plausible candidate → use it; zero or more than one → **hard fail**. Check order is evaluation/report order, **not** a silent tie-break (comma does not beat tilde if both are plausible).
 
 ### 6.2 Encoding detection
 
-**PROVISIONAL detector scoring** for encodings: try UTF-8 with BOM, UTF-8, then Windows-1252, only if unambiguous. If UTF-8 decodes cleanly, UTF-8 wins. Do **not** silently fall back to latin-1 (it always “decodes”).
+Locked:
+
+1. If the file has a UTF-8 BOM, decode as UTF-8 (strip BOM). Invalid UTF-8 after a BOM: hard fail.
+2. Else if the full file decodes as UTF-8: UTF-8.
+3. Else Windows-1252.
+4. Never latin-1 (it always “decodes”).
+
+ASCII-only files are valid UTF-8 and take rule 2. Excel is not this path.
+
+### 6.3 Record parse (detect and load)
+
+Delimited load and delimiter scoring use the same rules:
+
+- Quote character `"`; doubled `""` is a literal quote.
+- Delimiters and newlines inside quotes are inside one field.
+- Unclosed quote, or a record that cannot be parsed: **hard fail** that file.
+- After parse, true null → `""`, then drop all-empty rows (§5).
 
 Excel encoding is not a separate concern; fastexcel supplies cell strings.
 
@@ -691,7 +711,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Non-text Excel | Path, sheet, exact column header, type seen (and cell address if the engine provides it) |
 | Missing key column | Exact name, which side lacks it |
 | Duplicate column names | Side, exact duplicated header |
-| Ambiguous delimiter | Each candidate (comma, tilde, pipe, tab) and full-file field-count consistency |
+| Ambiguous delimiter | Each candidate and whether it produced ≥ 2 consistent fields on the full file |
 | Missing path | The absolute path |
 
 | Situation | Behavior |
@@ -716,9 +736,9 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 
 ## 18. Open items for review
 
-1. Encoding detector scoring (delimiter *candidates*, check order, and full-file profile are locked in §6.1; encoding “clear winner” vs ambiguous is not).
-2. Schema-extras list sort (still exact name).
-3. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
+1. Schema-extras list sort (exact name is the working rule).
+2. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
+3. UTF-16 delimited files (e.g. Excel “Unicode Text”) are **not** specified; v1 is UTF-8 or Windows-1252 only unless you add them.
 
 ---
 
@@ -735,7 +755,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
 | Headers | Required |
 | Platform | Windows PowerShell; Python 3.13; UTF-8 not guaranteed |
-| Detect | Encoding + delimiter; hard fail if ambiguous; no override. Delimiters checked comma, tilde, pipe, tab (full file profiled before conclude). Semicolon not a candidate. |
+| Detect | Encoding: UTF-8 BOM, else UTF-8, else Windows-1252; never latin-1. Delimiter: comma, tilde, pipe, tab; full file; ≥ 2 fields; exactly one plausible or hard fail. Same quoted parse for detect and load. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
 | Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, pair vs cell step, filter string, last pair). No drafts, no sort mode |
