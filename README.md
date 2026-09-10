@@ -6,7 +6,7 @@ Provisional product: a **very strict** two-sided data reconciliation TUI (exact 
 
 ## Requirements
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the spec (inputs, compare contract, CLI, TUI screens, keybindings, session zip, insights, batch column accept). Review and modify that document before implementation.
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the spec. Happy path: roster (home) → top pair → accept or review cells → next lever. Review that document before implementation.
 
 ## Planned launch (Windows)
 
