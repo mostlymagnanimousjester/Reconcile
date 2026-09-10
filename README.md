@@ -1,6 +1,6 @@
 # Strict data reconciliation TUI
 
-Provisional product: a **very strict** two-sided data reconciliation TUI (exact raw text; true nulls become empty strings). Investigation-focused: walk differences, accept known variation in-session, refresh when sources change.
+Provisional product: a **very strict** two-sided data reconciliation TUI (exact raw text; true nulls become empty strings). Investigation-focused: walk differences, accept known variation in-session, refresh when sources change. **Read-only vs the source files** — this TUI never writes or opens them.
 
 **No application code yet.** Shape is being locked in `REQUIREMENTS.md`.
 
