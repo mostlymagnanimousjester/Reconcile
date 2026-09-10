@@ -110,10 +110,24 @@ Detect encoding and delimiter. **Hard fail if ambiguous.** No in-tool override. 
 
 Must work on **Windows**. UTF-8 is not guaranteed.
 
-**PROVISIONAL detector scoring** (candidate lists locked; how “clear winner” is scored is still open):
+### 6.1 Delimiter detection
 
-- Delimiters tried: comma, tab, semicolon, pipe. One clear winner or hard fail.
-- Encodings tried: UTF-8 with BOM, UTF-8, then Windows-1252, only if unambiguous. If UTF-8 decodes cleanly, UTF-8 wins. Do **not** silently fall back to latin-1 (it always “decodes”).
+Candidates, **checked in this order**:
+
+1. comma (`,`)
+2. tilde (`~`)
+3. pipe (`|`)
+4. tab (`\t`)
+
+Semicolon is **not** a candidate. Tilde is.
+
+The detector must **profile the entire file** before concluding. No prefix sniff, first-N-rows sample, or early exit on a “looks good” header line. Every candidate above is scored against the **full** file; only then is a delimiter chosen or the run failed as ambiguous.
+
+**PROVISIONAL scoring:** a candidate is plausible if splitting every record on that delimiter yields a consistent field count equal to the header’s field count (ragged → that candidate is not a winner). After the full-file profile: exactly one plausible candidate → use it; zero or more than one → hard fail. Check order is evaluation/report order, not a silent tie-break among multiple plausible delimiters.
+
+### 6.2 Encoding detection
+
+**PROVISIONAL detector scoring** for encodings: try UTF-8 with BOM, UTF-8, then Windows-1252, only if unambiguous. If UTF-8 decodes cleanly, UTF-8 wins. Do **not** silently fall back to latin-1 (it always “decodes”).
 
 Excel encoding is not a separate concern; fastexcel supplies cell strings.
 
@@ -518,7 +532,7 @@ View filter on column detail is **tabs**, not a key cycle.
 ## 18. Open items for review
 
 1. Keybinding map (footer actions + `?` still proposed; view-filter is tabs, not a `v` cycle).
-2. Delimiter/encoding detector scoring (candidate lists are locked in §6; what counts as a “clear winner” vs ambiguous is not).
+2. Encoding detector scoring (delimiter *candidates*, check order, and full-file profile are locked in §6.1; encoding “clear winner” vs ambiguous is not).
 3. Schema-extras list sort (still exact name).
 4. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
 
@@ -537,7 +551,7 @@ View filter on column detail is **tabs**, not a key cycle.
 | Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
 | Headers | Required |
 | Platform | Windows PowerShell; Python 3.13; UTF-8 not guaranteed |
-| Detect | Encoding + delimiter; hard fail if ambiguous; no override |
+| Detect | Encoding + delimiter; hard fail if ambiguous; no override. Delimiters checked comma, tilde, pipe, tab (full file profiled before conclude). Semicolon not a candidate. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
 | Persist | `.recon.zip`, absolute paths, live reread |
