@@ -172,7 +172,7 @@ Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses up
 | Selected cell footer | Lines prefixed `A:` and `B:` then the full raw string | Same strings as the grid |
 | Extra (in A not B, or B not A) | **Exact header** plus a **Side** field `A` or `B`. Do **not** rename to `A.cust_id` | Snapshot `(side, name)` with `name` = exact header, `side` = `A` or `B` |
 | A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
-| Polars batch selector | Series named `a` and `b` (lowercase) = pending values of **one** comparable column | Selector only; not a column-name prefix |
+| Polars batch selector | **One side** (`A` or `B`) plus expression on that side’s pending values as series `s`. Not a name prefix. `.all()` cannot target both sides (those rows would not be pending) |
 
 The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two rows on **Schema extras**, each with its `Side`.
 
@@ -281,17 +281,23 @@ Regex and Polars do **not** stack, union, or intersect. Each Run starts from an 
 
 **Polars expression** (roster `=`):
 
-- Per comparable column, a frame of pending mismatches only, columns `a` and `b` (raw strings, nulls already `""`). Not equals, not already-accepted, not A-only/B-only, not other fields.
-- Expression must reduce to a **single boolean** per column (e.g. `(pl.col("b") == "——").all()`). A per-row Series or non-boolean scalar: in-TUI error; do not silently `.all()`.
-- Namespace **`a` / `b` only**. No IO, no scans, no `map_elements`, no original field names.
-- Evaluated in **Polars** (unpivot/group or equivalent). Invalid/engine error: in-TUI, draft unchanged.
+The pending universe is `A ≠ B`. An `.all()` predicate on the **same** constant therefore cannot be true on **both** sides: if every pending `A` and every pending `B` were `——`, those cells would be equal and not pending. So an `.all()` selector is **single-side**.
+
+- User must choose **Side `A` or Side `B`** (modal tabs, same denotation as §8.1). Required; no default that means “both.”
+- Per comparable column, one Series `s`: that side’s values on **pending mismatches only** (raw strings, nulls already `""`). The other side is not in the namespace.
+- Expression must reduce to a **single boolean** per column, typically `.all()`, e.g. `(pl.col("s") == "——").all()` meaning “every pending value on the chosen side is `——`.”
+- Referencing `a`, `b`, both sides, original field names, or anything except `s`: in-TUI error, draft unchanged.
+- Per-row Series or non-boolean scalar: in-TUI error; do not silently `.all()`.
+- No IO, no scans, no `map_elements`. Evaluated in **Polars**. Engine error: in-TUI, draft unchanged.
+
+Zero pending still excluded (§9.5 draft). Choosing Side `B` does not look at A, and vice versa.
 
 While a draft is in flight, `/` and `=` are disabled (or error: confirm or cancel first).
 
 #### UX (roster)
 
 - Full roster stays visible (not a drafted-only list). Drafted rows show a check.
-- Opening `/` or `=` opens a **modal**: type pattern or expression; `Enter` Runs; `Esc` closes the modal without changing the draft.
+- Opening `/` opens a regex modal. Opening `=` opens a Polars modal with **Side tabs `A` | `B`** plus the expression field on `s`; `Enter` Runs; `Esc` closes the modal without changing the draft. Run is refused until a side is selected.
 - After Run, footer shows `draft N` plus Confirm / Cancel / toggle.
 - Column **detail** has no regex/Polars. Detail accept column remains immediate (`A`).
 
@@ -363,7 +369,7 @@ Stack: **Python 3.13**, Polars, fastexcel, Textual. Must run on Windows. Launch 
 - The TUI must **not** convert full frames to Python objects.
 - The TUI **requests pages** (100 rows) and small summaries (roster, counts, transition table, batch-selector booleans).
 - Python/Polars round-trips must be minimized and explicit (page structs / small aggregate frames only).
-- Batch Polars selectors (§9.5) run **in Polars** on pending `{a, b}` per comparable column (or one unpivot + group). Do not pull full columns into Python to test the predicate. Draft checkboxes are a small name set; that part may be Python.
+- Batch Polars selectors (§9.5) run **in Polars** on one pending series `s` for the chosen side per comparable column (or one unpivot + group). Do not pull full columns into Python to test the predicate. Draft checkboxes are a small name set; that part may be Python.
 
 Roster is one row per comparable column (small); it may be fully materialized. Cell/key lists are paged at **100**.
 
