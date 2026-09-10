@@ -161,6 +161,23 @@ Let:
 
 **Extras** are schema differences, surfaced for review (not a hard fail).
 
+### 8.1 How A and B are denoted
+
+Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses uppercase `A` and `B`. That label is **not** part of the column name and is never concatenated into the header string used for pairing or snapshots.
+
+| What | How it is shown | What is stored / compared |
+|---|---|---|
+| Comparable column (on both sides) | The **exact header** once (roster `name`). Values in two columns headed `A` and `B` | Pairing and snapshots use the exact header. Values are the two raw strings |
+| Context columns on detail | Context **exact header**, with value pair `A` \| `B` | Display only |
+| Selected cell footer | Lines prefixed `A:` and `B:` then the full raw string | Same strings as the grid |
+| Extra (in A not B, or B not A) | **Exact header** plus a **Side** field `A` or `B`. Do **not** rename to `A.cust_id` | Snapshot `(side, name)` with `name` = exact header, `side` = `A` or `B` |
+| A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
+| Polars batch selector | Series named `a` and `b` (lowercase) = pending values of **one** comparable column | Selector only; not a column-name prefix |
+
+The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two rows on **Schema extras**, each with its `Side`.
+
+Speculative near-misses on extras may *suggest* that `cust_id` (Side `A`) is like `customer_id` (Side `B`). That does not rename or re-pair them.
+
 Missing **key** column on either side: hard fail.
 
 After the first successful run, the user cannot change paths, sheets, or key columns. File *contents* may change on refresh (§9, §12).
@@ -528,7 +545,7 @@ Speculative trim/case key hints labeled `speculative`.
 
 Reachable from **Overview**.
 
-List extra names, which side, speculative name near-misses.
+List extra names as the **exact header**, a **Side** column (`A` or `B`), and speculative name near-misses (labeled `speculative`). No `A.` / `B.` prefix on the name.
 
 Actions: accept/undo that extra.
 
@@ -682,6 +699,7 @@ View-filter on column detail is **tabs**, not a `v` cycle.
 | Keybindings | Mode-aware map in §15.7; visible footer; `?` help |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
+| Extra columns | Exact header + Side `A` or `B`; name is never prefixed |
 | Fatal before TUI | stderr + exit |
 | Fatal after TUI | Keep last state |
 | Long strings | Wrap in grid and footer pane; no ellipsis truncate |
