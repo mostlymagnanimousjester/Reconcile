@@ -111,7 +111,7 @@ def load_delimited(
     encoding: str = DEFAULT_ENCODING,
     side: str = "A",
 ) -> ParsedTable:
-    """Read a delimited file with Polars `read_csv`. Delimiter is required."""
+    """Read a delimited file with Polars `read_csv`. `delimiter` is the resolved character."""
     path = abs_path(path)
     p = Path(path)
     if not p.is_file():

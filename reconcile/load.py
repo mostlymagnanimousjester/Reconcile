@@ -17,6 +17,8 @@ from reconcile.errors import HardFail
 from reconcile.excel import load_excel
 
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+CSV_SUFFIX = ".csv"
+DEFAULT_CSV_DELIMITER = ","
 
 
 @dataclass
@@ -30,6 +32,20 @@ class SideTable:
 
 def is_excel_path(path: str) -> bool:
     return Path(path).suffix.lower() in EXCEL_SUFFIXES
+
+
+def is_csv_path(path: str) -> bool:
+    return Path(path).suffix.lower() == CSV_SUFFIX
+
+
+def resolve_side_delimiter(path: str, delimiter: str | None, side: str) -> str:
+    """CLI/stored delim if given; else comma for `.csv`; else hard fail."""
+    if delimiter is not None:
+        return delimiter
+    if is_csv_path(path):
+        return DEFAULT_CSV_DELIMITER
+    flag = "a" if side == "A" else "b"
+    raise HardFail(f"--{flag}-delim is required for delimited file {path}")
 
 
 def _check_unique_headers(headers: list[str], side: str) -> None:
@@ -55,8 +71,8 @@ def load_side(
         raise HardFail(f"--{flag}-delim was given for Excel file {path}")
     if excel and encoding is not None:
         raise HardFail(f"--{flag}-encoding was given for Excel file {path}")
-    if not excel and delimiter is None:
-        raise HardFail(f"--{flag}-delim is required for delimited file {path}")
+    if not excel:
+        delimiter = resolve_side_delimiter(path, delimiter, side)
     if not excel and encoding is None:
         encoding = DEFAULT_ENCODING
     if excel and not sheet:

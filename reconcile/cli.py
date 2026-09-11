@@ -57,16 +57,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--a-delim",
         dest="a_delim",
         help=(
-            "Required delimiter for side A if it is a delimited file "
-            f"({VALID_DELIM_HELP}). Hard fail if A is Excel."
+            "Delimiter for side A if it is a delimited file "
+            f"({VALID_DELIM_HELP}). Defaults to comma when A is a .csv file. "
+            "Required for other delimited extensions. Hard fail if A is Excel."
         ),
     )
     p.add_argument(
         "--b-delim",
         dest="b_delim",
         help=(
-            "Required delimiter for side B if it is a delimited file "
-            f"({VALID_DELIM_HELP}). Hard fail if B is Excel."
+            "Delimiter for side B if it is a delimited file "
+            f"({VALID_DELIM_HELP}). Defaults to comma when B is a .csv file. "
+            "Required for other delimited extensions. Hard fail if B is Excel."
         ),
     )
     p.add_argument(

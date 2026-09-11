@@ -123,7 +123,7 @@ There is **no in-TUI delimiter or encoding override**. After the first successfu
 
 Must work on **Windows**. Default encoding is UTF-8 (ASCII ⊂ UTF-8). Non-UTF-8 files need an explicit CLI override on the next invocation after a UTF-8 hard fail.
 
-### 6.1 Delimiter (required)
+### 6.1 Delimiter
 
 Valid values (CLI and stored identity): **comma** (`,`), **tilde** (`~`), **pipe** (`|`), **tab** (`\t`). Semicolon is **not** a candidate.
 
@@ -131,9 +131,13 @@ CLI tokens: case-insensitive names `comma`, `tilde`, `pipe`, `tab`; or the liter
 
 Unknown CLI values: **hard fail** (exit 2) with the flag name, the raw value, and the list of valid values on stderr.
 
-`--a-delim` / `--b-delim` is **required** on every delimited side. No sniff. No `.csv` / `.txt` extension defaults. Missing flag on a delimited side = hard fail (exit 2) with the flag name and the absolute path.
+If a side’s path has a `.csv` extension (case-insensitive) and `--a-delim` / `--b-delim` is **not** specified for that side, the delimiter defaults to **comma**. `--a-delim` / `--b-delim` still overrides when given.
+
+Non-`.csv` delimited files (`.txt`, `.dat`, no extension, etc.) **require** `--a-delim` / `--b-delim` for that side. No sniff. No other extension defaults (including no `.txt` → tilde). Missing flag on a non-`.csv` delimited side = hard fail (exit 2) with the flag name and the absolute path.
 
 `--a-delim` / `--b-delim` on an Excel side: **hard fail**.
+
+The character actually used (CLI override or `.csv` comma default) is what is frozen in identity / `.recon.zip`.
 
 ### 6.2 Encoding (default UTF-8; CLI override)
 
@@ -157,7 +161,7 @@ Delimited ingest is **`pl.read_csv`** with:
 - `empty_string_is_null=False`
 - `quote_char='"'`
 - `has_header=True`
-- `separator` from the required delimiter
+- `separator` from the resolved delimiter (CLI `--*-delim`, or comma when the side is `.csv` and the flag was omitted)
 - `encoding` from default UTF-8 or `--*-encoding`
 - `glob=False`
 
@@ -481,9 +485,10 @@ The TUI does not collect paths, sheets, or keys. Job identity is CLI (or a sessi
 Invoked from PowerShell:
 
 ```powershell
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --keys id,year
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim tilde --keys id
 python Reconcile.py --a .\left.dat --b .\right.txt --a-delim pipe --b-delim tilde --keys id
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding windows-1252 --keys id
 python Reconcile.py --session C:\data\job.recon.zip
 ```
 
@@ -493,8 +498,8 @@ python Reconcile.py --session C:\data\job.recon.zip
 | `--b PATH` | Side B file (same path rule) |
 | `--a-sheet NAME` | Required if A is `.xlsx`/`.xlsm` |
 | `--b-sheet NAME` | Required if B is `.xlsx`/`.xlsm` |
-| `--a-delim VALUE` | **Required** delimiter for side A if it is a delimited file (§6.1). Per-side so mixed jobs work. |
-| `--b-delim VALUE` | **Required** delimiter for side B if it is a delimited file |
+| `--a-delim VALUE` | Delimiter for side A if it is a delimited file (§6.1). Defaults to comma when A is `.csv`. **Required** for other delimited extensions. Per-side so mixed jobs work. |
+| `--b-delim VALUE` | Delimiter for side B if it is a delimited file. Defaults to comma when B is `.csv`. **Required** for other delimited extensions. |
 | `--a-encoding VALUE` | Encoding for side A delimited file (§6.2). Default `utf8`. |
 | `--b-encoding VALUE` | Encoding for side B delimited file. Default `utf8`. |
 | `--keys NAMES` | Comma-separated key column names, in order. Exclusive form; not repeatable `--key`. |
@@ -503,7 +508,7 @@ python Reconcile.py --session C:\data\job.recon.zip
 Rules:
 
 - `--session` alone is valid (zip contains paths, sheets, keys, frozen delimiter/encoding, snapshots, context sets).
-- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per delimited side (§6.1). Encoding flags optional (default `utf8`).
+- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per non-`.csv` delimited side (§6.1); optional on `.csv` (default comma). Encoding flags optional (default `utf8`).
 - Mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding` is a **hard fail**. The zip is the identity. Refuse; do not override or merge.
 - Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
@@ -754,7 +759,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 |---|---|
 | Duplicate key | Side (`A`/`B`), exact key tuple strings, occurrence count |
 | Delimited parse error (unclosed quote, long-ragged line, invalid encoding, …) | Polars `ComputeError` text, **absolute path**, side (`A`/`B`) |
-| Missing delimiter flag | Flag (`--a-delim` / `--b-delim`) and absolute path |
+| Missing delimiter flag (non-`.csv` delimited side) | Flag (`--a-delim` / `--b-delim`) and absolute path |
 | Non-text Excel | Path, sheet, exact column header, type seen (and cell address if the engine provides it) |
 | Missing key column | Exact name, which side lacks it |
 | Duplicate column names (Excel) | Side, exact duplicated header |
@@ -803,7 +808,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
 | Headers | Required |
 | Platform | Windows PowerShell; Python 3.13; default UTF-8 for delimited (override `--*-encoding`) |
-| Detect | No sniff, no extension defaults, no BOM→UTF-8→cp1252 ladder. Delimiter **required** (`--a-delim` / `--b-delim`) on every delimited side; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh / `.recon.zip` (reuse, do not re-detect). Ingest is `pl.read_csv`. |
+| Detect | No sniff, no BOM→UTF-8→cp1252 ladder, no `.txt`→tilde default. `.csv` (case-insensitive) defaults to comma when `--*-delim` is omitted; CLI `--a-delim` / `--b-delim` still overrides. Other delimited extensions require `--*-delim`; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh / `.recon.zip` (reuse, do not re-detect; store the resolved character, including the comma default). Ingest is `pl.read_csv`. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
 | Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, pair vs cell step, filter string, last pair). No drafts, no sort mode |
@@ -820,7 +825,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Roster | Home screen of remaining work (comparable columns, A-only, B-only, extras). Sort: pending then concentration then name. Concentration is a visible top-pair % only. Persistent filter box. Immediate `a`; `/` `=` behind glass |
 | Batch column accept | Independent regex `/` or Polars `=`; Polars `.all()` is **one side** (`A` or `B`) on series `s`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
-| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` **required** per delimited side; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
+| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells; Accepted/Equal/All matched behind glass; `a` grain / `A` column |
 | Keybindings | One map (§15.7). `Esc` always back. No `f`/`s`/`j` |
 | Paging | 100 rows from Polars; order raw key tuple |

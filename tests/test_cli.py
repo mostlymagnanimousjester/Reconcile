@@ -34,9 +34,67 @@ def test_cli_load_and_hard_fail_missing(tmp_path: Path, capsys):
     assert "Missing path" in err
 
 
-def test_cli_missing_delim_exit_2(tmp_path: Path, capsys):
+def test_cli_csv_no_delim_defaults_to_comma(tmp_path: Path):
+    from reconcile.cli import engine_from_args
+
     a = tmp_path / "a.csv"
     b = tmp_path / "b.csv"
+    a.write_text("id,name\n1,a\n", encoding="utf-8")
+    b.write_text("id,name\n1,b\n", encoding="utf-8")
+    p = build_parser()
+    ns = p.parse_args(["--a", str(a), "--b", str(b), "--keys", "id"])
+    eng = engine_from_args(ns)
+    assert eng.a.detection.delimiter == ","
+    assert eng.a.detection.delimiter_name == "comma"
+    assert eng.b.detection.delimiter == ","
+    assert eng.b.detection.delimiter_name == "comma"
+    assert eng.a.frame.to_dicts() == [{"id": "1", "name": "a"}]
+    assert eng.b.frame.to_dicts() == [{"id": "1", "name": "b"}]
+
+
+def test_cli_csv_a_delim_tilde_overrides(tmp_path: Path):
+    from reconcile.cli import engine_from_args
+
+    a = tmp_path / "left.csv"
+    b = tmp_path / "right.csv"
+    a.write_text("id~name\n1~a\n", encoding="utf-8")
+    b.write_text("id,name\n1,b\n", encoding="utf-8")
+    p = build_parser()
+    ns = p.parse_args(
+        [
+            "--a",
+            str(a),
+            "--b",
+            str(b),
+            "--keys",
+            "id",
+            "--a-delim",
+            "tilde",
+        ]
+    )
+    eng = engine_from_args(ns)
+    assert eng.a.detection.delimiter == "~"
+    assert eng.a.detection.delimiter_name == "tilde"
+    assert eng.b.detection.delimiter == ","
+    assert eng.a.headers == ["id", "name"]
+    assert Path(eng.a.path).is_absolute()
+
+
+def test_cli_missing_delim_txt_exit_2(tmp_path: Path, capsys):
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("id,name\n1,a\n", encoding="utf-8")
+    b.write_text("id,name\n1,a\n", encoding="utf-8")
+    code = main(["--a", str(a), "--b", str(b), "--keys", "id"])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--a-delim" in err
+    assert str(a.resolve()) in err
+
+
+def test_cli_missing_delim_exit_2(tmp_path: Path, capsys):
+    a = tmp_path / "a.dat"
+    b = tmp_path / "b.dat"
     a.write_text("id,name\n1,a\n", encoding="utf-8")
     b.write_text("id,name\n1,a\n", encoding="utf-8")
     code = main(["--a", str(a), "--b", str(b), "--keys", "id"])

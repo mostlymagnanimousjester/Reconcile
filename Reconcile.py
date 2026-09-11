@@ -3,9 +3,10 @@
 
 User-facing command (PowerShell / POSIX):
 
-    python Reconcile.py --a PATH --b PATH --a-delim comma --b-delim comma --keys id,year
+    python Reconcile.py --a PATH.csv --b PATH.csv --keys id,year
+    python Reconcile.py --a PATH.csv --b PATH.csv --a-delim tilde --keys id
     python Reconcile.py --a PATH --b PATH --a-delim pipe --b-delim tilde --keys id
-    python Reconcile.py --a PATH --b PATH --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
+    python Reconcile.py --a PATH.csv --b PATH.csv --a-encoding windows-1252 --keys id
     python Reconcile.py --session PATH
 """
 

@@ -33,19 +33,21 @@ User-facing command is the script (not a console-script name).
 PowerShell:
 
 ```powershell
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --keys id,year
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim tilde --keys id
 python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Sheet1 --b-sheet Sheet1 --keys id
 python Reconcile.py --a C:\data\left.dat --b C:\data\right.txt --a-delim pipe --b-delim tilde --keys id
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding windows-1252 --keys id
 python Reconcile.py --session C:\data\job.recon.zip
 ```
 
 Linux / macOS:
 
 ```bash
-python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv --a-delim comma --b-delim comma --keys id,year
+python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv --keys id,year
+python Reconcile.py --a ./left.csv --b ./right.csv --a-delim tilde --keys id
 python Reconcile.py --a ./left.dat --b ./right.txt --a-delim pipe --b-delim tilde --keys id
-python Reconcile.py --a ./left.csv --b ./right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
+python Reconcile.py --a ./left.csv --b ./right.csv --a-encoding windows-1252 --keys id
 python Reconcile.py --session ./job.recon.zip
 ```
 
@@ -53,7 +55,7 @@ python Reconcile.py --session ./job.recon.zip
 
 CLI paths (`--a`, `--b`, `--session`) may be relative to the invocation cwd; they are resolved immediately and **only absolute paths** are stored in the job identity and `.recon.zip`.
 
-Excel sides require `--a-sheet` / `--b-sheet`. Delimiter flags are illegal on Excel sides. Delimited files **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.csv`/`.txt` extension defaults. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in).
+Excel sides require `--a-sheet` / `--b-sheet`. Delimiter flags are illegal on Excel sides. A `.csv` side (extension case-insensitive) defaults to comma when `--a-delim` / `--b-delim` is omitted; the flag still overrides. Other delimited files (`.txt`, `.dat`, no extension, …) **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.txt`→tilde default. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). The resolved delimiter character (including the `.csv` comma default) is frozen in `.recon.zip`.
 
 ## In the TUI
 

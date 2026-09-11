@@ -126,8 +126,8 @@ def test_unknown_encoding_hard_fail():
         parse_encoding("cp1252", "--b-encoding")
 
 
-def test_missing_delim_hard_fail(tmp_path: Path):
-    p = tmp_path / "a.csv"
+def test_missing_delim_hard_fail_non_csv(tmp_path: Path):
+    p = tmp_path / "a.txt"
     p.write_text("id,name\n1,a\n", encoding="utf-8")
     with pytest.raises(HardFail) as ei:
         load_side(str(p), None, "A")
@@ -137,6 +137,32 @@ def test_missing_delim_hard_fail(tmp_path: Path):
     with pytest.raises(HardFail, match="--b-delim") as ei2:
         load_side(str(p), None, "B")
     assert str(p.resolve()) in ei2.value.message
+
+
+def test_csv_defaults_to_comma_without_delim_flag(tmp_path: Path):
+    from reconcile.engine import Engine
+
+    pa = tmp_path / "a.csv"
+    pb = tmp_path / "b.CSV"
+    pa.write_text("id,name\n1,a\n", encoding="utf-8")
+    pb.write_text("id,name\n1,b\n", encoding="utf-8")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    assert eng.a.detection.delimiter == ","
+    assert eng.a.detection.delimiter_name == "comma"
+    assert eng.b.detection.delimiter == ","
+    assert eng.b.detection.delimiter_name == "comma"
+    assert eng.a.frame.to_dicts() == [{"id": "1", "name": "a"}]
+    assert eng.b.frame.to_dicts() == [{"id": "1", "name": "b"}]
+
+
+def test_csv_delim_flag_overrides_comma_default(tmp_path: Path):
+    p = tmp_path / "a.csv"
+    p.write_text("id~name\n1~a\n", encoding="utf-8")
+    table = load_side(str(p), None, "A", delimiter="~")
+    assert table.detection.delimiter == "~"
+    assert table.detection.delimiter_name == "tilde"
+    assert table.headers == ["id", "name"]
+    assert table.frame.to_dicts() == [{"id": "1", "name": "a"}]
 
 
 def test_cli_delimiter_used_not_extension(tmp_path: Path):
@@ -275,8 +301,6 @@ def test_zip_stores_delim_encoding_and_absolute_paths(
         "a.csv",
         "b.csv",
         ["id"],
-        a_delim=",",
-        b_delim=",",
         a_encoding="utf8",
         b_encoding="utf8",
     )
