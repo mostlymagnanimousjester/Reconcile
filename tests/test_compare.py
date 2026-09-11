@@ -12,7 +12,9 @@ def _pair(tmp: Path, a: str, b: str, keys: str = "id") -> Engine:
     pb = tmp / "b.csv"
     write_csv(pa, a)
     write_csv(pb, b)
-    return Engine.from_paths(str(pa), str(pb), keys.split(","))
+    return Engine.from_paths(
+        str(pa), str(pb), keys.split(","), a_delim=",", b_delim=","
+    )
 
 
 def test_exact_mismatch_and_null_cast(tmp_path: Path):
@@ -59,13 +61,16 @@ def test_extras_are_pending(tmp_path: Path):
     assert ("B", "customer_id") in names
 
 
-def test_duplicate_column_hard_fail(tmp_path: Path):
+def test_delimited_duplicate_header_is_extra_not_hard_fail(tmp_path: Path):
     pa = tmp_path / "a.csv"
     pb = tmp_path / "b.csv"
     write_csv(pa, "id,val,val\n1,a,b\n")
     write_csv(pb, "id,val\n1,a\n")
-    with pytest.raises(HardFail, match="Duplicate column name on side A: 'val'"):
-        Engine.from_paths(str(pa), str(pb), ["id"])
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert any("duplicated" in h for h in eng.a.headers)
+    assert ("A", "val_duplicated_0") in eng.pending_extras or any(
+        "duplicated" in n for s, n in eng.pending_extras if s == "A"
+    )
 
 
 def test_missing_key_column(tmp_path: Path):
@@ -74,7 +79,7 @@ def test_missing_key_column(tmp_path: Path):
     write_csv(pa, "id,val\n1,a\n")
     write_csv(pb, "idx,val\n1,a\n")
     with pytest.raises(HardFail, match="Missing key column 'id' on side B"):
-        Engine.from_paths(str(pa), str(pb), ["id"])
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
 
 
 def test_duplicate_keys(tmp_path: Path):
@@ -83,7 +88,7 @@ def test_duplicate_keys(tmp_path: Path):
     write_csv(pa, "id,val\n1,a\n1,b\n")
     write_csv(pb, "id,val\n1,a\n")
     with pytest.raises(HardFail, match=r"Duplicate key on side A: \('1',\) occurs 2"):
-        Engine.from_paths(str(pa), str(pb), ["id"])
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
 
 
 def test_empty_key_legal_but_duplicate_empty_fails(tmp_path: Path):
@@ -91,11 +96,11 @@ def test_empty_key_legal_but_duplicate_empty_fails(tmp_path: Path):
     pb = tmp_path / "b.csv"
     write_csv(pa, "id,val\n,a\n")
     write_csv(pb, "id,val\n,a\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     assert eng.matched_key_count() == 1
     write_csv(pa, "id,val\n,a\n,b\n")
     with pytest.raises(HardFail, match="Duplicate key on side A"):
-        Engine.from_paths(str(pa), str(pb), ["id"])
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
 
 
 def test_composite_keys(tmp_path: Path):
@@ -114,7 +119,7 @@ def test_all_empty_row_dropped_before_dup_key(tmp_path: Path):
     pb = tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,a\n,\n")
     write_csv(pb, "id,val\n1,a\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     assert eng.pending_total() == 0
 
 
@@ -136,4 +141,4 @@ def test_id_vs_id_space_not_paired(tmp_path: Path):
     write_csv(pa, "ID,val\n1,a\n")
     write_csv(pb, "id,val\n1,a\n")
     with pytest.raises(HardFail, match="Missing key column"):
-        Engine.from_paths(str(pa), str(pb), ["id"])
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")

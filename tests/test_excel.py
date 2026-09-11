@@ -11,10 +11,11 @@ from tests.xlsxutil import write_xlsx
 def test_excel_text_roundtrip(tmp_path: Path):
     p = tmp_path / "a.xlsx"
     write_xlsx(p, "Sheet1", [["id", "val"], ["1", "Y"], ["2", ""]])
-    headers, rows = load_excel(p, "Sheet1")
-    assert headers == ["id", "val"]
-    assert ["1", "Y"] in rows
-    # empty cell → "" and all-empty rows dropped (row 3 not present)
+    df = load_excel(p, "Sheet1")
+    assert list(df.columns) == ["id", "val"]
+    recs = df.to_dicts()
+    assert {"id": "1", "val": "Y"} in recs
+    assert {"id": "2", "val": ""} in recs
 
 
 def test_excel_non_text_hard_fail(tmp_path: Path):
@@ -53,6 +54,15 @@ def test_excel_missing_sheet(tmp_path: Path):
     write_xlsx(p, "Sheet1", [["id", "val"], ["1", "a"]])
     with pytest.raises(HardFail, match="Missing sheet 'Nope'"):
         load_excel(p, "Nope")
+
+
+def test_excel_delim_flag_illegal(tmp_path: Path):
+    from reconcile.load import load_side
+
+    p = tmp_path / "a.xlsx"
+    write_xlsx(p, "Sheet1", [["id", "val"], ["1", "a"]])
+    with pytest.raises(HardFail, match="--a-delim was given for Excel"):
+        load_side(str(p), "Sheet1", "A", delimiter=",")
 
 
 def test_excel_compare(tmp_path: Path):

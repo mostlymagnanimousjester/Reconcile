@@ -33,25 +33,27 @@ User-facing command is the script (not a console-script name).
 PowerShell:
 
 ```powershell
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --keys id,year
 python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Sheet1 --b-sheet Sheet1 --keys id
-python Reconcile.py --a C:\data\left.dat --b C:\data\right.txt --a-delim pipe --keys id
+python Reconcile.py --a C:\data\left.dat --b C:\data\right.txt --a-delim pipe --b-delim tilde --keys id
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
 python Reconcile.py --session C:\data\job.recon.zip
 ```
 
 Linux / macOS:
 
 ```bash
-python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv --keys id,year
+python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv --a-delim comma --b-delim comma --keys id,year
 python Reconcile.py --a ./left.dat --b ./right.txt --a-delim pipe --b-delim tilde --keys id
+python Reconcile.py --a ./left.csv --b ./right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
 python Reconcile.py --session ./job.recon.zip
 ```
 
-`--keys` is a single comma-separated list. Surrounding spaces on each name are stripped; there is no quoting. `--session` cannot be mixed with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim`.
+`--keys` is a single comma-separated list. Surrounding spaces on each name are stripped; there is no quoting. `--session` cannot be mixed with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding`.
 
 CLI paths (`--a`, `--b`, `--session`) may be relative to the invocation cwd; they are resolved immediately and **only absolute paths** are stored in the job identity and `.recon.zip`.
 
-Excel sides require `--a-sheet` / `--b-sheet`. Delimited files: optional `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). If omitted: `.csv` → comma, `.txt` → tilde, otherwise stdlib `csv.Sniffer`. Encoding UTF-8 BOM, else UTF-8, else Windows-1252.
+Excel sides require `--a-sheet` / `--b-sheet`. Delimiter flags are illegal on Excel sides. Delimited files **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.csv`/`.txt` extension defaults. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in).
 
 ## In the TUI
 

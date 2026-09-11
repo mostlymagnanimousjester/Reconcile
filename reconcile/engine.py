@@ -190,9 +190,15 @@ class Engine:
         b_sheet: str | None = None,
         a_delim: str | None = None,
         b_delim: str | None = None,
+        a_encoding: str | None = None,
+        b_encoding: str | None = None,
     ) -> Engine:
-        side_a = load_side(a_path, a_sheet, "A", delimiter=a_delim)
-        side_b = load_side(b_path, b_sheet, "B", delimiter=b_delim)
+        side_a = load_side(
+            a_path, a_sheet, "A", delimiter=a_delim, encoding=a_encoding
+        )
+        side_b = load_side(
+            b_path, b_sheet, "B", delimiter=b_delim, encoding=b_encoding
+        )
         eng = cls(side_a, side_b, keys)
         return eng
 
@@ -1096,13 +1102,23 @@ class Engine:
                 self.a.path,
                 self.a.sheet,
                 "A",
-                delimiter=None if self.a.detection is None else self.a.detection.delimiter,
+                delimiter=(
+                    None if self.a.detection is None else self.a.detection.delimiter
+                ),
+                encoding=(
+                    None if self.a.detection is None else self.a.detection.encoding
+                ),
             )
             new_b = load_side(
                 self.b.path,
                 self.b.sheet,
                 "B",
-                delimiter=None if self.b.detection is None else self.b.detection.delimiter,
+                delimiter=(
+                    None if self.b.detection is None else self.b.detection.delimiter
+                ),
+                encoding=(
+                    None if self.b.detection is None else self.b.detection.encoding
+                ),
             )
             tmp = Engine(new_a, new_b, self.keys)
         except HardFail as exc:
@@ -1298,6 +1314,8 @@ class Engine:
         b_det = man.get("b_detection") or {}
         a_delim = a_det.get("delimiter") if a_det else None
         b_delim = b_det.get("delimiter") if b_det else None
+        a_encoding = a_det.get("encoding") if a_det else None
+        b_encoding = b_det.get("encoding") if b_det else None
         eng = cls.from_paths(
             man["a_path"],
             man["b_path"],
@@ -1306,6 +1324,8 @@ class Engine:
             man.get("b_sheet"),
             a_delim=a_delim,
             b_delim=b_delim,
+            a_encoding=a_encoding,
+            b_encoding=b_encoding,
         )
         snaps = man.get("snapshots") or {}
         eng.cell_snaps = [

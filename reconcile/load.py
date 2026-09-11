@@ -7,7 +7,12 @@ from pathlib import Path
 
 import polars as pl
 
-from reconcile.delimited import Detection, abs_path, load_delimited
+from reconcile.delimited import (
+    DEFAULT_ENCODING,
+    Detection,
+    abs_path,
+    load_delimited,
+)
 from reconcile.errors import HardFail
 from reconcile.excel import load_excel
 
@@ -36,39 +41,43 @@ def _check_unique_headers(headers: list[str], side: str) -> None:
         raise HardFail(f"Duplicate column name on side {side}: {dups[0]!r}")
 
 
-def _frame_from_rows(headers: list[str], rows: list[list[str]]) -> pl.DataFrame:
-    if not headers:
-        raise HardFail("Header row is required")
-    schema = {h: pl.Utf8 for h in headers}
-    if not rows:
-        return pl.DataFrame({h: [] for h in headers}).cast(schema)
-    return pl.DataFrame(rows, schema=headers, orient="row", strict=True).cast(schema)
-
-
 def load_side(
-    path: str, sheet: str | None, side: str, delimiter: str | None = None
+    path: str,
+    sheet: str | None,
+    side: str,
+    delimiter: str | None = None,
+    encoding: str | None = None,
 ) -> SideTable:
     path = abs_path(path)
-    if not Path(path).is_file():
-        raise HardFail(f"Missing path: {path}")
     excel = is_excel_path(path)
     flag = "a" if side == "A" else "b"
     if excel and delimiter is not None:
         raise HardFail(f"--{flag}-delim was given for Excel file {path}")
+    if excel and encoding is not None:
+        raise HardFail(f"--{flag}-encoding was given for Excel file {path}")
+    if not excel and delimiter is None:
+        raise HardFail(f"--{flag}-delim is required for delimited file {path}")
+    if not excel and encoding is None:
+        encoding = DEFAULT_ENCODING
     if excel and not sheet:
         raise HardFail(f"--{flag}-sheet is required for Excel file {path}")
     if not excel and sheet:
         raise HardFail(
             f"Sheet {sheet!r} was given for non-Excel file {path}"
         )
+    if not Path(path).is_file():
+        raise HardFail(f"Missing path: {path}")
     if excel:
-        headers, rows = load_excel(path, sheet)
+        frame = load_excel(path, sheet)
         detection = None
+        _check_unique_headers(list(frame.columns), side)
     else:
-        parsed = load_delimited(path, delimiter=delimiter)
-        headers, rows, detection = parsed.headers, parsed.rows, parsed.detection
-    _check_unique_headers(headers, side)
-    frame = _frame_from_rows(headers, rows)
+        parsed = load_delimited(
+            path, delimiter, encoding=encoding, side=side
+        )
+        frame = parsed.frame
+        detection = parsed.detection
+    headers = list(frame.columns)
     return SideTable(
         path=path,
         sheet=sheet,

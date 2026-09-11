@@ -6,9 +6,19 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from reconcile.delimited import VALID_DELIM_HELP, parse_delimiter
+from reconcile.delimited import (
+    VALID_DELIM_HELP,
+    VALID_ENCODING_HELP,
+    parse_delimiter,
+    parse_encoding,
+)
 from reconcile.engine import Engine, InTuiError
 from reconcile.errors import HardFail
+
+IDENTITY_FLAGS = (
+    "--a / --b / --a-sheet / --b-sheet / --keys / "
+    "--a-delim / --b-delim / --a-encoding / --b-encoding"
+)
 
 
 def parse_keys(raw: str) -> list[str]:
@@ -47,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--a-delim",
         dest="a_delim",
         help=(
-            "Delimiter for side A delimited file "
+            "Required delimiter for side A if it is a delimited file "
             f"({VALID_DELIM_HELP}). Hard fail if A is Excel."
         ),
     )
@@ -55,8 +65,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--b-delim",
         dest="b_delim",
         help=(
-            "Delimiter for side B delimited file "
+            "Required delimiter for side B if it is a delimited file "
             f"({VALID_DELIM_HELP}). Hard fail if B is Excel."
+        ),
+    )
+    p.add_argument(
+        "--a-encoding",
+        dest="a_encoding",
+        help=(
+            "Encoding for side A delimited file "
+            f"({VALID_ENCODING_HELP}; default utf8). Hard fail if A is Excel."
+        ),
+    )
+    p.add_argument(
+        "--b-encoding",
+        dest="b_encoding",
+        help=(
+            "Encoding for side B delimited file "
+            f"({VALID_ENCODING_HELP}; default utf8). Hard fail if B is Excel."
         ),
     )
     p.add_argument("--session", dest="session", help="Load a .recon.zip and live-reread sources")
@@ -73,12 +99,14 @@ def engine_from_args(ns: argparse.Namespace) -> Engine:
             ns.keys,
             ns.a_delim,
             ns.b_delim,
+            ns.a_encoding,
+            ns.b_encoding,
         ]
     )
     if ns.session and identity:
         raise HardFail(
-            "Mixing --session with --a / --b / --a-sheet / --b-sheet / --keys / "
-            "--a-delim / --b-delim is not allowed. The zip is the identity."
+            f"Mixing --session with {IDENTITY_FLAGS} is not allowed. "
+            "The zip is the identity."
         )
     if ns.session:
         return Engine.from_session(ns.session)
@@ -87,8 +115,26 @@ def engine_from_args(ns: argparse.Namespace) -> Engine:
     keys = parse_keys(ns.keys)
     a_delim = parse_delimiter(ns.a_delim, "--a-delim") if ns.a_delim is not None else None
     b_delim = parse_delimiter(ns.b_delim, "--b-delim") if ns.b_delim is not None else None
+    a_encoding = (
+        parse_encoding(ns.a_encoding, "--a-encoding")
+        if ns.a_encoding is not None
+        else None
+    )
+    b_encoding = (
+        parse_encoding(ns.b_encoding, "--b-encoding")
+        if ns.b_encoding is not None
+        else None
+    )
     return Engine.from_paths(
-        ns.a, ns.b, keys, ns.a_sheet, ns.b_sheet, a_delim=a_delim, b_delim=b_delim
+        ns.a,
+        ns.b,
+        keys,
+        ns.a_sheet,
+        ns.b_sheet,
+        a_delim=a_delim,
+        b_delim=b_delim,
+        a_encoding=a_encoding,
+        b_encoding=b_encoding,
     )
 
 

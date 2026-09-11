@@ -10,7 +10,7 @@ def test_tui_launches_against_fixture(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val,Status\n1,a,Y\n2,b,N\n")
     write_csv(pb, "id,val,Status\n1,a,Yes\n3,c,N\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"])
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     app = ReconcileApp(eng)
 
     async def _run() -> None:

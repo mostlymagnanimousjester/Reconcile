@@ -74,13 +74,15 @@ Excel reads: **Polars + fastexcel**. Do not evaluate or follow formulas. Use onl
 
 ### 4.1 Headers
 
-Header row is required on row 1 of every delimited file and every Excel sheet used. Column names are the header strings as read (exact).
+Header row is required on row 1 of every delimited file and every Excel sheet used. Column names are the header strings as read (exact). Delimited headers have **no** custom embedded-quote handling: names are whatever Polars `read_csv` produces.
 
 ### 4.2 Column names
 
 Pairing is by **exact column name** (case-sensitive, space-sensitive: `ID` ≠ `id` ≠ `ID `).
 
-Duplicate column names on one side: **hard fail**.
+Delimited duplicate headers are **not** a hard fail. Polars may rename later copies (e.g. `val_duplicated_0`). Pairing still uses those exact resulting names, so a renamed copy shows as an extra / missing comparable name.
+
+Excel duplicate column names on one side: **hard fail**.
 
 ### 4.3 Excel types
 
@@ -101,9 +103,13 @@ Order of operations:
 3. **Drop rows where every column is `""`** (load rule, not a value cast). Needed so trailing blank Excel rows do not become duplicate empty keys.
 4. Then apply keys and compare.
 
+Delimited read is `pl.read_csv` (§6.3). Excel stays on the Utf8 Polars frame (`fill_null("")`); do not dump `iter_rows()` to Python lists. Shared unification is `pl.DataFrame`, not `list[list[str]]`. Drop all-empty rows **in Polars**.
+
 Rows where key columns are `""` but other columns have text are kept. Duplicate `""` keys still hard-fail.
 
-**Ragged delimited rows** (field count ≠ header): hard fail that file.
+**Ragged delimited rows** follow Polars as-is: too few fields are padded with `""`; too many fields raise Polars `ComputeError` (byte offset, not a 1-based record-number message). Trailing blank lines may disappear as all-empty rows after the drop. There is no path+record-number ragged copy.
+
+There is no “header must have ≥ 2 fields” rule (that was a CSV-detector leftover).
 
 **All-empty-key rows that are not all-empty rows** are kept and keyed as `""`.
 
@@ -111,13 +117,13 @@ Rows where key columns are `""` but other columns have text are kept. Duplicate 
 
 ## 6. Encoding and delimiters (delimited files)
 
-Encoding is detected from the file bytes (§6.2). The delimiter for a delimited side is chosen by the policy in §6.1. Excel paths are not this path.
+Excel paths are not this path. Encoding flags and delimiter flags on an Excel side are **illegal** (hard fail).
 
-There is **no in-TUI delimiter override**. `--a-delim` / `--b-delim` may be set at launch. After the first successful run, the chosen delimiter is part of frozen job identity (stored in `.recon.zip` and reused on refresh and session open).
+There is **no in-TUI delimiter or encoding override**. After the first successful run, the chosen delimiter and encoding are frozen in job identity (stored in `.recon.zip` and reused on refresh and session open — reuse, do not re-detect).
 
-Must work on **Windows**. UTF-8 is not guaranteed.
+Must work on **Windows**. Default encoding is UTF-8 (ASCII ⊂ UTF-8). Non-UTF-8 files need an explicit CLI override on the next invocation after a UTF-8 hard fail.
 
-### 6.1 Delimiter selection
+### 6.1 Delimiter (required)
 
 Valid values (CLI and stored identity): **comma** (`,`), **tilde** (`~`), **pipe** (`|`), **tab** (`\t`). Semicolon is **not** a candidate.
 
@@ -125,39 +131,43 @@ CLI tokens: case-insensitive names `comma`, `tilde`, `pipe`, `tab`; or the liter
 
 Unknown CLI values: **hard fail** (exit 2) with the flag name, the raw value, and the list of valid values on stderr.
 
-For each delimited side, decide **in this order**:
-
-1. If `--a-delim` / `--b-delim` is set for that side, use it.
-2. Else if the path’s extension is `.csv` (case-insensitive), use **comma**. Do **not** sniff.
-3. Else if the path’s extension is `.txt` (case-insensitive), use **tilde**. Do **not** sniff.
-4. Else use Python’s stdlib **`csv.Sniffer`** on the decoded file (candidates comma, tilde, pipe, tab). If sniffing fails, **hard fail** with the path and the sniffer’s reason.
+`--a-delim` / `--b-delim` is **required** on every delimited side. No sniff. No `.csv` / `.txt` extension defaults. Missing flag on a delimited side = hard fail (exit 2) with the flag name and the absolute path.
 
 `--a-delim` / `--b-delim` on an Excel side: **hard fail**.
 
-Quoted parse uses the stdlib `csv` reader with that delimiter and Excel-style quoting (`"` / `""` / newlines in quotes). Do **not** `skipinitialspace` (compare is exact raw text).
+### 6.2 Encoding (default UTF-8; CLI override)
 
-### 6.2 Encoding detection
+Default for delimited files is Polars **`utf8`**. There is no BOM→UTF-8→cp1252 detection ladder and no never-latin-1 special-case as the default path. A UTF-8 BOM is still valid UTF-8 (Polars strips it).
 
-Locked:
+CLI override per side, for the next invocation after a UTF-8 hard fail: `--a-encoding` / `--b-encoding`. Default `utf8`. Allowed Polars-native tokens:
 
-1. If the file has a UTF-8 BOM, decode as UTF-8 (strip BOM). Invalid UTF-8 after a BOM: hard fail.
-2. Else if the full file decodes as UTF-8: UTF-8.
-3. Else Windows-1252.
-4. Never latin-1 (it always “decodes”).
+- `utf8` (default)
+- `windows-1252`
+- `utf8-lossy` / `windows-1252-lossy` — explicit opt-in only, never default
 
-ASCII-only files are valid UTF-8 and take rule 2. Excel is not this path.
+Unknown encoding token: **hard fail** with the flag name, the raw value, and the valid list. Do **not** accept `latin1` (prefer `windows-1252`; Polars does not need a latin-1 alias for cp1252). Mixing `--a-encoding` / `--b-encoding` with `--session` is a **hard fail**. Encoding flags on an Excel side: **hard fail**.
 
-### 6.3 Record parse (detect and load)
+Store the chosen encoding in identity / `.recon.zip` like the delimiter.
 
-Delimited load uses stdlib `csv` with the delimiter from §6.1 and the same quoting rules:
+### 6.3 Delimited ingest (Polars)
 
-- Quote character `"`; doubled `""` is a literal quote.
-- Delimiters and newlines inside quotes are inside one field.
-- Unclosed quote, or a record that cannot be parsed: **hard fail** that file.
-- Header must have **≥ 2** fields (else hard fail).
-- After parse, true null → `""`, then drop all-empty rows (§5).
+Delimited ingest is **`pl.read_csv`** with:
 
-Excel encoding is not a separate concern; fastexcel supplies cell strings.
+- `infer_schema=False`
+- `empty_string_is_null=False`
+- `quote_char='"'`
+- `has_header=True`
+- `separator` from the required delimiter
+- `encoding` from default UTF-8 or `--*-encoding`
+- `glob=False`
+
+Do **not** set `ignore_errors=True` or `truncate_ragged_lines=True`.
+
+Then null→`""` if needed and drop all-empty rows **in Polars**. `pl.read_csv` **is** the frame: no `orient="row"` list round-trip, no stdlib `csv.reader` / `parse_records` / `csv.Sniffer` / `decode_bytes` ladder.
+
+Parse errors (unclosed quotes, long-ragged lines, invalid UTF-8, etc.) are Polars `ComputeError` (byte offset, not 1-based record, not old §16 ragged templates). Surface the Polars message plus the **absolute path** and **side** so the user can retry with `--*-encoding` if it was encoding.
+
+Excel encoding is not a separate concern; fastexcel supplies cell strings. Excel stays on the Utf8 Polars frame (`fill_null("")`, drop all-empty rows in Polars). Shared unification is `pl.DataFrame`, not `list[list[str]]`. Keep fastexcel + XML hard-fails (formula / merge / password / non-text).
 
 ---
 
@@ -471,8 +481,9 @@ The TUI does not collect paths, sheets, or keys. Job identity is CLI (or a sessi
 Invoked from PowerShell:
 
 ```powershell
-python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
-python Reconcile.py --a .\left.dat --b .\right.txt --a-delim pipe --keys id
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --keys id,year
+python Reconcile.py --a .\left.dat --b .\right.txt --a-delim pipe --b-delim tilde --keys id
+python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim comma --b-delim comma --a-encoding windows-1252 --keys id
 python Reconcile.py --session C:\data\job.recon.zip
 ```
 
@@ -482,21 +493,23 @@ python Reconcile.py --session C:\data\job.recon.zip
 | `--b PATH` | Side B file (same path rule) |
 | `--a-sheet NAME` | Required if A is `.xlsx`/`.xlsm` |
 | `--b-sheet NAME` | Required if B is `.xlsx`/`.xlsm` |
-| `--a-delim VALUE` | Delimiter for side A if it is a delimited file (§6.1). Per-side so mixed jobs work. |
-| `--b-delim VALUE` | Delimiter for side B if it is a delimited file |
+| `--a-delim VALUE` | **Required** delimiter for side A if it is a delimited file (§6.1). Per-side so mixed jobs work. |
+| `--b-delim VALUE` | **Required** delimiter for side B if it is a delimited file |
+| `--a-encoding VALUE` | Encoding for side A delimited file (§6.2). Default `utf8`. |
+| `--b-encoding VALUE` | Encoding for side B delimited file. Default `utf8`. |
 | `--keys NAMES` | Comma-separated key column names, in order. Exclusive form; not repeatable `--key`. |
 | `--session PATH` | Load `*.recon.zip` and live-reread sources (path may be relative; resolved immediately) |
 
 Rules:
 
-- `--session` alone is valid (zip contains paths, sheets, keys, detections, snapshots, context sets).
-- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags optional per delimited side (§6.1).
-- Mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` is a **hard fail**. The zip is the identity. Refuse; do not override or merge.
+- `--session` alone is valid (zip contains paths, sheets, keys, frozen delimiter/encoding, snapshots, context sets).
+- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per delimited side (§6.1). Encoding flags optional (default `utf8`).
+- Mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding` is a **hard fail**. The zip is the identity. Refuse; do not override or merge.
 - Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
 - Paths on `--a`, `--b`, `--session`, and TUI export/open zip **may be relative to the invocation cwd**. Immediately resolve with the equivalent of `Path(p).expanduser().resolve()` (absolute, normalized) and **store only absolute paths** in in-memory job identity, TUI Overview, and the `.recon.zip` manifest. Zip import/open always re-opens those stored absolute source paths. Relative paths are never written into the zip. If a relative path does not exist, hard fail with the **resolved absolute path** in the error text.
 
-Initial load/parse/schema/dup-key/non-text/unknown-delimiter/sniff-failure/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
+Initial load/parse/schema/dup-key/non-text/unknown-delimiter/unknown-encoding/missing-delim/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
 
 Once the TUI is up: errors stay in the TUI with last good state (§9.4). Stderr+exit only if Textual cannot start.
 
@@ -514,7 +527,7 @@ Contents (**PROVISIONAL** layout):
 - Absolute paths for A and B (never relative; CLI may accept relative and must resolve before write)
 - Sheet names when Excel
 - Key column names (ordered)
-- Detected encoding and delimiter per delimited side
+- Chosen encoding and delimiter per delimited side (frozen; reused, not re-detected)
 - Per-column context-column sets (§15.3)
 - Acceptance snapshots: type, key tuple, column, `valA`, `valB`, side, row snapshot as needed
 - **Place:** last screen (roster, Overview, pair list / cell step, A-only, B-only, Schema extras), last comparable column (if any), last extra `(side, name)` if on extras, detail step (pair list vs cell step / view tab), roster name-filter string, last pair `(column, valA, valB)` for `.` repeat
@@ -533,7 +546,7 @@ Export and open from the TUI. Also `--session` on CLI.
 |---|---|
 | `0` | User quits and remaining **pending** is 0 (including all-accepted) |
 | `1` | User quits and pending remains |
-| `2` | Hard fail (load/parse/dup keys/unknown delimiter/sniff fail/non-text/etc.) |
+| `2` | Hard fail (load/parse/dup keys/unknown delimiter/unknown encoding/missing delim/non-text/etc.) |
 
 ---
 
@@ -553,7 +566,7 @@ Quiet counts and job identity. Reachable by `Esc` from the roster. Not the landi
 
 Shows:
 
-- Frozen job identity (absolute paths, sheets, keys, detected encoding/delimiter)
+- Frozen job identity (absolute paths, sheets, keys, encoding/delimiter)
 - Exact remaining counts (pending vs accepted): matched keys, A-only, B-only, extras, mismatched cells, **remaining pending total**
 - Entry points: **A-only keys**, **B-only keys**, **Schema extras** (same lists as `Enter` from the matching roster row)
 - Speculative chips only as secondary, labeled `speculative`
@@ -740,18 +753,19 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Failure | Must print |
 |---|---|
 | Duplicate key | Side (`A`/`B`), exact key tuple strings, occurrence count |
-| Ragged delimited row | Path, 1-based row number, header field count, actual field count |
+| Delimited parse error (unclosed quote, long-ragged line, invalid encoding, …) | Polars `ComputeError` text, **absolute path**, side (`A`/`B`) |
+| Missing delimiter flag | Flag (`--a-delim` / `--b-delim`) and absolute path |
 | Non-text Excel | Path, sheet, exact column header, type seen (and cell address if the engine provides it) |
 | Missing key column | Exact name, which side lacks it |
-| Duplicate column names | Side, exact duplicated header |
+| Duplicate column names (Excel) | Side, exact duplicated header |
 | Unknown delimiter flag | Flag (`--a-delim` / `--b-delim`), raw value, valid values |
-| Sniff failure | Path and reason from `csv.Sniffer` |
+| Unknown encoding flag | Flag (`--a-encoding` / `--b-encoding`), raw value, valid values (`utf8`, `windows-1252`, `utf8-lossy`, `windows-1252-lossy`) |
 | Missing path | The absolute path |
 
 | Situation | Behavior |
 |---|---|
 | Textual cannot start | stderr + exit `2` |
-| Initial CLI load fails (missing file, unknown delimiter, sniff failure, ragged row, dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
+| Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
 | After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
@@ -772,7 +786,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 
 1. Schema-extras list sort (exact name is the working rule).
 2. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
-3. UTF-16 delimited files (e.g. Excel “Unicode Text”) are **not** specified; v1 is UTF-8 or Windows-1252 only unless you add them.
+3. UTF-16 delimited files (e.g. Excel “Unicode Text”) are **not** specified; v1 default is UTF-8 with optional `windows-1252` / lossy overrides.
 
 ---
 
@@ -788,8 +802,8 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Product | Investigation TUI; session acceptances; shrink or accept |
 | Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
 | Headers | Required |
-| Platform | Windows PowerShell; Python 3.13; UTF-8 not guaranteed |
-| Detect | Encoding: UTF-8 BOM, else UTF-8, else Windows-1252; never latin-1. Delimiter: CLI `--a-delim`/`--b-delim`, else `.csv`→comma / `.txt`→tilde (no sniff), else stdlib `csv.Sniffer` (comma/tilde/pipe/tab); sniff fail is hard fail. Same CSV-quoted parse for load. |
+| Platform | Windows PowerShell; Python 3.13; default UTF-8 for delimited (override `--*-encoding`) |
+| Detect | No sniff, no extension defaults, no BOM→UTF-8→cp1252 ladder. Delimiter **required** (`--a-delim` / `--b-delim`) on every delimited side; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh / `.recon.zip` (reuse, do not re-detect). Ingest is `pl.read_csv`. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
 | Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, pair vs cell step, filter string, last pair). No drafts, no sort mode |
@@ -800,13 +814,13 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is pair-list **layout** only; no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; persisted |
 | Empty rows | Drop all-`""` rows after null cast |
-| Ragged CSV | Hard fail |
+| Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
 | Roster | Home screen of remaining work (comparable columns, A-only, B-only, extras). Sort: pending then concentration then name. Concentration is a visible top-pair % only. Persistent filter box. Immediate `a`; `/` `=` behind glass |
 | Batch column accept | Independent regex `/` or Polars `=`; Polars `.all()` is **one side** (`A` or `B`) on series `s`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
-| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional per side; `--session` alone OK; refuse mix with identity flags; CLI paths may be relative, stored absolute |
+| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` **required** per delimited side; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells; Accepted/Equal/All matched behind glass; `a` grain / `A` column |
 | Keybindings | One map (§15.7). `Esc` always back. No `f`/`s`/`j` |
 | Paging | 100 rows from Polars; order raw key tuple |

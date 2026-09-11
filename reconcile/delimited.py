@@ -1,11 +1,11 @@
-"""Encoding, quoted record parse, and delimiter selection for delimited files."""
+"""Delimiter/encoding tokens and Polars CSV ingest for delimited files."""
 
 from __future__ import annotations
 
-import csv
-import io
 from dataclasses import dataclass
 from pathlib import Path
+
+import polars as pl
 
 from reconcile.errors import HardFail
 
@@ -17,8 +17,6 @@ DELIM_CANDIDATES: tuple[tuple[str, str], ...] = (
 )
 
 DELIM_NAMES: dict[str, str] = {ch: name for ch, name in DELIM_CANDIDATES}
-VALID_DELIM_CHARS: frozenset[str] = frozenset(DELIM_NAMES)
-SNIFF_DELIMITERS = ",~|\t"
 
 # CLI names (case-insensitive) and literal / escape forms → delimiter character.
 _DELIM_ALIASES: dict[str, str] = {
@@ -37,6 +35,16 @@ VALID_DELIM_HELP = (
     "comma, tilde, pipe, tab, or the literal character `,` `~` `|` / tab / \\t"
 )
 
+# Polars-native encodings. Lossy variants are explicit opt-in, never the default.
+DEFAULT_ENCODING = "utf8"
+VALID_ENCODINGS: tuple[str, ...] = (
+    "utf8",
+    "windows-1252",
+    "utf8-lossy",
+    "windows-1252-lossy",
+)
+VALID_ENCODING_HELP = ", ".join(VALID_ENCODINGS)
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -47,9 +55,12 @@ class Detection:
 
 @dataclass(frozen=True)
 class ParsedTable:
-    headers: list[str]
-    rows: list[list[str]]
+    frame: pl.DataFrame
     detection: Detection
+
+    @property
+    def headers(self) -> list[str]:
+        return list(self.frame.columns)
 
 
 def abs_path(path: str | Path) -> str:
@@ -75,139 +86,58 @@ def parse_delimiter(raw: str, flag: str) -> str:
     return mapped
 
 
-def decode_bytes(data: bytes, path: str) -> tuple[str, str]:
-    """UTF-8 BOM, else UTF-8, else Windows-1252. Never latin-1."""
-    if data.startswith(b"\xef\xbb\xbf"):
-        try:
-            return data.decode("utf-8-sig"), "utf-8"
-        except UnicodeDecodeError as exc:
-            raise HardFail(
-                f"Invalid UTF-8 after UTF-8 BOM in {path}: {exc}"
-            ) from exc
-    try:
-        return data.decode("utf-8"), "utf-8"
-    except UnicodeDecodeError:
-        try:
-            return data.decode("cp1252"), "windows-1252"
-        except UnicodeDecodeError as exc:
-            raise HardFail(
-                f"Could not decode {path} as UTF-8 or Windows-1252"
-            ) from exc
-
-
-def parse_records(text: str, delimiter: str) -> list[tuple[int, list[str]]]:
-    """Quoted parser via stdlib csv: `\"` / `\"\"` / newlines in quotes.
-
-    Returns (1-based record number, fields). Does not skip initial spaces
-    (compare is exact raw text).
-    """
-    reader = csv.reader(
-        io.StringIO(text),
-        delimiter=delimiter,
-        quotechar='"',
-        doublequote=True,
-        skipinitialspace=False,
-        quoting=csv.QUOTE_MINIMAL,
-        strict=True,
-    )
-    rows: list[tuple[int, list[str]]] = []
-    try:
-        for recno, fields in enumerate(reader, start=1):
-            rows.append((recno, fields))
-    except csv.Error as exc:
-        raise HardFail(f"Unclosed quote in delimited file: {exc}") from exc
-    return rows
-
-
-def extension_default_delimiter(path: str) -> str | None:
-    suffix = Path(path).suffix.lower()
-    if suffix == ".csv":
-        return ","
-    if suffix == ".txt":
-        return "~"
-    return None
-
-
-def _sniff_sample(text: str, limit: int = 65536) -> str:
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    nl = cut.rfind("\n")
-    return cut if nl < 0 else cut[: nl + 1]
-
-
-def sniff_delimiter(text: str, path: str) -> str:
-    """Use stdlib csv.Sniffer; hard-fail if sniffing is inconclusive."""
-    sample = _sniff_sample(text)
-    if not sample.strip():
+def parse_encoding(raw: str, flag: str) -> str:
+    """Map a CLI encoding token to a Polars encoding, or hard-fail."""
+    key = raw.strip().lower()
+    if key not in VALID_ENCODINGS:
         raise HardFail(
-            f"Could not sniff delimiter for {path}: file is empty or whitespace-only"
+            f"Unknown encoding for {flag}: {raw!r}. Valid values: {VALID_ENCODING_HELP}."
         )
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=SNIFF_DELIMITERS)
-    except csv.Error as exc:
-        raise HardFail(f"Could not sniff delimiter for {path}: {exc}") from exc
-    delim = dialect.delimiter
-    if delim not in VALID_DELIM_CHARS:
-        raise HardFail(
-            f"Could not sniff delimiter for {path}: "
-            f"sniffer returned {delim!r}; expected comma, tilde, pipe, or tab"
-        )
-    return delim
+    return key
 
 
-def choose_delimiter(text: str, path: str, cli_delim: str | None) -> tuple[str, str]:
-    """CLI override, else .csv→comma / .txt→tilde, else csv.Sniffer."""
-    if cli_delim is not None:
-        delim = cli_delim
-    else:
-        ext = extension_default_delimiter(path)
-        if ext is not None:
-            delim = ext
-        else:
-            delim = sniff_delimiter(text, path)
-    return delim, delimiter_name(delim)
+def stringify_and_drop_empty_rows(df: pl.DataFrame) -> pl.DataFrame:
+    """Cast every column to Utf8, null→`""`, drop rows that are all empty."""
+    if not df.columns:
+        raise HardFail("Header row is required")
+    df = df.with_columns(pl.all().cast(pl.Utf8).fill_null(""))
+    return df.filter(~pl.all_horizontal(pl.all() == ""))
 
 
-def drop_all_empty_rows(rows: list[list[str]]) -> list[list[str]]:
-    return [row for row in rows if any(field != "" for field in row)]
-
-
-def load_delimited(path: str | Path, delimiter: str | None = None) -> ParsedTable:
+def load_delimited(
+    path: str | Path,
+    delimiter: str,
+    *,
+    encoding: str = DEFAULT_ENCODING,
+    side: str = "A",
+) -> ParsedTable:
+    """Read a delimited file with Polars `read_csv`. Delimiter is required."""
     path = abs_path(path)
     p = Path(path)
     if not p.is_file():
         raise HardFail(f"Missing path: {path}")
-    data = p.read_bytes()
-    text, encoding = decode_bytes(data, path)
-    delim, delim_name = choose_delimiter(text, path, delimiter)
+    encoding = parse_encoding(encoding, f"--{'a' if side == 'A' else 'b'}-encoding")
     try:
-        records = parse_records(text, delim)
-    except HardFail as exc:
-        raise HardFail(f"{exc.message} in {path}") from exc
-    if not records:
-        raise HardFail(f"No header row in {path}")
-    _header_line, headers = records[0]
-    header_n = len(headers)
-    if header_n < 2:
-        raise HardFail(
-            f"Header in {path} has {header_n} field(s); tables must have ≥ 2 fields"
+        df = pl.read_csv(
+            path,
+            infer_schema=False,
+            empty_string_is_null=False,
+            quote_char='"',
+            has_header=True,
+            separator=delimiter,
+            encoding=encoding,
+            glob=False,
         )
-    data_rows: list[list[str]] = []
-    for line, fields in records[1:]:
-        if len(fields) != header_n:
-            raise HardFail(
-                f"Ragged delimited row in {path}: row {line} has "
-                f"{len(fields)} fields, header has {header_n} fields"
-            )
-        data_rows.append(fields)
-    data_rows = drop_all_empty_rows(data_rows)
+    except Exception as exc:
+        raise HardFail(
+            f"Failed to parse delimited file {path} (side {side}): {exc}"
+        ) from exc
+    df = stringify_and_drop_empty_rows(df)
     return ParsedTable(
-        headers=headers,
-        rows=data_rows,
+        frame=df,
         detection=Detection(
             encoding=encoding,
-            delimiter=delim,
-            delimiter_name=delim_name,
+            delimiter=delimiter,
+            delimiter_name=delimiter_name(delimiter),
         ),
     )

@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 import fastexcel
 import polars as pl
 
-from reconcile.delimited import abs_path, drop_all_empty_rows
+from reconcile.delimited import abs_path, stringify_and_drop_empty_rows
 from reconcile.errors import HardFail
 
 _NS = {
@@ -197,7 +197,8 @@ def _validate_xlsx(path: str, sheet_name: str) -> None:
         _inspect_sheet_xml(path, sheet_name, xml_bytes, shared)
 
 
-def load_excel(path: str | Path, sheet_name: str) -> tuple[list[str], list[list[str]]]:
+def load_excel(path: str | Path, sheet_name: str) -> pl.DataFrame:
+    """Load an Excel sheet as a Utf8 Polars frame. No Python list dump."""
     path = abs_path(path)
     p = Path(path)
     if not p.is_file():
@@ -240,8 +241,6 @@ def load_excel(path: str | Path, sheet_name: str) -> tuple[list[str], list[list[
             f"Failed to read Excel sheet {sheet_name!r} in {path}: {exc}"
         ) from exc
 
-    headers = [str(c) for c in df.columns]
-    str_cols = []
     for c in df.columns:
         s = df[c]
         if s.dtype != pl.Utf8 and s.dtype != pl.String:
@@ -250,8 +249,4 @@ def load_excel(path: str | Path, sheet_name: str) -> tuple[list[str], list[list[
                     f"Non-text Excel cell in {path} sheet {sheet_name!r} "
                     f"column {c!r} type {s.dtype}"
                 )
-        str_cols.append(pl.col(c).cast(pl.Utf8).fill_null(""))
-    df = df.with_columns(str_cols) if df.columns else df
-    rows = [list(rec) for rec in df.iter_rows()]
-    rows = drop_all_empty_rows(rows)
-    return headers, rows
+    return stringify_and_drop_empty_rows(df)
