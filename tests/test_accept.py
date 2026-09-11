@@ -194,3 +194,25 @@ def test_session_zip_roundtrip(tmp_path: Path):
     assert loaded.pending_total() == 0
     assert loaded.keys == ["id"]
     assert loaded.a.path == eng.a.path
+    assert Path(loaded.a.path).is_absolute()
+    assert Path(loaded.b.path).is_absolute()
+
+
+def test_session_zip_from_relative_paths_is_absolute(tmp_path: Path, monkeypatch):
+    import json
+    import zipfile
+
+    write_csv(tmp_path / "a.csv", "id,val\n1,Y\n")
+    write_csv(tmp_path / "b.csv", "id,val\n1,Yes\n")
+    monkeypatch.chdir(tmp_path)
+    eng = Engine.from_paths("a.csv", "b.csv", ["id"])
+    z = Path("job.recon.zip")
+    eng.export_zip(str(z))
+    with zipfile.ZipFile(z) as zf:
+        man = json.loads(zf.read("manifest.json"))
+    assert Path(man["a_path"]).is_absolute()
+    assert Path(man["b_path"]).is_absolute()
+    assert man["a_path"] == str((tmp_path / "a.csv").resolve())
+    loaded = Engine.from_session("job.recon.zip")
+    assert loaded.a.path == man["a_path"]
+    assert loaded.b.path == man["b_path"]

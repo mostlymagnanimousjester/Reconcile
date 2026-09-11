@@ -45,15 +45,18 @@ def _frame_from_rows(headers: list[str], rows: list[list[str]]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=headers, orient="row", strict=True).cast(schema)
 
 
-def load_side(path: str, sheet: str | None, side: str) -> SideTable:
+def load_side(
+    path: str, sheet: str | None, side: str, delimiter: str | None = None
+) -> SideTable:
     path = abs_path(path)
     if not Path(path).is_file():
         raise HardFail(f"Missing path: {path}")
     excel = is_excel_path(path)
+    flag = "a" if side == "A" else "b"
+    if excel and delimiter is not None:
+        raise HardFail(f"--{flag}-delim was given for Excel file {path}")
     if excel and not sheet:
-        raise HardFail(
-            f"--{'a' if side == 'A' else 'b'}-sheet is required for Excel file {path}"
-        )
+        raise HardFail(f"--{flag}-sheet is required for Excel file {path}")
     if not excel and sheet:
         raise HardFail(
             f"Sheet {sheet!r} was given for non-Excel file {path}"
@@ -62,7 +65,7 @@ def load_side(path: str, sheet: str | None, side: str) -> SideTable:
         headers, rows = load_excel(path, sheet)
         detection = None
     else:
-        parsed = load_delimited(path)
+        parsed = load_delimited(path, delimiter=delimiter)
         headers, rows, detection = parsed.headers, parsed.rows, parsed.detection
     _check_unique_headers(headers, side)
     frame = _frame_from_rows(headers, rows)

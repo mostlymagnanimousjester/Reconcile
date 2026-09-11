@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from reconcile.delimited import VALID_DELIM_HELP, parse_delimiter
 from reconcile.engine import Engine, InTuiError
 from reconcile.errors import HardFail
 
@@ -42,23 +43,53 @@ def build_parser() -> argparse.ArgumentParser:
         dest="keys",
         help="Comma-separated key column names (order kept; no quoting)",
     )
+    p.add_argument(
+        "--a-delim",
+        dest="a_delim",
+        help=(
+            "Delimiter for side A delimited file "
+            f"({VALID_DELIM_HELP}). Hard fail if A is Excel."
+        ),
+    )
+    p.add_argument(
+        "--b-delim",
+        dest="b_delim",
+        help=(
+            "Delimiter for side B delimited file "
+            f"({VALID_DELIM_HELP}). Hard fail if B is Excel."
+        ),
+    )
     p.add_argument("--session", dest="session", help="Load a .recon.zip and live-reread sources")
     return p
 
 
 def engine_from_args(ns: argparse.Namespace) -> Engine:
-    identity = any([ns.a, ns.b, ns.a_sheet, ns.b_sheet, ns.keys])
+    identity = any(
+        [
+            ns.a,
+            ns.b,
+            ns.a_sheet,
+            ns.b_sheet,
+            ns.keys,
+            ns.a_delim,
+            ns.b_delim,
+        ]
+    )
     if ns.session and identity:
         raise HardFail(
-            "Mixing --session with --a / --b / --a-sheet / --b-sheet / --keys is not allowed. "
-            "The zip is the identity."
+            "Mixing --session with --a / --b / --a-sheet / --b-sheet / --keys / "
+            "--a-delim / --b-delim is not allowed. The zip is the identity."
         )
     if ns.session:
         return Engine.from_session(ns.session)
     if not ns.a or not ns.b or not ns.keys:
         raise HardFail("Without --session, --a, --b, and --keys are required")
     keys = parse_keys(ns.keys)
-    return Engine.from_paths(ns.a, ns.b, keys, ns.a_sheet, ns.b_sheet)
+    a_delim = parse_delimiter(ns.a_delim, "--a-delim") if ns.a_delim is not None else None
+    b_delim = parse_delimiter(ns.b_delim, "--b-delim") if ns.b_delim is not None else None
+    return Engine.from_paths(
+        ns.a, ns.b, keys, ns.a_sheet, ns.b_sheet, a_delim=a_delim, b_delim=b_delim
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

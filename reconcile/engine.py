@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import polars as pl
 
+from reconcile.delimited import abs_path
 from reconcile.errors import HardFail, format_key_tuple
 from reconcile.insights import (
     cell_insights,
@@ -187,9 +188,11 @@ class Engine:
         keys: list[str],
         a_sheet: str | None = None,
         b_sheet: str | None = None,
+        a_delim: str | None = None,
+        b_delim: str | None = None,
     ) -> Engine:
-        side_a = load_side(a_path, a_sheet, "A")
-        side_b = load_side(b_path, b_sheet, "B")
+        side_a = load_side(a_path, a_sheet, "A", delimiter=a_delim)
+        side_b = load_side(b_path, b_sheet, "B", delimiter=b_delim)
         eng = cls(side_a, side_b, keys)
         return eng
 
@@ -1089,8 +1092,18 @@ class Engine:
         prev_mismatch = self.mismatches
         prev_accepted = self._cell_snaps_df()
         try:
-            new_a = load_side(self.a.path, self.a.sheet, "A")
-            new_b = load_side(self.b.path, self.b.sheet, "B")
+            new_a = load_side(
+                self.a.path,
+                self.a.sheet,
+                "A",
+                delimiter=None if self.a.detection is None else self.a.detection.delimiter,
+            )
+            new_b = load_side(
+                self.b.path,
+                self.b.sheet,
+                "B",
+                delimiter=None if self.b.detection is None else self.b.detection.delimiter,
+            )
             tmp = Engine(new_a, new_b, self.keys)
         except HardFail as exc:
             raise InTuiError(f"ERROR: {exc.message}") from exc
@@ -1201,8 +1214,8 @@ class Engine:
     def to_manifest(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
-            "a_path": self.a.path,
-            "b_path": self.b.path,
+            "a_path": abs_path(self.a.path),
+            "b_path": abs_path(self.b.path),
             "a_sheet": self.a.sheet,
             "b_sheet": self.b.sheet,
             "keys": list(self.keys),
@@ -1250,12 +1263,13 @@ class Engine:
         }
 
     def export_zip(self, path: str) -> None:
-        path = str(Path(path).expanduser())
+        path = abs_path(path)
         if not path.endswith(".recon.zip"):
             if path.endswith(".zip"):
                 path = path[: -4] + ".recon.zip"
             else:
                 path = path + ".recon.zip"
+            path = abs_path(path)
         manifest = json.dumps(self.to_manifest(), indent=2)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1263,7 +1277,7 @@ class Engine:
 
     @classmethod
     def from_session(cls, path: str) -> Engine:
-        path = str(Path(path).expanduser().resolve())
+        path = abs_path(path)
         if not Path(path).is_file():
             raise HardFail(f"Missing path: {path}")
         try:
@@ -1280,12 +1294,18 @@ class Engine:
         keys = list(man.get("keys") or [])
         if not keys:
             raise HardFail(f"Session {path} has no keys")
+        a_det = man.get("a_detection") or {}
+        b_det = man.get("b_detection") or {}
+        a_delim = a_det.get("delimiter") if a_det else None
+        b_delim = b_det.get("delimiter") if b_det else None
         eng = cls.from_paths(
             man["a_path"],
             man["b_path"],
             keys,
             man.get("a_sheet"),
             man.get("b_sheet"),
+            a_delim=a_delim,
+            b_delim=b_delim,
         )
         snaps = man.get("snapshots") or {}
         eng.cell_snaps = [

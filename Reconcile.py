@@ -4,6 +4,7 @@
 User-facing command (PowerShell / POSIX):
 
     python Reconcile.py --a PATH --b PATH --keys id,year
+    python Reconcile.py --a PATH --b PATH --a-delim pipe --b-delim tilde --keys id
     python Reconcile.py --session PATH
 """
 
