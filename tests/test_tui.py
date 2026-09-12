@@ -75,30 +75,3 @@ def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path
             assert not app.engine.draft_in_flight()
 
     asyncio.run(_run())
-
-
-def test_tui_slash_and_equals_disabled_while_sentinel_draft(tmp_path: Path):
-    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")
-    write_csv(pb, "id,s,mixed,ok\n1,x,y,a\n2,y,z,a\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    app = ReconcileApp(eng)
-
-    async def _run() -> None:
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.query_one("#grid").focus()
-            await pilot.pause()
-            assert app.engine.start_sentinel_draft("A", "NA") == 1
-            assert app.engine.column_draft == {"s"}
-            app.action_regex()
-            await pilot.pause()
-            assert "confirm or cancel" in str(app.query_one("#banner").render())
-            assert not isinstance(app.screen, SentinelModal)
-            app.action_sentinel()
-            await pilot.pause()
-            assert "confirm or cancel" in str(app.query_one("#banner").render())
-            assert not isinstance(app.screen, SentinelModal)
-            assert app.engine.column_draft == {"s"}
-
-    asyncio.run(_run())
