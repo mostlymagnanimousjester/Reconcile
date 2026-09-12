@@ -30,7 +30,7 @@ This TUI **never acts on the sources**. It only reads them (load/refresh). This 
 - A “New job” action (quit and relaunch)
 - File watching (refresh is manual)
 - Blanket “ignore this column forever” (acceptances are snapshots; see §9)
-- Stacking regex and Polars into one column-accept draft
+- Stacking regex and sentinel into one column-accept draft
 - Accept-by-insight-group
 - **Do not implement:** copy pending keys/values to the clipboard (or any other export) in order to take them into the source files
 - **Do not implement:** write, patch, save, create, or otherwise mutate files under `--a` / `--b`; open those files in Excel or an editor from the TUI; “fix this cell in the workbook.” Load and refresh are **read-only**. The user edits sources only in other tools, then refreshes.
@@ -216,7 +216,7 @@ Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses up
 | Selected cell footer | Lines prefixed `A:` and `B:` then the full raw string | Same strings as the grid |
 | Extra (in A not B, or B not A) | **Exact header** plus a **Side** field `A` or `B`. Do **not** rename to `A.cust_id` | Snapshot `(side, name)` with `name` = exact header, `side` = `A` or `B` |
 | A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
-| Polars batch selector | **One side** (`A` or `B`) plus expression on that side’s pending values as series `s`. Not a name prefix. `.all()` cannot target both sides (those rows would not be pending) |
+| Exact-value sentinel scan | **One side** (`A` or `B`) plus one exact raw string. Drafts comparable columns where every pending value on that side equals the sentinel. Not a name prefix. `.all()` cannot target both sides (those rows would not be pending) |
 
 The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two roster rows (`kind` `extra`) and two rows on **Schema extras**, each with its `Side`.
 
@@ -293,7 +293,7 @@ On success: recompute counts and pages; show a short **delta in the footer** (e.
 
 Do **not** open a jump-list overlay. Rows that **returned to pending** are marked in the lists already on screen (reverse video / standout, red-lens safe §15.8) until the next successful refresh replaces the set.
 
-In-flight **column** draft: drop names that vanished or now have pending 0; do not re-run selectors. In-flight **pair** draft: drop cells that are no longer pending or whose `valA`/`valB` changed; if none remain, the pair draft is cancelled (back to the pair list).
+In-flight **column** draft: drop names that vanished or now have pending 0; do not re-run regex or sentinel. In-flight **pair** draft: drop cells that are no longer pending or whose `valA`/`valB` changed; if none remain, the pair draft is cancelled (back to the pair list).
 
 On failure (locked file, parse error, missing key column, Excel fastexcel/calamine error, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case. Error text must include the same raw identifiers as §16 (keys, column names, types, paths).
 
@@ -310,11 +310,11 @@ One in-session **column draft**: a set of comparable names (non-key A∩B). Defa
 | Rule | |
 |---|---|
 | After a selector Run | Draft := hits that currently have **at least one pending** mismatch, all **checked**. User then unchecks exceptions |
-| Zero pending | Column is already reconciled for remaining-work. **Not** drafted. No snapshots. Vacuous Polars `.all()` on zero rows must not check it. **Not** a standing ignore: after refresh, new pending cells are pending |
+| Zero pending | Column is already reconciled for remaining-work. **Not** drafted. No snapshots. Do not treat an empty pending series `.all()` as true. **Not** a standing ignore: after refresh, new pending cells are pending |
 | Toggle | Space flips the focused **comparable-column** roster row in/out of the draft (only while a draft is in flight). No-op on `A-only` / `B-only` / `extra` rows |
 | Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle. Then **next lever** (§15.9) |
 | Cancel (`Esc` on roster) | Draft empty; no accepts |
-| In-flight | At most one draft in the session. Confirm or Cancel before another regex/Polars Run, and before starting a **pair** draft (§9.6) |
+| In-flight | At most one draft in the session. Confirm or Cancel before another regex/sentinel Run, and before starting a **pair** draft (§9.6) |
 | Zip / quit | Draft is **never** persisted. `.recon.zip` restores **confirmed** snapshots only. Quit discards an unconfirmed draft |
 
 Refresh does not re-run the selector. Drop from draft: name gone, or pending count now 0. New comparable columns are not added.
@@ -323,7 +323,7 @@ If the user **immediately** accepts a column that is in the draft (`a` on roster
 
 #### Selectors (independent)
 
-Regex and Polars do **not** stack, union, or intersect. Each Run starts from an empty draft.
+Regex and sentinel do **not** stack, union, or intersect. Each Run starts from an empty draft. Do not stack regex and sentinel into one draft.
 
 **Name regex** (roster `/`):
 
@@ -331,27 +331,26 @@ Regex and Polars do **not** stack, union, or intersect. Each Run starts from an 
 - Python `re.search`, case-sensitive; user may put `(?i)` or `^` `$` in the pattern.
 - Empty or invalid pattern: in-TUI error, draft unchanged.
 
-**Polars expression** (roster `=`):
+**Exact-value sentinel** (roster `=`):
 
-The pending universe is `A ≠ B`. An `.all()` predicate on the **same** constant therefore cannot be true on **both** sides: if every pending `A` and every pending `B` were `——`, those cells would be equal and not pending. So an `.all()` selector is **single-side**.
+The pending universe is `A ≠ B`. An `.all()` predicate on the **same** constant therefore cannot be true on **both** sides: if every pending `A` and every pending `B` were `——`, those cells would be equal and not pending. So the scan is **single-side**.
 
-- User must choose **Side `A` or Side `B`** (modal tabs, same denotation as §8.1). Required; no default that means “both.”
-- Per comparable column, one Series `s`: that side’s values on **pending mismatches only** (raw strings, nulls already `""`). The other side is not in the namespace.
-- Expression must reduce to a **single boolean** per column, typically `.all()`, e.g. `(pl.col("s") == "——").all()` meaning “every pending value on the chosen side is `——`.”
-- Referencing `a`, `b`, both sides, original field names, or anything except `s`: in-TUI error, draft unchanged.
-- Per-row Series or non-boolean scalar: in-TUI error; do not silently `.all()`.
-- No IO, no scans, no `map_elements`. Evaluated in **Polars**. Engine error: in-TUI, draft unchanged.
+- User must choose **Side `A` or Side `B`** (modal tabs, same denotation as §8.1). Required; no default that means “both.” Run is refused until a side is selected.
+- One exact string (raw text; no trim, no regex, no expression). Empty sentinel `""` is **legal** (every pending value on that side is the empty string).
+- Per comparable column: that side’s values on **pending mismatches only** (raw strings, nulls already `""`). Draft the column iff it has **at least one pending** mismatch **and** every pending value on the chosen side is **exactly** that string (Python/Polars string equality).
+- Implemented in **Polars**: pending cells grouped by column, `(side == sentinel).all()`. Zero-pending columns are never grouped and are **never** drafted (do not treat empty-series `.all()` as true).
+- Invalid side or other engine error: in-TUI, draft unchanged.
 
-Zero pending still excluded (§9.5 draft). Choosing Side `B` does not look at A, and vice versa.
+Choosing Side `B` does not look at A, and vice versa.
 
 While a draft is in flight, `/` and `=` are disabled (or error: confirm or cancel first).
 
 #### UX (roster)
 
 - Full roster stays visible (not a drafted-only list). Drafted rows show a check.
-- Opening `/` opens a regex modal. Opening `=` opens a Polars modal with **Side tabs `A` | `B`** plus the expression field on `s`; `Enter` Runs; `Esc` closes the modal without changing the draft. Run is refused until a side is selected.
+- Opening `/` opens a regex modal. Opening `=` opens a sentinel modal with **Side tabs `A` | `B`** plus one exact-string field; `Enter` Runs; `Esc` closes the modal without changing the draft. Run is refused until a side is selected.
 - After Run, footer shows `draft N` plus Confirm / Cancel / toggle.
-- Column **detail** has no regex/Polars. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight.
+- Column **detail** has no regex/sentinel. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight.
 
 ### 9.6 Exact pending-pair accept
 
@@ -384,7 +383,7 @@ Selecting a pair (not Confirm) fills a **pair draft**: every current pending cel
 | Toggle | Space flips the focused **grid** row in/out of the draft |
 | Confirm (`y`) | Snapshot every still-checked cell `(key, column, valA, valB)`. Undo is **per cell**, not one bundle. Draft empty. Remember this pair as **last pair**. Then **next lever** (§15.9) |
 | Cancel (`Esc`) | Draft empty; **back to the pair list** (not the roster). No accepts |
-| In-flight | Session has no other draft. Confirm or Cancel before another pair, and before roster regex/Polars |
+| In-flight | Session has no other draft. Confirm or Cancel before another pair, and before roster regex/sentinel |
 | Zip / quit | Pair draft is **never** persisted. Confirmed cell snapshots only |
 
 Immediate `a` on a drafted cell: snapshot that cell now; drop it from the pair draft.
@@ -476,7 +475,7 @@ Stack: **Python 3.13**, Polars, fastexcel, Textual. Must run on Windows. Launch 
 - The TUI must **not** convert full frames to Python objects.
 - The TUI **requests pages** (100 rows) and small summaries (roster, counts, pending-pair groups, batch-selector booleans).
 - Python/Polars round-trips must be minimized and explicit (page structs / small aggregate frames only).
-- Batch Polars selectors (§9.5) run **in Polars** on one pending series `s` for the chosen side per comparable column (or one unpivot + group). Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates. Draft checkboxes are a small name/row set; that part may be Python.
+- Batch sentinel scan (§9.5) runs **in Polars**: pending cells grouped by column, all values on the chosen side == the exact sentinel (or one unpivot + group). Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates. Draft checkboxes are a small name/row set; that part may be Python.
 
 Roster is one row per comparable column (small); it may be fully materialized. Cell/key lists are paged at **100**.
 
@@ -563,7 +562,7 @@ Export and open from the TUI. Also `--session` on CLI.
 
 Do not use the word “summary” for two different screens. Names below are canonical.
 
-**Happy path (the product):** launch → **roster** (row 1 is the largest remaining pending pile) → `Enter` into that pile → knock it down (`a` / `A` / pair `y`) → **next lever** → `r` after the user saves the workbook in another tool. Regex `/`, Polars `=`, Equal/All-matched tabs: real, behind glass. A-only keys, B-only keys, and extras are remaining-work rows on the roster, not a side room.
+**Happy path (the product):** launch → **roster** (row 1 is the largest remaining pending pile) → `Enter` into that pile → knock it down (`a` / `A` / pair `y`) → **next lever** → `r` after the user saves the workbook in another tool. Regex `/`, sentinel `=`, Equal/All-matched tabs: real, behind glass. A-only keys, B-only keys, and extras are remaining-work rows on the roster, not a side room.
 
 A footer/status line is **always visible** (§15.6).
 
@@ -690,7 +689,7 @@ The **only** persistent chrome besides the work list. Show what you can do **now
 
 **Same keys everywhere.** Do not ship a second keymap when a draft starts; `Space` / `y` / `Esc` simply become useful.
 
-Apply when focus is **not** in a text input (filter box, regex/Polars modal). In a field: typing goes to the field; `Enter` runs/confirms the field; `Esc` leaves the field (modal: close without run; filter box: back to list).
+Apply when focus is **not** in a text input (filter box, regex/sentinel modal). In a field: typing goes to the field; `Enter` runs/confirms the field; `Esc` leaves the field (modal: close without run; filter box: back to list).
 
 | Key | Meaning |
 |---|---|
@@ -704,7 +703,7 @@ Apply when focus is **not** in a text input (filter box, regex/Polars modal). In
 | `r` | Refresh (stay put; mark returned-to-pending) |
 | `.` | Repeat last pair as a new draft (§9.6); refused if a draft is in flight |
 | `/` | Roster: regex **column draft** (not the filter box) |
-| `=` | Roster: Polars selector (escape hatch; not the happy path) |
+| `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path) |
 | `c` | Context-column picker (cell step) |
 | `n` / `p` | Next/prev page |
 | `e` | Export `.recon.zip` |
@@ -776,7 +775,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 |---|---|
 | Textual cannot start | stderr + exit `2` |
 | Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, Excel fastexcel/calamine error, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
-| After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
+| After TUI is up: refresh fail, open-session fail, invalid regex/sentinel, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
 
@@ -828,7 +827,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
 | Roster | Home screen of remaining work (comparable columns, A-only, B-only, extras). Sort: pending then concentration then name. Concentration is a visible top-pair % only. Persistent filter box. Immediate `a`; `/` `=` behind glass |
-| Batch column accept | Independent regex `/` or Polars `=`; Polars `.all()` is **one side** (`A` or `B`) on series `s`; draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted |
+| Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` is exact-value `.all()` on one side. Draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells; Accepted/Equal/All matched behind glass; `a` grain / `A` column |

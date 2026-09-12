@@ -26,7 +26,7 @@ y      confirm current draft
 u      undo focused grain   U  undo entire column (cell step)
 r      refresh (re-read live files; last good state on failure)
 .      repeat last pair as a new draft
-/      regex column draft (roster)     =  Polars selector (side A|B, series s)
+/      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
 c      context-column picker (cell step)
 n / p  next / previous page
 e      export .recon.zip     o  open zip (refused while a draft is in flight)
@@ -211,7 +211,7 @@ class RegexModal(ModalScreen[str | None]):
         self.dismiss(self.query_one("#pat", Input).value)
 
 
-class PolarsModal(ModalScreen[tuple[str, str] | None]):
+class SentinelModal(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("enter", "ok", "Run", priority=True),
@@ -219,17 +219,20 @@ class PolarsModal(ModalScreen[tuple[str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield Static("Polars selector on pending values as series s. Choose exactly one side.")
+            yield Static("Exact sentinel on pending values on one side. Choose exactly one side.")
             with Horizontal():
                 yield Button("A", id="side-a")
                 yield Button("B", id="side-b")
-            yield Input(placeholder='(pl.col("s") == "——").all()', id="expr")
-            yield Static("Enter Run · Esc cancel. Run is refused until a side is selected.", classes="dim")
+            yield Input(placeholder="exact string (empty is legal)", id="sentinel")
+            yield Static(
+                "Enter Run · Esc cancel. Run is refused until a side is selected. No trim.",
+                classes="dim",
+            )
         self._side: str | None = None
 
     def on_mount(self) -> None:
         self._side = None
-        self.query_one("#expr", Input).focus()
+        self.query_one("#sentinel", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "side-a":
@@ -240,6 +243,7 @@ class PolarsModal(ModalScreen[tuple[str, str] | None]):
             self._side = "B"
             event.button.label = "[B]"
             self.query_one("#side-a", Button).label = "A"
+        self.query_one("#sentinel", Input).focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -247,7 +251,7 @@ class PolarsModal(ModalScreen[tuple[str, str] | None]):
     def action_ok(self) -> None:
         if self._side is None:
             return
-        self.dismiss((self._side, self.query_one("#expr", Input).value))
+        self.dismiss((self._side, self.query_one("#sentinel", Input).value))
 
 
 class ContextModal(ModalScreen[list[str] | None]):
@@ -329,13 +333,13 @@ class ReconcileApp(App[int]):
         Binding("q", "quit_app", "Quit", show=False),
         Binding("c", "context", "Context", show=False),
         Binding("slash", "regex", "Regex", show=False),
-        Binding("equals", "polars", "Polars", show=False),
+        Binding("equals", "sentinel", "Sentinel", show=False),
         Binding("full_stop", "repeat_pair", "Repeat", show=False),
         Binding("question_mark", "help", "Help", show=False),
         Binding("question", "help", "Help", show=False),
         Binding(".", "repeat_pair", "Repeat", show=False),
         Binding("/", "regex", "Regex", show=False),
-        Binding("=", "polars", "Polars", show=False),
+        Binding("=", "sentinel", "Sentinel", show=False),
         Binding("?", "help", "Help", show=False),
     ]
 
@@ -1084,7 +1088,7 @@ class ReconcileApp(App[int]):
 
         self.push_screen(RegexModal(), done)
 
-    def action_polars(self) -> None:
+    def action_sentinel(self) -> None:
         if self.engine.place.screen != "roster":
             return
         if self.engine.draft_in_flight():
@@ -1095,16 +1099,16 @@ class ReconcileApp(App[int]):
         def done(result: tuple[str, str] | None) -> None:
             if result is None:
                 return
-            side, expr = result
+            side, sentinel = result
             try:
-                self.engine.start_polars_draft(side, expr)
+                self.engine.start_sentinel_draft(side, sentinel)
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
             self.render_all()
             self.set_focus_work()
 
-        self.push_screen(PolarsModal(), done)
+        self.push_screen(SentinelModal(), done)
 
     def action_repeat_pair(self) -> None:
         e = self.engine

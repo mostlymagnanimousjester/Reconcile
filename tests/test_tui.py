@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 from reconcile.engine import Engine
-from reconcile.tui import ReconcileApp
+from reconcile.tui import HELP, ReconcileApp, SentinelModal
 from tests.xlsxutil import write_csv
 
 
@@ -39,5 +39,48 @@ def test_tui_launches_against_fixture(tmp_path: Path):
             await pilot.press("escape")
             await pilot.pause()
             assert pending_before == app.engine.pending_total()
+
+    asyncio.run(_run())
+
+
+def test_help_says_exact_sentinel_not_polars_selector():
+    assert "Polars selector" not in HELP
+    assert "exact sentinel" in HELP
+    assert "regex column draft" in HELP
+
+
+def test_tui_sentinel_draft_from_equals_modal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")
+    write_csv(pb, "id,s,mixed,ok\n1,x,y,a\n2,y,z,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("equals")
+            await pilot.pause()
+            assert isinstance(app.screen, SentinelModal)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, SentinelModal)
+            assert not app.engine.draft_in_flight()
+            await pilot.click("#side-a")
+            await pilot.pause()
+            await pilot.press("N", "A")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.engine.column_draft == {"s"}
+            assert "mixed" not in app.engine.column_draft
+            assert "ok" not in app.engine.column_draft
+            await pilot.press("slash")
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "draft" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "confirm or cancel" in banner
 
     asyncio.run(_run())

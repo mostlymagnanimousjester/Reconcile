@@ -115,30 +115,141 @@ def test_regex_draft_pending_only(tmp_path: Path):
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     n = eng.start_regex_draft("(?i)stat|flag")
     assert n == 2
+    assert eng.column_draft == {"Status", "Flag"}
     assert "ok" not in eng.column_draft
     eng.confirm_column_draft()
     assert eng.pending_cells_n() == 0
 
 
-def test_polars_rejects_other_names(tmp_path: Path):
+def test_regex_draft_is_name_based_not_values(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,val\n1,a\n")
-    write_csv(pb, "id,val\n1,b\n")
+    write_csv(pa, "id,alpha,beta\n1,NA,x\n")
+    write_csv(pb, "id,alpha,beta\n1,y,NA\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    with pytest.raises(InTuiError, match="only use pl"):
-        eng.start_polars_draft("A", '(pl.col("a") == "x").all()')
+    n = eng.start_regex_draft("^NA$")
+    assert n == 0
+    assert eng.column_draft == set()
+    n = eng.start_regex_draft("alp")
+    assert n == 1
+    assert eng.column_draft == {"alpha"}
 
 
-def test_polars_selector_one_side(tmp_path: Path):
+def _sentinel_fixture(tmp_path: Path) -> Engine:
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,val\n1,——\n2,——\n")
-    write_csv(pb, "id,val\n1,x\n2,y\n")
+    write_csv(
+        pa,
+        "id,all_a,mixed,ok,blank_a\n1,——,——,same,\n2,——,x,same,\n",
+    )
+    write_csv(
+        pb,
+        "id,all_a,mixed,ok,blank_a\n1,x,y,same,x\n2,y,z,same,y\n",
+    )
+    return Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+
+
+def test_sentinel_drafts_columns_where_all_pending_a_equal(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    n = eng.start_sentinel_draft("A", "——")
+    assert n == 1
+    assert eng.column_draft == {"all_a"}
+    eng.cancel_drafts()
+    n = eng.start_sentinel_draft("B", "——")
+    assert n == 0
+    assert eng.column_draft == set()
+
+
+def test_sentinel_drafts_columns_where_all_pending_b_equal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,all_b,mixed\n1,x,p\n2,y,q\n")
+    write_csv(pb, "id,all_b,mixed\n1,——,——\n2,——,z\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    n = eng.start_polars_draft("A", '(pl.col("s") == "——").all()')
+    n = eng.start_sentinel_draft("B", "——")
+    assert n == 1
+    assert eng.column_draft == {"all_b"}
+    eng.cancel_drafts()
+    n = eng.start_sentinel_draft("A", "——")
+    assert n == 0
+
+
+def test_sentinel_excludes_mixed_pending_values(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    n = eng.start_sentinel_draft("A", "——")
+    assert "mixed" not in eng.column_draft
+    assert n == 1
+
+
+def test_sentinel_excludes_zero_pending_columns(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    n = eng.start_sentinel_draft("A", "same")
+    assert n == 0
+    assert "ok" not in eng.column_draft
+    n = eng.start_sentinel_draft("A", "——")
+    assert "ok" not in eng.column_draft
+    assert n == 1
+
+
+def test_sentinel_empty_string_is_legal(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    n = eng.start_sentinel_draft("A", "")
+    assert n == 1
+    assert eng.column_draft == {"blank_a"}
+    eng.cancel_drafts()
+    n = eng.start_sentinel_draft("A", "   ")
+    assert n == 0
+    write_csv(tmp_path / "a.csv", "id,pad\n1, x\n")
+    write_csv(tmp_path / "b.csv", "id,pad\n1,y\n")
+    eng = Engine.from_paths(
+        str(tmp_path / "a.csv"), str(tmp_path / "b.csv"), ["id"], a_delim=",", b_delim=","
+    )
+    n = eng.start_sentinel_draft("A", " x")
     assert n == 1
     eng.cancel_drafts()
-    n = eng.start_polars_draft("B", '(pl.col("s") == "——").all()')
+    n = eng.start_sentinel_draft("A", "x")
     assert n == 0
+
+
+def test_equals_no_longer_evals_polars(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,——\n")
+    write_csv(pb, "id,val\n1,x\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    expr = '(pl.col("s") == "——").all()'
+    n = eng.start_sentinel_draft("A", expr)
+    assert n == 0
+    assert eng.column_draft == set()
+    n = eng.start_sentinel_draft("A", "——")
+    assert n == 1
+    assert eng.column_draft == {"val"}
+    assert not hasattr(eng, "start_polars_draft")
+    assert not hasattr(eng, "_assert_safe_polars")
+
+
+def test_sentinel_refuses_without_side_and_leaves_draft(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    with pytest.raises(InTuiError, match="Side A or Side B"):
+        eng.start_sentinel_draft("", "——")
+    assert not eng.draft_in_flight()
+    eng.start_sentinel_draft("A", "——")
+    assert eng.column_draft == {"all_a"}
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_sentinel_draft("A", "")
+    assert eng.column_draft == {"all_a"}
+
+
+def test_sentinel_xor_with_regex_and_pair_draft(tmp_path: Path):
+    eng = _sentinel_fixture(tmp_path)
+    eng.start_regex_draft("all_a")
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_sentinel_draft("A", "——")
+    eng.cancel_drafts()
+    eng.start_sentinel_draft("A", "——")
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_regex_draft("mixed")
+    eng.cancel_drafts()
+    n = eng.start_pair_draft("all_a", "——", "x")
+    assert n == 1
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_sentinel_draft("A", "——")
 
 
 def test_refresh_error_keeps_last_state(tmp_path: Path):

@@ -61,6 +61,8 @@ Excel sides require `--a-sheet` / `--b-sheet`. Delimiter and encoding flags are 
 
 Home is the **roster** of remaining work (comparable columns, A-only keys, B-only keys, extras), sorted by pending, then top-pair %, then name. `Enter` drills in; `Esc` goes back (roster → Overview). `a` accepts the focused grain; `A` accepts a whole column or all unmatched on a side; `r` re-reads the live files; `e` / `o` export or open a `.recon.zip`; `q` quits; `?` help.
 
+On the roster, `/` drafts comparable columns whose **names** match a Python regex. `=` drafts comparable columns where every **pending** value on one chosen side is exactly a sentinel string (raw text; no trim, no regex, no expression; empty `""` is legal). Both fill a column draft (all-checked); `Space` toggles, `y` confirms accept-entire-column snapshots, `Esc` cancels. At most one draft is in flight. Insights cannot accept. Compare stays exact raw text.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -69,7 +71,7 @@ Home is the **roster** of remaining work (comparable columns, A-only keys, B-onl
 | `1` | Quit with pending remaining |
 | `2` | Hard fail (load/parse/schema). Message on stderr includes raw identifiers. |
 
-Once the TUI is up, refresh/open/selector errors stay in the TUI and keep the last good state.
+Once the TUI is up, refresh/open/draft errors stay in the TUI and keep the last good state.
 
 ## Tests
 

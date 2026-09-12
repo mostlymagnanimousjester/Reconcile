@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 import zipfile
@@ -758,61 +757,32 @@ class Engine:
         self.column_draft = set(hits)
         return len(hits)
 
-    def start_polars_draft(self, side: str, expression: str) -> int:
+    def start_sentinel_draft(self, side: str, sentinel: str) -> int:
         if self.draft_in_flight():
             raise InTuiError("ERROR: confirm or cancel the current draft first")
         if side not in ("A", "B"):
-            raise InTuiError("ERROR: Polars selector requires Side A or Side B")
-        expr_src = expression.strip()
-        if not expr_src:
-            raise InTuiError("ERROR: empty Polars expression")
-        self._assert_safe_polars(expr_src)
-        hits: list[str] = []
+            raise InTuiError("ERROR: sentinel scan requires Side A or Side B")
         val_col = "val_a" if side == "A" else "val_b"
-        for col in self.comparable:
-            pending = self.pending_cells.filter(pl.col("column") == col)
-            if pending.is_empty():
-                continue
-            series_df = pl.DataFrame({"s": pending[val_col]})
-            try:
-                result = series_df.select(eval(expr_src, {"pl": pl, "__builtins__": {}}))
-            except Exception as exc:
-                raise InTuiError(f"ERROR: Polars engine error: {exc}") from exc
-            if result.width != 1 or result.height != 1:
-                raise InTuiError(
-                    "ERROR: Polars expression must reduce to a single boolean per column"
-                )
-            dtype = result.dtypes[0]
-            if dtype != pl.Boolean:
-                raise InTuiError("ERROR: Polars expression must reduce to a single boolean")
-            if result.item() is True:
-                hits.append(col)
+        pending = self.pending_cells
+        if self.comparable:
+            pending = pending.filter(pl.col("column").is_in(list(self.comparable)))
+        else:
+            pending = pending.head(0)
+        # group_by omits zero-pending columns, so empty-series .all() cannot draft them
+        if pending.is_empty():
+            self.column_draft = set()
+            return 0
+        try:
+            hits_df = (
+                pending.group_by("column")
+                .agg((pl.col(val_col) == pl.lit(sentinel)).all().alias("hit"))
+                .filter(pl.col("hit"))
+            )
+        except Exception as exc:
+            raise InTuiError(f"ERROR: sentinel scan error: {exc}") from exc
+        hits = hits_df.get_column("column").to_list()
         self.column_draft = set(hits)
         return len(hits)
-
-    def _assert_safe_polars(self, src: str) -> None:
-        try:
-            tree = ast.parse(src, mode="eval")
-        except SyntaxError as exc:
-            raise InTuiError(f"ERROR: invalid Polars expression: {exc}") from exc
-        banned = {"open", "eval", "exec", "compile", "input", "__import__", "map_elements", "scan_csv", "read_csv"}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-                raise InTuiError("ERROR: Polars expression cannot reference private attributes")
-            if isinstance(node, ast.Name) and node.id not in {"pl", "s"}:
-                raise InTuiError(
-                    f"ERROR: Polars expression may only use pl and series s, not {node.id!r}"
-                )
-            if isinstance(node, ast.Name) and node.id in banned:
-                raise InTuiError("ERROR: Polars expression is not allowed")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "col":
-                if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value != "s":
-                    raise InTuiError(
-                        "ERROR: Polars expression may only use pl and series s, "
-                        f"not {node.args[0].value!r}"
-                    )
-        if re.search(r"map_elements|scan_|read_|write_|sink_|__import__", src):
-            raise InTuiError("ERROR: Polars expression cannot use IO or map_elements")
 
     def start_pair_draft(self, column: str, val_a: str, val_b: str) -> int:
         if self.column_draft:
