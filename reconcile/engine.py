@@ -1,4 +1,4 @@
-"""Compare contract, pending/accept snapshots, refresh, and .recon.zip."""
+"""Engine facade: session zip, refresh, load wiring, and re-exports."""
 
 from __future__ import annotations
 
@@ -12,33 +12,14 @@ from typing import Any, Literal
 import polars as pl
 
 from reconcile.delimited import abs_path
-from reconcile.errors import HardFail, format_key_tuple
+from reconcile.errors import HardFail
 from reconcile.insights import (
     cell_insights,
-    extra_insights,
     first_diff,
 )
 from reconcile.load import SideTable, load_side
 
-PAGE_SIZE = 100
 SCHEMA_VERSION = 1
-
-
-def _page_dicts(frame: pl.DataFrame) -> list[dict[str, Any]]:
-    """Materialize at most PAGE_SIZE rows. Callers must slice first."""
-    if frame.height > PAGE_SIZE:
-        raise ValueError(
-            f"refusing to materialize {frame.height} rows (PAGE_SIZE={PAGE_SIZE})"
-        )
-    return frame.to_dicts()
-
-
-def _page(frame: pl.DataFrame, page: int) -> tuple[list[dict[str, Any]], int, int]:
-    total = frame.height
-    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = max(0, min(page, pages - 1))
-    chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
-    return _page_dicts(chunk), page, pages
 
 ScreenName = Literal[
     "roster",
@@ -122,99 +103,20 @@ class InTuiError(Exception):
         self.message = message
 
 
-def _empty_mismatch_schema(keys: list[str]) -> dict[str, pl.DataType]:
-    schema: dict[str, pl.DataType] = {k: pl.Utf8 for k in keys}
-    schema["column"] = pl.Utf8
-    schema["val_a"] = pl.Utf8
-    schema["val_b"] = pl.Utf8
-    return schema
+from reconcile import compare as compare_mod  # noqa: E402
+from reconcile import pages as pages_mod  # noqa: E402
+from reconcile import roster as roster_mod  # noqa: E402
+from reconcile import snaps as snaps_mod  # noqa: E402
+from reconcile.compare import _empty_df  # noqa: E402
+from reconcile.snaps import (  # noqa: E402
+    _cell_snaps_from_json,
+    _empty_cell_snaps,
+    _unmatched_snaps_from_json,
+)
 
-
-def _empty_df(schema: dict[str, pl.DataType]) -> pl.DataFrame:
-    return pl.DataFrame({k: [] for k in schema}).cast(schema)
-
-
-def _dup_headers_already_checked(headers: list[str], side: str) -> None:
-    counts: dict[str, int] = {}
-    for h in headers:
-        counts[h] = counts.get(h, 0) + 1
-    dups = [h for h, n in counts.items() if n > 1]
-    if dups:
-        raise HardFail(f"Duplicate column name on side {side}: {dups[0]!r}")
-
-
-def _check_keys_exist(headers: list[str], keys: list[str], side: str) -> None:
-    missing = [k for k in keys if k not in headers]
-    if missing:
-        raise HardFail(f"Missing key column {missing[0]!r} on side {side}")
-
-
-def _check_duplicate_keys(df: pl.DataFrame, keys: list[str], side: str) -> None:
-    if df.is_empty():
-        return
-    counted = df.group_by(keys).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
-    if counted.is_empty():
-        return
-    row = counted.row(0, named=True)
-    key = tuple(str(row[k]) for k in keys)
-    n = int(row["n"])
-    raise HardFail(
-        f"Duplicate key on side {side}: {format_key_tuple(key)} occurs {n} times"
-    )
-
-
-def _struct_key(keys: list[str]) -> pl.Expr:
-    return pl.struct(keys).alias("_key")
-
-
-def _empty_cell_snaps(keys: list[str]) -> pl.DataFrame:
-    return _empty_df(_empty_mismatch_schema(keys))
-
-
-def _cell_snaps_from_json(keys: list[str], cells: list[dict[str, Any]]) -> pl.DataFrame:
-    if not cells:
-        return _empty_cell_snaps(keys)
-    data: dict[str, list[str]] = {k: [] for k in keys}
-    data["column"] = []
-    data["val_a"] = []
-    data["val_b"] = []
-    for c in cells:
-        key = list(c.get("key") or [])
-        for i, k in enumerate(keys):
-            data[k].append(str(key[i]) if i < len(key) else "")
-        data["column"].append(str(c.get("column", "")))
-        data["val_a"].append(str(c.get("val_a", "")))
-        data["val_b"].append(str(c.get("val_b", "")))
-    return pl.DataFrame(data).unique()
-
-
-def _unmatched_snaps_from_json(
-    keys: list[str],
-    items: list[dict[str, Any]],
-    side: str,
-    template: pl.DataFrame,
-) -> pl.DataFrame:
-    rows = [u for u in items if u.get("side") == side]
-    if not rows:
-        return template.head(0)
-    recs: list[dict[str, str]] = []
-    for u in rows:
-        rec = {c: "" for c in template.columns}
-        rec.update({str(k): str(v) for k, v in dict(u.get("row") or {}).items()})
-        key = list(u.get("key") or [])
-        for i, kname in enumerate(keys):
-            if i < len(key) and kname in rec:
-                rec[kname] = str(key[i])
-        recs.append(rec)
-    data = {c: [r.get(c, "") for r in recs] for c in template.columns}
-    return pl.DataFrame(data)
-
-
-def _key_eq_expr(keys: list[str], key: tuple[str, ...]) -> pl.Expr:
-    expr: pl.Expr = pl.lit(True)
-    for k, v in zip(keys, key):
-        expr = expr & (pl.col(k) == v)
-    return expr
+PAGE_SIZE = pages_mod.PAGE_SIZE
+_page = pages_mod._page
+_page_dicts = pages_mod._page_dicts
 
 
 class Engine:
@@ -269,122 +171,12 @@ class Engine:
         return eng
 
     def _rebuild(self) -> None:
-        _dup_headers_already_checked(self.a.headers, "A")
-        _dup_headers_already_checked(self.b.headers, "B")
-        _check_keys_exist(self.a.headers, self.keys, "A")
-        _check_keys_exist(self.b.headers, self.keys, "B")
-        _check_duplicate_keys(self.a.frame, self.keys, "A")
-        _check_duplicate_keys(self.b.frame, self.keys, "B")
-
-        a_names = set(self.a.headers)
-        b_names = set(self.b.headers)
-        self.intersection = [n for n in self.a.headers if n in b_names]
-        self.comparable = [n for n in self.intersection if n not in self.keys]
-        self.extras_a = [n for n in self.a.headers if n not in b_names]
-        self.extras_b = [n for n in self.b.headers if n not in a_names]
-        self.context_pool = [n for n in self.intersection if n not in self.keys]
-
-        a_k = self.a.frame.select(self.keys).with_columns(_struct_key(self.keys))
-        b_k = self.b.frame.select(self.keys).with_columns(_struct_key(self.keys))
-        a_only_keys = a_k.join(b_k, on="_key", how="anti").drop("_key")
-        b_only_keys = b_k.join(a_k, on="_key", how="anti").drop("_key")
-        matched_keys = a_k.join(b_k, on="_key", how="inner").drop("_key")
-
-        if a_only_keys.is_empty():
-            self.a_only = self.a.frame.head(0)
-        else:
-            self.a_only = self.a.frame.join(a_only_keys, on=self.keys, how="inner")
-        if b_only_keys.is_empty():
-            self.b_only = self.b.frame.head(0)
-        else:
-            self.b_only = self.b.frame.join(b_only_keys, on=self.keys, how="inner")
-
-        if matched_keys.is_empty():
-            self.matched_a = self.a.frame.head(0)
-            self.matched_b = self.b.frame.head(0)
-        else:
-            self.matched_a = self.a.frame.join(matched_keys, on=self.keys, how="inner")
-            self.matched_b = self.b.frame.join(matched_keys, on=self.keys, how="inner")
-
-        schema = _empty_mismatch_schema(self.keys)
-        if self.matched_a.is_empty() or not self.comparable:
-            self.mismatches = _empty_df(schema)
-        else:
-            a_long = self.matched_a.select(self.keys + self.comparable).unpivot(
-                index=self.keys, on=self.comparable, variable_name="column", value_name="val_a"
-            )
-            b_long = self.matched_b.select(self.keys + self.comparable).unpivot(
-                index=self.keys, on=self.comparable, variable_name="column", value_name="val_b"
-            )
-            self.mismatches = a_long.join(b_long, on=[*self.keys, "column"], how="inner").filter(
-                pl.col("val_a") != pl.col("val_b")
-            )
+        compare_mod.rebuild_frames(self)
+        compare_mod.sort_unmatched(self)
         self._apply_snapshots()
-        self._sort_unmatched()
-
-    def _ensure_unmatched_snap_frames(self) -> None:
-        if self.unmatched_snaps_a is None or (
-            self.unmatched_snaps_a.is_empty()
-            and list(self.unmatched_snaps_a.columns) != list(self.a_only.columns)
-        ):
-            self.unmatched_snaps_a = self.a_only.head(0)
-        if self.unmatched_snaps_b is None or (
-            self.unmatched_snaps_b.is_empty()
-            and list(self.unmatched_snaps_b.columns) != list(self.b_only.columns)
-        ):
-            self.unmatched_snaps_b = self.b_only.head(0)
-
-    def _sort_unmatched(self) -> None:
-        if not self.a_only.is_empty():
-            self.a_only = self.a_only.sort(self.keys)
-        if not self.b_only.is_empty():
-            self.b_only = self.b_only.sort(self.keys)
 
     def _apply_snapshots(self) -> None:
-        self._ensure_unmatched_snap_frames()
-        self.pending_cells = self._pending_cells()
-        self.accepted_cells = self._accepted_cells_current()
-        self.pending_a_only, self.accepted_a_only = self._split_unmatched("A")
-        self.pending_b_only, self.accepted_b_only = self._split_unmatched("B")
-        self.pending_extras, self.accepted_extras = self._split_extras()
-        self._roster_cache = self._build_roster_cache()
-
-    def _pending_cells(self) -> pl.DataFrame:
-        if self.mismatches.is_empty() or self.cell_snaps.is_empty():
-            return self.mismatches
-        return self.mismatches.join(
-            self.cell_snaps, on=[*self.keys, "column", "val_a", "val_b"], how="anti"
-        )
-
-    def _accepted_cells_current(self) -> pl.DataFrame:
-        if self.mismatches.is_empty() or self.cell_snaps.is_empty():
-            return self.mismatches.head(0)
-        return self.mismatches.join(
-            self.cell_snaps, on=[*self.keys, "column", "val_a", "val_b"], how="inner"
-        )
-
-    def _split_unmatched(self, side: str) -> tuple[pl.DataFrame, pl.DataFrame]:
-        frame = self.a_only if side == "A" else self.b_only
-        snaps = self.unmatched_snaps_a if side == "A" else self.unmatched_snaps_b
-        if frame.is_empty():
-            return frame, frame
-        if snaps is None or snaps.is_empty():
-            return frame, frame.head(0)
-        if set(snaps.columns) != set(frame.columns):
-            # Schema drift: full-row identity cannot match (not a key-only ignore).
-            return frame, frame.head(0)
-        snaps = snaps.select(list(frame.columns))
-        cols = list(frame.columns)
-        pending = frame.join(snaps, on=cols, how="anti")
-        accepted = frame.join(snaps, on=cols, how="inner")
-        return pending, accepted
-
-    def _split_extras(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        current = [("A", n) for n in self.extras_a] + [("B", n) for n in self.extras_b]
-        accepted_set = {(s.side, s.name) for s in self.extra_snaps}
-        pending = [x for x in current if x not in accepted_set]
-        accepted = [x for x in current if x in accepted_set]
-        return pending, accepted
+        snaps_mod.apply_snapshots(self)
 
     # --- counts ---
 
@@ -417,12 +209,7 @@ class Engine:
         )
 
     def equal_count(self, column: str) -> int:
-        if column not in self.comparable:
-            return 0
-        mismatch_n = 0
-        if not self.mismatches.is_empty():
-            mismatch_n = self.mismatches.filter(pl.col("column") == column).height
-        return self.matched_a.height - mismatch_n
+        return compare_mod.equal_count(self, column)
 
     def matched_key_count(self) -> int:
         return self.matched_a.height
@@ -430,328 +217,47 @@ class Engine:
     # --- roster ---
 
     def roster(self, name_filter: str = "") -> list[RosterRow]:
-        rows = list(self._roster_cache)
-        if name_filter:
-            needle = name_filter.lower()
-            rows = [r for r in rows if needle in r.name.lower()]
-        return rows
+        return roster_mod.roster(self, name_filter)
 
     def _roster_agg_maps(self) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
-        pending_by_col: dict[str, int] = {}
-        accepted_by_col: dict[str, int] = {}
-        top_pair: dict[str, int] = {}
-        col_stats: dict[str, dict[str, Any]] = {}
-        if not self.pending_cells.is_empty():
-            for rec in self.pending_cells.group_by("column").len().to_dicts():
-                pending_by_col[rec["column"]] = rec["len"]
-            grouped = (
-                self.pending_cells.group_by(["column", "val_a", "val_b"])
-                .len()
-                .sort(["column", "len"], descending=[False, True])
-            )
-            for rec in grouped.group_by("column").first().to_dicts():
-                top_pair[rec["column"]] = rec["len"]
-            stats = self.pending_cells.group_by("column").agg(
-                (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).any().alias("trim"),
-                (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).any().alias("case"),
-                (
-                    pl.col("val_a").str.strip_chars().str.to_lowercase()
-                    == pl.col("val_b").str.strip_chars().str.to_lowercase()
-                ).any().alias("both"),
-                (
-                    pl.col("val_a").cast(pl.Float64, strict=False).is_not_null()
-                    & pl.col("val_b").cast(pl.Float64, strict=False).is_not_null()
-                    & (pl.col("val_a").str.strip_chars() != "")
-                    & (pl.col("val_b").str.strip_chars() != "")
-                    & (
-                        pl.col("val_a").cast(pl.Float64, strict=False)
-                        == pl.col("val_b").cast(pl.Float64, strict=False)
-                    )
-                ).any().alias("numeric"),
-                (
-                    pl.col("val_a").str.contains(r"[\u00a0\t\r\n]")
-                    | pl.col("val_b").str.contains(r"[\u00a0\t\r\n]")
-                    | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
-                    | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
-                ).any().alias("ws"),
-                pl.col("val_a").n_unique().alias("n_a"),
-                pl.col("val_b").n_unique().alias("n_b"),
-                pl.col("val_a").unique().sort().alias("ua"),
-                pl.col("val_b").unique().sort().alias("ub"),
-            ).with_columns(
-                pl.col("ua").list.concat(pl.col("ub")).list.unique().list.len().alias("n_ab"),
-                (pl.col("ua") != pl.col("ub")).alias("pattern"),
-            ).drop("ua", "ub")
-            for rec in stats.to_dicts():
-                col_stats[rec["column"]] = rec
-        if not self.accepted_cells.is_empty():
-            for rec in self.accepted_cells.group_by("column").len().to_dicts():
-                accepted_by_col[rec["column"]] = rec["len"]
-        return pending_by_col, accepted_by_col, top_pair, col_stats
+        return roster_mod._roster_agg_maps(self)
 
     def _build_roster_cache(self) -> list[RosterRow]:
-        pending_by_col, accepted_by_col, top_pair, col_stats = self._roster_agg_maps()
-        rows: list[RosterRow] = []
-        matched_n = self.matched_a.height
-        mismatch_n: dict[str, int] = {}
-        if not self.mismatches.is_empty():
-            for rec in self.mismatches.group_by("column").len().to_dicts():
-                mismatch_n[rec["column"]] = rec["len"]
-        for col in self.comparable:
-            pend = pending_by_col.get(col, 0)
-            acc = accepted_by_col.get(col, 0)
-            conc = (top_pair.get(col, 0) / pend) if pend else 0.0
-            pct = f"{conc * 100:.0f}%" if pend else "—"
-            st = col_stats.get(col)
-            if not pend or st is None:
-                cat = "—"
-                tags = ""
-            else:
-                n_a, n_b, n_ab = int(st["n_a"]), int(st["n_b"]), int(st["n_ab"])
-                cat = "yes" if n_a <= 30 and n_b <= 30 and n_ab <= 50 else "no"
-                tag_bits: list[str] = []
-                if st["trim"]:
-                    tag_bits.append("speculative: equal if trim")
-                if st["case"]:
-                    tag_bits.append("speculative: equal if case-fold")
-                if st["both"] and not st["trim"] and not st["case"]:
-                    tag_bits.append("speculative: equal if trim+case")
-                if st["numeric"]:
-                    tag_bits.append("speculative: equal as numbers")
-                if st["ws"]:
-                    tag_bits.append("speculative: invisible/odd whitespace")
-                if st["pattern"] and n_a <= 6 and n_b <= 6:
-                    tag_bits.append("speculative: shared value pattern")
-                tags = ", ".join(tag_bits[:3])
-            equal = str(matched_n - mismatch_n.get(col, 0))
-            rows.append(
-                RosterRow(
-                    kind="column",
-                    name=col,
-                    side="—",
-                    pending=pend,
-                    concentration=conc,
-                    top_pair_pct=pct,
-                    accepted=acc,
-                    equal=equal,
-                    categorical=cat,
-                    speculative=tags,
-                    returned=self.column_has_returned(col),
-                )
-            )
-        if self.a_only.height > 0:
-            rows.append(
-                RosterRow(
-                    kind="A-only",
-                    name="A-only keys",
-                    side="A",
-                    pending=self.pending_a_only_n(),
-                    concentration=0.0,
-                    top_pair_pct="—",
-                    accepted=self.accepted_a_only.height,
-                    equal="—",
-                    categorical="—",
-                    speculative=self._unmatched_side_tags("A"),
-                    returned=self.side_has_returned("A"),
-                )
-            )
-        if self.b_only.height > 0:
-            rows.append(
-                RosterRow(
-                    kind="B-only",
-                    name="B-only keys",
-                    side="B",
-                    pending=self.pending_b_only_n(),
-                    concentration=0.0,
-                    top_pair_pct="—",
-                    accepted=self.accepted_b_only.height,
-                    equal="—",
-                    categorical="—",
-                    speculative=self._unmatched_side_tags("B"),
-                    returned=self.side_has_returned("B"),
-                )
-            )
-        all_extras = [("A", n) for n in self.extras_a] + [("B", n) for n in self.extras_b]
-        other_a = list(self.b.headers)
-        other_b = list(self.a.headers)
-        for side, name in all_extras:
-            pend = 1 if (side, name) in self.pending_extras else 0
-            acc = 1 if (side, name) in self.accepted_extras else 0
-            others = other_a if side == "A" else other_b
-            tags = ", ".join(extra_insights(name, others)[:2])
-            rows.append(
-                RosterRow(
-                    kind="extra",
-                    name=name,
-                    side=side,
-                    pending=pend,
-                    concentration=0.0,
-                    top_pair_pct="—",
-                    accepted=acc,
-                    equal="—",
-                    categorical="—",
-                    speculative=tags,
-                    returned=(side, name) in self.returned_extras,
-                )
-            )
-        rows.sort(key=lambda r: (-r.pending, -r.concentration, r.name))
-        return rows
+        return roster_mod._build_roster_cache(self)
 
     def is_categorical(self, column: str) -> bool:
-        for row in self._roster_cache:
-            if row.kind == "column" and row.name == column:
-                return row.categorical == "yes"
-        return False
+        return roster_mod.is_categorical(self, column)
 
     def _unmatched_side_tags(self, side: str) -> str:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
-        other = self.pending_b_only if side == "A" else self.pending_a_only
-        if pending.is_empty() or other.is_empty():
-            return ""
-        trim_cols = [pl.col(k).str.strip_chars().alias(k) for k in self.keys]
-        if not pending.select(trim_cols).join(other.select(trim_cols), on=self.keys, how="inner").is_empty():
-            return "speculative: would match if trim"
-        case_cols = [pl.col(k).str.to_lowercase().alias(k) for k in self.keys]
-        if not pending.select(case_cols).join(other.select(case_cols), on=self.keys, how="inner").is_empty():
-            return "speculative: would match if case-fold"
-        fold_cols = [pl.col(k).str.strip_chars().str.to_lowercase().alias(k) for k in self.keys]
-        if not pending.select(fold_cols).join(other.select(fold_cols), on=self.keys, how="inner").is_empty():
-            return "speculative: would match if trim/case"
-        return ""
+        return roster_mod._unmatched_side_tags(self, side)
 
     # --- pair list ---
 
     def pair_groups(self, column: str) -> pl.DataFrame:
-        pending = self.pending_cells.filter(pl.col("column") == column)
-        if pending.is_empty():
-            return pl.DataFrame(
-                {"val_a": [], "val_b": [], "n": []},
-                schema={"val_a": pl.Utf8, "val_b": pl.Utf8, "n": pl.UInt32},
-            )
-        return (
-            pending.group_by(["val_a", "val_b"])
-            .len()
-            .rename({"len": "n"})
-            .sort(["n", "val_a", "val_b"], descending=[True, False, False])
-        )
+        return compare_mod.pair_groups(self, column)
 
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-        return _page(self.pair_groups(column), page)
+        return pages_mod.pair_page(self, column, page)
 
     def pair_matrix(self, column: str) -> tuple[list[str], list[str], list[list[int]]]:
-        groups = self.pair_groups(column)
-        a_vals = sorted(groups["val_a"].unique().to_list()) if not groups.is_empty() else []
-        b_vals = sorted(groups["val_b"].unique().to_list()) if not groups.is_empty() else []
-        counts = {(r["val_a"], r["val_b"]): int(r["n"]) for r in groups.to_dicts()}
-        matrix = [[counts.get((a, b), 0) for b in b_vals] for a in a_vals]
-        return a_vals, b_vals, matrix
+        return compare_mod.pair_matrix(self, column)
 
     def pair_cells_page(
         self, column: str, val_a: str, val_b: str, page: int
     ) -> tuple[list[dict[str, Any]], int, int]:
-        frame = self.pending_cells.filter(
-            (pl.col("column") == column)
-            & (pl.col("val_a") == val_a)
-            & (pl.col("val_b") == val_b)
-        ).sort(self.keys)
-        return _page(frame, page)
+        return pages_mod.pair_cells_page(self, column, val_a, val_b, page)
 
     def cells_for_tab(self, column: str, tab: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-        empty = _empty_df(_empty_mismatch_schema(self.keys))
-        if tab == "accepted":
-            frame = self.accepted_cells.filter(pl.col("column") == column)
-        elif tab == "equal":
-            if self.matched_a.is_empty():
-                frame = empty
-            else:
-                a = self.matched_a.select(self.keys + [column]).rename({column: "val_a"})
-                b = self.matched_b.select(self.keys + [column]).rename({column: "val_b"})
-                frame = a.join(b, on=self.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
-        elif tab == "all_matched":
-            if self.matched_a.is_empty():
-                frame = empty
-            else:
-                a = self.matched_a.select(self.keys + [column]).rename({column: "val_a"})
-                b = self.matched_b.select(self.keys + [column]).rename({column: "val_b"})
-                frame = a.join(b, on=self.keys, how="inner")
-        else:
-            frame = self.pending_cells.filter(pl.col("column") == column)
-        return _page(frame.sort(self.keys), page)
+        return pages_mod.cells_for_tab(self, column, tab, page)
 
     def unmatched_page(self, side: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-        accepted = self.accepted_a_only if side == "A" else self.accepted_b_only
-        frame = (self.a_only if side == "A" else self.b_only).sort(self.keys)
-        total = frame.height
-        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(page, pages - 1))
-        chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
-        if chunk.is_empty():
-            return [], page, pages
-        if accepted.is_empty():
-            chunk = chunk.with_columns(pl.lit(False).alias("_accepted"))
-        else:
-            chunk = chunk.join(
-                accepted.select(self.keys).unique().with_columns(pl.lit(True).alias("_accepted")),
-                on=self.keys,
-                how="left",
-            ).with_columns(pl.col("_accepted").fill_null(False))
-        ret = self.returned_keys_df
-        if ret.is_empty():
-            chunk = chunk.with_columns(pl.lit(False).alias("_returned"))
-        else:
-            ret_keys = (
-                ret.filter(pl.col("side") == side)
-                .select(self.keys)
-                .unique()
-                .with_columns(pl.lit(True).alias("_returned"))
-            )
-            chunk = chunk.join(ret_keys, on=self.keys, how="left").with_columns(
-                pl.col("_returned").fill_null(False)
-            )
-        return _page_dicts(chunk), page, pages
+        return pages_mod.unmatched_page(self, side, page)
 
     def extras_rows(self) -> list[dict[str, Any]]:
-        rows = []
-        all_extras = [("A", n) for n in sorted(self.extras_a)] + [
-            ("B", n) for n in sorted(self.extras_b)
-        ]
-        # Order: exact name (working rule). Spec §18: exact name. Mix sides by name then side.
-        all_extras.sort(key=lambda x: (x[1], x[0]))
-        others = {"A": list(self.b.headers), "B": list(self.a.headers)}
-        for side, name in all_extras:
-            pending = (side, name) in self.pending_extras
-            rows.append(
-                {
-                    "side": side,
-                    "name": name,
-                    "pending": 1 if pending else 0,
-                    "accepted": 0 if pending else 1,
-                    "speculative": extra_insights(name, others[side]),
-                    "returned": (side, name) in self.returned_extras,
-                }
-            )
-        return rows
+        return pages_mod.extras_rows(self)
 
     def context_values(self, key: tuple[str, ...], column: str) -> list[tuple[str, str, str]]:
-        names = [n for n in self.context_columns.get(column, []) if n in self.context_pool and n != column]
-        if not names:
-            return []
-        filt = None
-        for kname, kval in zip(self.keys, key):
-            expr = pl.col(kname) == kval
-            filt = expr if filt is None else (filt & expr)
-        out: list[tuple[str, str, str]] = []
-        if self.matched_a.is_empty():
-            return [(n, "", "") for n in names]
-        ra = self.matched_a.filter(filt)
-        rb = self.matched_b.filter(filt)
-        if ra.is_empty():
-            return [(n, "", "") for n in names]
-        rec_a = ra.row(0, named=True)
-        rec_b = rb.row(0, named=True)
-        for n in names:
-            out.append((n, str(rec_a.get(n, "")), str(rec_b.get(n, ""))))
-        return out
+        return pages_mod.context_values(self, key, column)
 
     def cell_insights(self, val_a: str, val_b: str) -> list[str]:
         return cell_insights(val_a, val_b)
@@ -760,34 +266,16 @@ class Engine:
         return first_diff(a, b)
 
     def column_has_returned(self, column: str) -> bool:
-        if self.returned_cells_df.is_empty():
-            return False
-        return self.returned_cells_df.filter(pl.col("column") == column).height > 0
+        return snaps_mod.column_has_returned(self, column)
 
     def cell_is_returned(self, key: tuple[str, ...], column: str) -> bool:
-        if self.returned_cells_df.is_empty():
-            return False
-        return (
-            self.returned_cells_df.filter(
-                (pl.col("column") == column) & _key_eq_expr(self.keys, key)
-            ).height
-            > 0
-        )
+        return snaps_mod.cell_is_returned(self, key, column)
 
     def side_has_returned(self, side: str) -> bool:
-        if self.returned_keys_df.is_empty():
-            return False
-        return self.returned_keys_df.filter(pl.col("side") == side).height > 0
+        return snaps_mod.side_has_returned(self, side)
 
     def key_is_returned(self, side: str, key: tuple[str, ...]) -> bool:
-        if self.returned_keys_df.is_empty():
-            return False
-        return (
-            self.returned_keys_df.filter(
-                (pl.col("side") == side) & _key_eq_expr(self.keys, key)
-            ).height
-            > 0
-        )
+        return snaps_mod.key_is_returned(self, side, key)
 
     def key_of(self, rec: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(rec[k]) for k in self.keys)
@@ -897,284 +385,60 @@ class Engine:
 
     # --- accept ---
 
-    def _cell_snap_cols(self) -> list[str]:
-        return [*self.keys, "column", "val_a", "val_b"]
-
-    def _vstack_cell_snaps(self, frame: pl.DataFrame) -> int:
-        cols = self._cell_snap_cols()
-        if frame.is_empty():
-            self._apply_snapshots()
-            return 0
-        frame = frame.select(cols)
-        if self.cell_snaps.is_empty():
-            new = frame.unique()
-        else:
-            new = frame.join(self.cell_snaps, on=cols, how="anti")
-        n = new.height
-        if n:
-            self.cell_snaps = (
-                new.unique()
-                if self.cell_snaps.is_empty()
-                else pl.concat([self.cell_snaps, new], how="vertical").unique()
-            )
-        self._apply_snapshots()
-        return n
-
     def accept_column(self, column: str) -> int:
-        n = self._vstack_cell_snaps(self.pending_cells.filter(pl.col("column") == column))
-        self.column_draft.discard(column)
-        return n
+        return snaps_mod.accept_column(self, column)
 
     def accept_pair(self, column: str, val_a: str, val_b: str) -> int:
-        frame = self.pending_cells.filter(
-            (pl.col("column") == column)
-            & (pl.col("val_a") == val_a)
-            & (pl.col("val_b") == val_b)
-        )
-        n = self._vstack_cell_snaps(frame)
-        return n
+        return snaps_mod.accept_pair(self, column, val_a, val_b)
 
     def accept_cell(self, key: tuple[str, ...], column: str, val_a: str, val_b: str) -> int:
-        data: dict[str, list[str]] = {k: [v] for k, v in zip(self.keys, key)}
-        data["column"] = [column]
-        data["val_a"] = [val_a]
-        data["val_b"] = [val_b]
-        n = self._vstack_cell_snaps(pl.DataFrame(data))
-        return n
+        return snaps_mod.accept_cell(self, key, column, val_a, val_b)
 
     def confirm_column_draft(self) -> int:
-        names = [n for n in list(self.column_draft)]
-        total = 0
-        for name in names:
-            total += self.accept_column(name)
-        self.column_draft = set()
-        return total
+        return snaps_mod.confirm_column_draft(self)
 
     def confirm_pair_draft(self, unchecked: set[tuple[str, ...]] | None = None) -> int:
-        if self.pair_draft_col is None:
-            return 0
-        col, va, vb = self.pair_draft_col, self.pair_draft_va, self.pair_draft_vb
-        frame = self.pending_cells.filter(
-            (pl.col("column") == col)
-            & (pl.col("val_a") == va)
-            & (pl.col("val_b") == vb)
-        )
-        if unchecked:
-            exc = pl.DataFrame(
-                {k: [key[i] for key in unchecked] for i, k in enumerate(self.keys)}
-            )
-            frame = frame.join(exc, on=self.keys, how="anti")
-        n = self._vstack_cell_snaps(frame)
-        self.pair_draft_col = None
-        self.pair_draft_va = None
-        self.pair_draft_vb = None
-        return n
-
-    def _unmatched_attr(self, side: str) -> str:
-        return "unmatched_snaps_a" if side == "A" else "unmatched_snaps_b"
-
-    def _vstack_unmatched(self, side: str, frame: pl.DataFrame) -> int:
-        attr = self._unmatched_attr(side)
-        snaps: pl.DataFrame | None = getattr(self, attr)
-        if frame.is_empty():
-            self._apply_snapshots()
-            return 0
-        if snaps is None or snaps.is_empty():
-            setattr(self, attr, frame.unique())
-            n = frame.height
-        elif set(snaps.columns) == set(frame.columns):
-            snaps = snaps.select(list(frame.columns))
-            new = frame.join(snaps, on=list(frame.columns), how="anti")
-            n = new.height
-            if n:
-                setattr(self, attr, pl.concat([snaps, new], how="vertical").unique())
-        else:
-            n = frame.height
-            setattr(self, attr, pl.concat([snaps, frame], how="diagonal").unique())
-        self._apply_snapshots()
-        return n
+        return snaps_mod.confirm_pair_draft(self, unchecked)
 
     def accept_unmatched(self, side: str, key: tuple[str, ...]) -> int:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
-        row = pending.filter(_key_eq_expr(self.keys, key))
-        if row.is_empty():
-            return 0
-        return 1 if self._vstack_unmatched(side, row) else 0
+        return snaps_mod.accept_unmatched(self, side, key)
 
     def accept_all_unmatched(self, side: str) -> int:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
-        return self._vstack_unmatched(side, pending)
+        return snaps_mod.accept_all_unmatched(self, side)
 
     def accept_extra(self, side: str, name: str) -> int:
-        snap = ExtraSnap(side, name)
-        if (side, name) not in self.pending_extras:
-            return 0
-        if snap not in self.extra_snaps:
-            self.extra_snaps.append(snap)
-        self._apply_snapshots()
-        return 1
+        return snaps_mod.accept_extra(self, side, name)
 
     # --- undo ---
 
     def undo_column(self, column: str) -> int:
-        before = self.cell_snaps.height
-        self.cell_snaps = self.cell_snaps.filter(pl.col("column") != column)
-        self._apply_snapshots()
-        return before - self.cell_snaps.height
+        return snaps_mod.undo_column(self, column)
 
     def undo_cell(self, key: tuple[str, ...], column: str) -> int:
-        before = self.cell_snaps.height
-        expr = (pl.col("column") == column) & _key_eq_expr(self.keys, key)
-        self.cell_snaps = self.cell_snaps.filter(~expr)
-        self._apply_snapshots()
-        return before - self.cell_snaps.height
+        return snaps_mod.undo_cell(self, key, column)
 
     def undo_pair(self, column: str, val_a: str, val_b: str) -> int:
-        before = self.cell_snaps.height
-        self.cell_snaps = self.cell_snaps.filter(
-            ~(
-                (pl.col("column") == column)
-                & (pl.col("val_a") == val_a)
-                & (pl.col("val_b") == val_b)
-            )
-        )
-        self._apply_snapshots()
-        return before - self.cell_snaps.height
+        return snaps_mod.undo_pair(self, column, val_a, val_b)
 
     def undo_unmatched(self, side: str, key: tuple[str, ...] | None = None) -> int:
-        attr = self._unmatched_attr(side)
-        snaps: pl.DataFrame | None = getattr(self, attr)
-        if snaps is None or snaps.is_empty():
-            return 0
-        before = snaps.height
-        if key is None:
-            setattr(self, attr, snaps.head(0))
-        else:
-            setattr(self, attr, snaps.filter(~_key_eq_expr(self.keys, key)))
-        self._apply_snapshots()
-        return before - getattr(self, attr).height
+        return snaps_mod.undo_unmatched(self, side, key)
 
     def undo_extra(self, side: str, name: str) -> int:
-        before = len(self.extra_snaps)
-        self.extra_snaps = [
-            s for s in self.extra_snaps if not (s.side == side and s.name == name)
-        ]
-        self._apply_snapshots()
-        return before - len(self.extra_snaps)
+        return snaps_mod.undo_extra(self, side, name)
 
     # --- next lever ---
 
     def next_lever_place(self, current: Place) -> Place:
-        if current.column and current.column in self.comparable:
-            groups = self.pair_groups(current.column)
-            if not groups.is_empty():
-                top = groups.row(0, named=True)
-                return replace(
-                    current,
-                    screen="pair_list",
-                    column=current.column,
-                    pair_val_a=top["val_a"],
-                    pair_val_b=top["val_b"],
-                    page=0,
-                    view_tab="pending",
-                )
-        roster = self.roster(current.roster_filter)
-        for row in roster:
-            if row.pending <= 0:
-                continue
-            if row.kind == "column":
-                groups = self.pair_groups(row.name)
-                va = vb = None
-                if not groups.is_empty():
-                    top = groups.row(0, named=True)
-                    va, vb = top["val_a"], top["val_b"]
-                return Place(
-                    screen="pair_list",
-                    column=row.name,
-                    pair_val_a=va,
-                    pair_val_b=vb,
-                    roster_filter=current.roster_filter,
-                    last_pair=current.last_pair,
-                    view_tab="pending",
-                    focused_name=row.name,
-                )
-            if row.kind == "A-only":
-                fk = self._first_pending_key("A")
-                return Place(
-                    screen="a_only",
-                    roster_filter=current.roster_filter,
-                    last_pair=current.last_pair,
-                    focused_key=fk,
-                    focused_name="A-only keys",
-                )
-            if row.kind == "B-only":
-                fk = self._first_pending_key("B")
-                return Place(
-                    screen="b_only",
-                    roster_filter=current.roster_filter,
-                    last_pair=current.last_pair,
-                    focused_key=fk,
-                    focused_name="B-only keys",
-                )
-            if row.kind == "extra":
-                return Place(
-                    screen="roster",
-                    roster_filter=current.roster_filter,
-                    last_pair=current.last_pair,
-                    extra_side=row.side,
-                    extra_name=row.name,
-                    focused_name=row.name,
-                )
-        return Place(
-            screen="roster",
-            roster_filter=current.roster_filter,
-            last_pair=current.last_pair,
-        )
+        return roster_mod.next_lever_place(self, current)
 
     def _first_pending_key(self, side: str) -> tuple[str, ...] | None:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
-        if pending.is_empty():
-            return None
-        rec = pending.sort(self.keys).head(1).row(0, named=True)
-        return tuple(str(rec[k]) for k in self.keys)
+        return roster_mod._first_pending_key(self, side)
 
     def next_pending_key_in_grid(self, side: str, current: tuple[str, ...]) -> tuple[str, ...] | None:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
-        if pending.is_empty():
-            return None
-        pending = pending.sort(self.keys)
-        parts: list[pl.Expr] = []
-        acc: pl.Expr = pl.lit(True)
-        for i, k in enumerate(self.keys):
-            parts.append(acc & (pl.col(k) > current[i]))
-            acc = acc & (pl.col(k) == current[i])
-        nxt = pending.filter(pl.any_horizontal(parts)).head(1)
-        if nxt.is_empty():
-            nxt = pending.head(1)
-        rec = nxt.row(0, named=True)
-        return tuple(str(rec[k]) for k in self.keys)
+        return pages_mod.next_pending_key_in_grid(self, side, current)
 
     def next_pending_cell_in_pair(self, after: tuple[str, ...]) -> tuple[str, ...] | None:
-        if self.pair_draft_col is None:
-            return None
-        frame = self.pending_cells.filter(
-            (pl.col("column") == self.pair_draft_col)
-            & (pl.col("val_a") == self.pair_draft_va)
-            & (pl.col("val_b") == self.pair_draft_vb)
-        )
-        if frame.is_empty():
-            return None
-        frame = frame.sort(self.keys)
-        parts: list[pl.Expr] = []
-        acc: pl.Expr = pl.lit(True)
-        for i, k in enumerate(self.keys):
-            parts.append(acc & (pl.col(k) > after[i]))
-            acc = acc & (pl.col(k) == after[i])
-        nxt = frame.filter(pl.any_horizontal(parts)).head(1)
-        if nxt.is_empty():
-            nxt = frame.head(1)
-        rec = nxt.row(0, named=True)
-        return tuple(str(rec[k]) for k in self.keys)
+        return pages_mod.next_pending_cell_in_pair(self, after)
 
     # --- refresh ---
 

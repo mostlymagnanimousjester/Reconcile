@@ -471,13 +471,26 @@ These thresholds and the date format list in §10.4 are locked for v1.
 
 Stack: **Python 3.13**, Polars, fastexcel, Textual. Must run on Windows. Launch from **PowerShell** via `Reconcile.py` (see §12, §17).
 
-- Load, join, compare, counts, remaining sets, and insights stay in Polars.
-- The TUI must **not** convert full frames to Python objects.
-- The TUI **requests pages** (100 rows) and small summaries (roster, counts, pending-pair groups, batch-selector booleans).
-- Python/Polars round-trips must be minimized and explicit (page structs / small aggregate frames only).
-- Batch sentinel scan (§9.5) runs **in Polars**: pending cells grouped by column, all values on the chosen side == the exact sentinel (or one unpivot + group). Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates. Draft checkboxes are a small name/row set; that part may be Python.
+Polars owns **load, join, compare, remaining sets, snapshots, paging, roster aggregates, accept/undo, and refresh**. Python is not the paging engine.
 
-Roster is one row per comparable column (small); it may be fully materialized. Cell/key lists are paged at **100**.
+Python may hold **only**:
+
+1. a page of ≤100 dicts **after** `.slice`
+2. a small draft checkbox set (column names, or pair-draft **exceptions**, not the checked universe)
+3. keymap / Place / error banner
+4. schema-sized roster handoff after cache build
+5. zip ser/de once per export/open
+6. two-string `cell_insights` / `first_diff` for paint
+7. name regex on comparable names
+8. extra-name near-miss on headers
+9. one HardFail `.row(0)` (duplicate-key identity)
+
+Anything else that `to_dicts()`s a full frame on a hot path is a defect. The TUI must **not** convert full frames to Python objects.
+
+- Batch sentinel scan (§9.5) runs **in Polars**: pending cells grouped by column, all values on the chosen side == the exact sentinel (`.all()` per column; do not use a Polars `=` selector). Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates.
+- Cell/key lists are paged at **100**. Roster is schema-sized (one row per comparable column plus unmatched/extra remaining-work rows) and may be materialized **once per snapshot apply**.
+
+Kernel split (facade still `reconcile.engine.Engine`; TUI imports the facade, not compare internals): `compare.py` (join / unpivot), `snaps.py` (accept/undo tables), `pages.py` (slice then materialize), `roster.py` (cache / next lever). Do not split load / delimited / excel / cli. Keep `insights.py`.
 
 ---
 
