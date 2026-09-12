@@ -153,6 +153,34 @@ def _struct_key(keys: list[str]) -> pl.Expr:
     return pl.struct(keys).alias("_key")
 
 
+def _empty_cell_snaps(keys: list[str]) -> pl.DataFrame:
+    return _empty_df(_empty_mismatch_schema(keys))
+
+
+def _cell_snaps_from_json(keys: list[str], cells: list[dict[str, Any]]) -> pl.DataFrame:
+    if not cells:
+        return _empty_cell_snaps(keys)
+    data: dict[str, list[str]] = {k: [] for k in keys}
+    data["column"] = []
+    data["val_a"] = []
+    data["val_b"] = []
+    for c in cells:
+        key = list(c.get("key") or [])
+        for i, k in enumerate(keys):
+            data[k].append(str(key[i]) if i < len(key) else "")
+        data["column"].append(str(c.get("column", "")))
+        data["val_a"].append(str(c.get("val_a", "")))
+        data["val_b"].append(str(c.get("val_b", "")))
+    return pl.DataFrame(data).unique()
+
+
+def _key_eq_expr(keys: list[str], key: tuple[str, ...]) -> pl.Expr:
+    expr: pl.Expr = pl.lit(True)
+    for k, v in zip(keys, key):
+        expr = expr & (pl.col(k) == v)
+    return expr
+
+
 class Engine:
     """In-memory session. Polars owns the frames; TUI asks for pages."""
 
@@ -160,7 +188,7 @@ class Engine:
         self.a = side_a
         self.b = side_b
         self.keys = keys
-        self.cell_snaps: list[CellSnap] = []
+        self.cell_snaps: pl.DataFrame = _empty_cell_snaps(keys)
         self.unmatched_snaps: list[UnmatchedSnap] = []
         self.extra_snaps: list[ExtraSnap] = []
         self.context_columns: dict[str, list[str]] = {}
@@ -276,30 +304,18 @@ class Engine:
         self.pending_extras, self.accepted_extras = self._split_extras()
 
     def _pending_cells(self) -> pl.DataFrame:
-        if self.mismatches.is_empty() or not self.cell_snaps:
+        if self.mismatches.is_empty() or self.cell_snaps.is_empty():
             return self.mismatches
-        snap_df = self._cell_snaps_df()
         return self.mismatches.join(
-            snap_df, on=[*self.keys, "column", "val_a", "val_b"], how="anti"
+            self.cell_snaps, on=[*self.keys, "column", "val_a", "val_b"], how="anti"
         )
 
     def _accepted_cells_current(self) -> pl.DataFrame:
-        if self.mismatches.is_empty() or not self.cell_snaps:
+        if self.mismatches.is_empty() or self.cell_snaps.is_empty():
             return self.mismatches.head(0)
-        snap_df = self._cell_snaps_df()
         return self.mismatches.join(
-            snap_df, on=[*self.keys, "column", "val_a", "val_b"], how="inner"
+            self.cell_snaps, on=[*self.keys, "column", "val_a", "val_b"], how="inner"
         )
-
-    def _cell_snaps_df(self) -> pl.DataFrame:
-        schema = _empty_mismatch_schema(self.keys)
-        if not self.cell_snaps:
-            return _empty_df(schema)
-        data = {k: [s.key[i] for s in self.cell_snaps] for i, k in enumerate(self.keys)}
-        data["column"] = [s.column for s in self.cell_snaps]
-        data["val_a"] = [s.val_a for s in self.cell_snaps]
-        data["val_b"] = [s.val_b for s in self.cell_snaps]
-        return pl.DataFrame(data).unique()
 
     def _row_matches(self, frame_row: dict[str, Any], snap_row: dict[str, str]) -> bool:
         for col, val in frame_row.items():
@@ -814,28 +830,31 @@ class Engine:
 
     # --- accept ---
 
-    def _add_cell(self, snap: CellSnap) -> None:
-        if snap not in self.cell_snaps:
-            self.cell_snaps.append(snap)
+    def _cell_snap_cols(self) -> list[str]:
+        return [*self.keys, "column", "val_a", "val_b"]
 
-    def accept_cells(self, snaps: list[CellSnap]) -> int:
-        n = 0
-        for s in snaps:
-            if s not in self.cell_snaps:
-                self.cell_snaps.append(s)
-                n += 1
+    def _vstack_cell_snaps(self, frame: pl.DataFrame) -> int:
+        cols = self._cell_snap_cols()
+        if frame.is_empty():
+            self._apply_snapshots()
+            return 0
+        frame = frame.select(cols)
+        if self.cell_snaps.is_empty():
+            new = frame.unique()
+        else:
+            new = frame.join(self.cell_snaps, on=cols, how="anti")
+        n = new.height
+        if n:
+            self.cell_snaps = (
+                new.unique()
+                if self.cell_snaps.is_empty()
+                else pl.concat([self.cell_snaps, new], how="vertical").unique()
+            )
         self._apply_snapshots()
         return n
 
-    def pending_snaps_for_column(self, column: str) -> list[CellSnap]:
-        frame = self.pending_cells.filter(pl.col("column") == column)
-        return [
-            CellSnap(self.key_of(r), column, r["val_a"], r["val_b"]) for r in frame.to_dicts()
-        ]
-
     def accept_column(self, column: str) -> int:
-        snaps = self.pending_snaps_for_column(column)
-        n = self.accept_cells(snaps)
+        n = self._vstack_cell_snaps(self.pending_cells.filter(pl.col("column") == column))
         self.column_draft.discard(column)
         return n
 
@@ -845,15 +864,16 @@ class Engine:
             & (pl.col("val_a") == val_a)
             & (pl.col("val_b") == val_b)
         )
-        snaps = [
-            CellSnap(self.key_of(r), column, val_a, val_b) for r in frame.to_dicts()
-        ]
-        n = self.accept_cells(snaps)
+        n = self._vstack_cell_snaps(frame)
         self.place.last_pair = (column, val_a, val_b)
         return n
 
     def accept_cell(self, key: tuple[str, ...], column: str, val_a: str, val_b: str) -> int:
-        n = self.accept_cells([CellSnap(key, column, val_a, val_b)])
+        data: dict[str, list[str]] = {k: [v] for k, v in zip(self.keys, key)}
+        data["column"] = [column]
+        data["val_a"] = [val_a]
+        data["val_b"] = [val_b]
+        n = self._vstack_cell_snaps(pl.DataFrame(data))
         if self.pair_draft_keys is not None:
             self.pair_draft_keys.discard(key)
         return n
@@ -879,8 +899,12 @@ class Engine:
         for rec in frame.to_dicts():
             key = self.key_of(rec)
             if key in self.pair_draft_keys:
-                snaps.append(CellSnap(key, col, va, vb))
-        n = self.accept_cells(snaps)
+                snaps.append(rec)
+        if snaps:
+            n = self._vstack_cell_snaps(pl.DataFrame(snaps))
+        else:
+            n = 0
+            self._apply_snapshots()
         self.place.last_pair = (col, va, vb)
         self.pair_draft_keys = None
         self.pair_draft_col = None
@@ -925,28 +949,29 @@ class Engine:
     # --- undo ---
 
     def undo_column(self, column: str) -> int:
-        before = len(self.cell_snaps)
-        self.cell_snaps = [s for s in self.cell_snaps if s.column != column]
+        before = self.cell_snaps.height
+        self.cell_snaps = self.cell_snaps.filter(pl.col("column") != column)
         self._apply_snapshots()
-        return before - len(self.cell_snaps)
+        return before - self.cell_snaps.height
 
     def undo_cell(self, key: tuple[str, ...], column: str) -> int:
-        before = len(self.cell_snaps)
-        self.cell_snaps = [
-            s for s in self.cell_snaps if not (s.key == key and s.column == column)
-        ]
+        before = self.cell_snaps.height
+        expr = (pl.col("column") == column) & _key_eq_expr(self.keys, key)
+        self.cell_snaps = self.cell_snaps.filter(~expr)
         self._apply_snapshots()
-        return before - len(self.cell_snaps)
+        return before - self.cell_snaps.height
 
     def undo_pair(self, column: str, val_a: str, val_b: str) -> int:
-        before = len(self.cell_snaps)
-        self.cell_snaps = [
-            s
-            for s in self.cell_snaps
-            if not (s.column == column and s.val_a == val_a and s.val_b == val_b)
-        ]
+        before = self.cell_snaps.height
+        self.cell_snaps = self.cell_snaps.filter(
+            ~(
+                (pl.col("column") == column)
+                & (pl.col("val_a") == val_a)
+                & (pl.col("val_b") == val_b)
+            )
+        )
         self._apply_snapshots()
-        return before - len(self.cell_snaps)
+        return before - self.cell_snaps.height
 
     def undo_unmatched(self, side: str, key: tuple[str, ...] | None = None) -> int:
         before = len(self.unmatched_snaps)
@@ -1065,8 +1090,7 @@ class Engine:
     def refresh(self) -> RefreshDelta:
         before_pending = self.pending_total()
         before_acc = self.accepted_total()
-        prev_mismatch = self.mismatches
-        prev_accepted = self._cell_snaps_df()
+        prev_accepted = self.cell_snaps
         try:
             new_a = load_side(
                 self.a.path,
@@ -1094,7 +1118,7 @@ class Engine:
         except HardFail as exc:
             raise InTuiError(f"ERROR: {exc.message}") from exc
         # prune snaps that no longer apply by rebuilding on new data
-        tmp.cell_snaps = list(self.cell_snaps)
+        tmp.cell_snaps = self.cell_snaps
         tmp.unmatched_snaps = list(self.unmatched_snaps)
         tmp.extra_snaps = list(self.extra_snaps)
         tmp.context_columns = dict(self.context_columns)
@@ -1103,17 +1127,16 @@ class Engine:
         # returned to pending: previously accepted (and matching then) that are pending now
         returned_cells: set[tuple[tuple[str, ...], str]] = set()
         if not tmp.pending_cells.is_empty() and not prev_accepted.is_empty():
-            # cells that were accepted snapshots still in identity but now pending because values changed
-            # Spec: same key+column, valA or valB changed → back to pending
-            for rec in tmp.pending_cells.to_dicts():
-                key = tmp.key_of(rec)
-                col = rec["column"]
-                # was this key+column previously an accepted snapshot (any vals)?
-                for s in self.cell_snaps:
-                    if s.key == key and s.column == col:
-                        if s.val_a != rec["val_a"] or s.val_b != rec["val_b"]:
-                            returned_cells.add((key, col))
-                        break
+            hit = tmp.pending_cells.join(
+                prev_accepted.select([*self.keys, "column"]).unique(),
+                on=[*self.keys, "column"],
+                how="inner",
+            )
+            if not hit.is_empty():
+                for rec in hit.select([*self.keys, "column"]).unique().to_dicts():
+                    returned_cells.add(
+                        (tuple(str(rec[k]) for k in self.keys), rec["column"])
+                    )
         returned_keys: set[tuple[str, tuple[str, ...]]] = set()
         for side, frame in (("A", tmp.pending_a_only), ("B", tmp.pending_b_only)):
             for rec in frame.to_dicts():
@@ -1197,6 +1220,20 @@ class Engine:
 
     # --- session zip ---
 
+    def _snapshots_to_manifest(self) -> dict[str, Any]:
+        cells: list[dict[str, Any]] = []
+        if not self.cell_snaps.is_empty():
+            for rec in self.cell_snaps.to_dicts():
+                cells.append(
+                    {
+                        "key": [rec[k] for k in self.keys],
+                        "column": rec["column"],
+                        "val_a": rec["val_a"],
+                        "val_b": rec["val_b"],
+                    }
+                )
+        return {"cells": cells}
+
     def to_manifest(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -1221,15 +1258,7 @@ class Engine:
             },
             "context_columns": self.context_columns,
             "snapshots": {
-                "cells": [
-                    {
-                        "key": list(s.key),
-                        "column": s.column,
-                        "val_a": s.val_a,
-                        "val_b": s.val_b,
-                    }
-                    for s in self.cell_snaps
-                ],
+                "cells": self._snapshots_to_manifest()["cells"],
                 "unmatched": [
                     {"side": s.side, "key": list(s.key), "row": s.row}
                     for s in self.unmatched_snaps
@@ -1298,10 +1327,7 @@ class Engine:
             b_encoding=b_encoding,
         )
         snaps = man.get("snapshots") or {}
-        eng.cell_snaps = [
-            CellSnap(tuple(c["key"]), c["column"], c["val_a"], c["val_b"])
-            for c in snaps.get("cells") or []
-        ]
+        eng.cell_snaps = _cell_snaps_from_json(keys, snaps.get("cells") or [])
         eng.unmatched_snaps = [
             UnmatchedSnap(u["side"], tuple(u["key"]), dict(u.get("row") or {}))
             for u in snaps.get("unmatched") or []
