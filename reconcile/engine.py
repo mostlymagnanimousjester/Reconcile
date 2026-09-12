@@ -295,25 +295,18 @@ class Engine:
             self.matched_b = self.b.frame.join(matched_keys, on=self.keys, how="inner")
 
         schema = _empty_mismatch_schema(self.keys)
-        parts: list[pl.DataFrame] = []
-        if not self.matched_a.is_empty() and self.comparable:
-            a_vals = self.matched_a.select(self.keys + self.comparable)
-            b_renames = {c: f"{c}__b" for c in self.comparable}
-            b_vals = self.matched_b.select(self.keys + self.comparable).rename(b_renames)
-            joined = a_vals.join(b_vals, on=self.keys, how="inner")
-            for col in self.comparable:
-                chunk = (
-                    joined.filter(pl.col(col) != pl.col(f"{col}__b"))
-                    .select(
-                        [*self.keys, pl.lit(col).alias("column"), pl.col(col).alias("val_a"), pl.col(f"{col}__b").alias("val_b")]
-                    )
-                )
-                parts.append(chunk)
-        if parts:
-            self.mismatches = pl.concat(parts, how="vertical")
-        else:
+        if self.matched_a.is_empty() or not self.comparable:
             self.mismatches = _empty_df(schema)
-
+        else:
+            a_long = self.matched_a.select(self.keys + self.comparable).unpivot(
+                index=self.keys, on=self.comparable, variable_name="column", value_name="val_a"
+            )
+            b_long = self.matched_b.select(self.keys + self.comparable).unpivot(
+                index=self.keys, on=self.comparable, variable_name="column", value_name="val_b"
+            )
+            self.mismatches = a_long.join(b_long, on=[*self.keys, "column"], how="inner").filter(
+                pl.col("val_a") != pl.col("val_b")
+            )
         self._apply_snapshots()
         self._sort_unmatched()
 
@@ -411,11 +404,12 @@ class Engine:
         )
 
     def equal_count(self, column: str) -> int:
-        if column not in self.comparable or self.matched_a.is_empty():
+        if column not in self.comparable:
             return 0
-        a = self.matched_a[column]
-        b = self.matched_b[column]
-        return int((a == b).sum())
+        mismatch_n = 0
+        if not self.mismatches.is_empty():
+            mismatch_n = self.mismatches.filter(pl.col("column") == column).height
+        return self.matched_a.height - mismatch_n
 
     def matched_key_count(self) -> int:
         return self.matched_a.height
