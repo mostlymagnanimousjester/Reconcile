@@ -3,7 +3,6 @@ from pathlib import Path
 
 from reconcile.engine import Engine
 from reconcile.tui import HELP, ReconcileApp, SentinelModal
-from textual.widgets import Input
 from tests.xlsxutil import write_csv
 
 
@@ -50,7 +49,7 @@ def test_help_says_exact_sentinel_not_polars_selector():
     assert "regex column draft" in HELP
 
 
-def test_tui_sentinel_draft_from_equals_modal(tmp_path: Path):
+def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")
     write_csv(pb, "id,s,mixed,ok\n1,x,y,a\n2,y,z,a\n")
@@ -70,20 +69,36 @@ def test_tui_sentinel_draft_from_equals_modal(tmp_path: Path):
             await pilot.pause()
             assert isinstance(app.screen, SentinelModal)
             assert not app.engine.draft_in_flight()
-            modal._side = "A"
-            modal.query_one("#sentinel", Input).value = "NA"
-            modal.action_ok()
+            modal.action_cancel()
             await pilot.pause()
-            assert app.engine.column_draft == {"s"}
-            assert "mixed" not in app.engine.column_draft
-            assert "ok" not in app.engine.column_draft
+            assert not isinstance(app.screen, SentinelModal)
+            assert not app.engine.draft_in_flight()
+
+    asyncio.run(_run())
+
+
+def test_tui_slash_and_equals_disabled_while_sentinel_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")
+    write_csv(pb, "id,s,mixed,ok\n1,x,y,a\n2,y,z,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
             app.query_one("#grid").focus()
             await pilot.pause()
-            await pilot.press("slash")
+            assert app.engine.start_sentinel_draft("A", "NA") == 1
+            assert app.engine.column_draft == {"s"}
+            app.action_regex()
             await pilot.pause()
-            footer = str(app.query_one("#footer").render())
-            assert "draft" in footer
-            banner = str(app.query_one("#banner").render())
-            assert "confirm or cancel" in banner
+            assert "confirm or cancel" in str(app.query_one("#banner").render())
+            assert not isinstance(app.screen, SentinelModal)
+            app.action_sentinel()
+            await pilot.pause()
+            assert "confirm or cancel" in str(app.query_one("#banner").render())
+            assert not isinstance(app.screen, SentinelModal)
+            assert app.engine.column_draft == {"s"}
 
     asyncio.run(_run())
