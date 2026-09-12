@@ -174,6 +174,28 @@ def _cell_snaps_from_json(keys: list[str], cells: list[dict[str, Any]]) -> pl.Da
     return pl.DataFrame(data).unique()
 
 
+def _unmatched_snaps_from_json(
+    keys: list[str],
+    items: list[dict[str, Any]],
+    side: str,
+    template: pl.DataFrame,
+) -> pl.DataFrame:
+    rows = [u for u in items if u.get("side") == side]
+    if not rows:
+        return template.head(0)
+    recs: list[dict[str, str]] = []
+    for u in rows:
+        rec = {c: "" for c in template.columns}
+        rec.update({str(k): str(v) for k, v in dict(u.get("row") or {}).items()})
+        key = list(u.get("key") or [])
+        for i, kname in enumerate(keys):
+            if i < len(key) and kname in rec:
+                rec[kname] = str(key[i])
+        recs.append(rec)
+    data = {c: [r.get(c, "") for r in recs] for c in template.columns}
+    return pl.DataFrame(data)
+
+
 def _key_eq_expr(keys: list[str], key: tuple[str, ...]) -> pl.Expr:
     expr: pl.Expr = pl.lit(True)
     for k, v in zip(keys, key):
@@ -189,7 +211,8 @@ class Engine:
         self.b = side_b
         self.keys = keys
         self.cell_snaps: pl.DataFrame = _empty_cell_snaps(keys)
-        self.unmatched_snaps: list[UnmatchedSnap] = []
+        self.unmatched_snaps_a: pl.DataFrame | None = None
+        self.unmatched_snaps_b: pl.DataFrame | None = None
         self.extra_snaps: list[ExtraSnap] = []
         self.context_columns: dict[str, list[str]] = {}
         self.place = Place()
@@ -290,6 +313,18 @@ class Engine:
         self._apply_snapshots()
         self._sort_unmatched()
 
+    def _ensure_unmatched_snap_frames(self) -> None:
+        if self.unmatched_snaps_a is None or (
+            self.unmatched_snaps_a.is_empty()
+            and list(self.unmatched_snaps_a.columns) != list(self.a_only.columns)
+        ):
+            self.unmatched_snaps_a = self.a_only.head(0)
+        if self.unmatched_snaps_b is None or (
+            self.unmatched_snaps_b.is_empty()
+            and list(self.unmatched_snaps_b.columns) != list(self.b_only.columns)
+        ):
+            self.unmatched_snaps_b = self.b_only.head(0)
+
     def _sort_unmatched(self) -> None:
         if not self.a_only.is_empty():
             self.a_only = self.a_only.sort(self.keys)
@@ -297,6 +332,7 @@ class Engine:
             self.b_only = self.b_only.sort(self.keys)
 
     def _apply_snapshots(self) -> None:
+        self._ensure_unmatched_snap_frames()
         self.pending_cells = self._pending_cells()
         self.accepted_cells = self._accepted_cells_current()
         self.pending_a_only, self.accepted_a_only = self._split_unmatched("A")
@@ -317,37 +353,20 @@ class Engine:
             self.cell_snaps, on=[*self.keys, "column", "val_a", "val_b"], how="inner"
         )
 
-    def _row_matches(self, frame_row: dict[str, Any], snap_row: dict[str, str]) -> bool:
-        for col, val in frame_row.items():
-            sval = snap_row.get(col, "")
-            if str(val) != sval:
-                return False
-        return True
-
     def _split_unmatched(self, side: str) -> tuple[pl.DataFrame, pl.DataFrame]:
         frame = self.a_only if side == "A" else self.b_only
-        snaps = [s for s in self.unmatched_snaps if s.side == side]
+        snaps = self.unmatched_snaps_a if side == "A" else self.unmatched_snaps_b
         if frame.is_empty():
             return frame, frame
-        if not snaps:
+        if snaps is None or snaps.is_empty():
             return frame, frame.head(0)
-        accepted_idx: list[int] = []
-        rows = frame.to_dicts()
-        for i, rec in enumerate(rows):
-            key = tuple(str(rec[k]) for k in self.keys)
-            for snap in snaps:
-                if snap.key == key and self._row_matches(rec, snap.row):
-                    accepted_idx.append(i)
-                    break
-        if not accepted_idx:
+        if set(snaps.columns) != set(frame.columns):
+            # Schema drift: full-row identity cannot match (not a key-only ignore).
             return frame, frame.head(0)
-        acc_set = set(accepted_idx)
-        pending_mask = [i not in acc_set for i in range(len(rows))]
-        # Prefer Polars filter via row index
-        idx = pl.DataFrame({"i": list(range(len(rows)))})
-        frame_i = frame.with_row_index("_i")
-        pending = frame_i.filter(pl.col("_i").is_in([i for i, p in enumerate(pending_mask) if p])).drop("_i")
-        accepted = frame_i.filter(pl.col("_i").is_in(accepted_idx)).drop("_i")
+        snaps = snaps.select(list(frame.columns))
+        cols = list(frame.columns)
+        pending = frame.join(snaps, on=cols, how="anti")
+        accepted = frame.join(snaps, on=cols, how="inner")
         return pending, accepted
 
     def _split_extras(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -716,15 +735,6 @@ class Engine:
     def key_of(self, rec: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(rec[k]) for k in self.keys)
 
-    def is_unmatched_pending(self, side: str, key: tuple[str, ...]) -> bool:
-        frame = self.pending_a_only if side == "A" else self.pending_b_only
-        if frame.is_empty():
-            return False
-        for rec in frame.to_dicts():
-            if self.key_of(rec) == key:
-                return True
-        return False
-
     # --- drafts ---
 
     def draft_in_flight(self) -> bool:
@@ -912,30 +922,40 @@ class Engine:
         self.pair_draft_vb = None
         return n
 
-    def accept_unmatched(self, side: str, key: tuple[str, ...]) -> int:
-        frame = self.pending_a_only if side == "A" else self.pending_b_only
-        for rec in frame.to_dicts():
-            if self.key_of(rec) == key:
-                row = {c: str(rec[c]) for c in rec if not c.startswith("_")}
-                snap = UnmatchedSnap(side, key, row)
-                if snap not in self.unmatched_snaps:
-                    self.unmatched_snaps.append(snap)
-                self._apply_snapshots()
-                return 1
-        return 0
+    def _unmatched_attr(self, side: str) -> str:
+        return "unmatched_snaps_a" if side == "A" else "unmatched_snaps_b"
 
-    def accept_all_unmatched(self, side: str) -> int:
-        frame = self.pending_a_only if side == "A" else self.pending_b_only
-        n = 0
-        for rec in frame.to_dicts():
-            key = self.key_of(rec)
-            row = {c: str(rec[c]) for c in rec if not c.startswith("_")}
-            snap = UnmatchedSnap(side, key, row)
-            if snap not in self.unmatched_snaps:
-                self.unmatched_snaps.append(snap)
-                n += 1
+    def _vstack_unmatched(self, side: str, frame: pl.DataFrame) -> int:
+        attr = self._unmatched_attr(side)
+        snaps: pl.DataFrame | None = getattr(self, attr)
+        if frame.is_empty():
+            self._apply_snapshots()
+            return 0
+        if snaps is None or snaps.is_empty():
+            setattr(self, attr, frame.unique())
+            n = frame.height
+        elif set(snaps.columns) == set(frame.columns):
+            snaps = snaps.select(list(frame.columns))
+            new = frame.join(snaps, on=list(frame.columns), how="anti")
+            n = new.height
+            if n:
+                setattr(self, attr, pl.concat([snaps, new], how="vertical").unique())
+        else:
+            n = frame.height
+            setattr(self, attr, pl.concat([snaps, frame], how="diagonal").unique())
         self._apply_snapshots()
         return n
+
+    def accept_unmatched(self, side: str, key: tuple[str, ...]) -> int:
+        pending = self.pending_a_only if side == "A" else self.pending_b_only
+        row = pending.filter(_key_eq_expr(self.keys, key))
+        if row.is_empty():
+            return 0
+        return 1 if self._vstack_unmatched(side, row) else 0
+
+    def accept_all_unmatched(self, side: str) -> int:
+        pending = self.pending_a_only if side == "A" else self.pending_b_only
+        return self._vstack_unmatched(side, pending)
 
     def accept_extra(self, side: str, name: str) -> int:
         snap = ExtraSnap(side, name)
@@ -974,15 +994,17 @@ class Engine:
         return before - self.cell_snaps.height
 
     def undo_unmatched(self, side: str, key: tuple[str, ...] | None = None) -> int:
-        before = len(self.unmatched_snaps)
+        attr = self._unmatched_attr(side)
+        snaps: pl.DataFrame | None = getattr(self, attr)
+        if snaps is None or snaps.is_empty():
+            return 0
+        before = snaps.height
         if key is None:
-            self.unmatched_snaps = [s for s in self.unmatched_snaps if s.side != side]
+            setattr(self, attr, snaps.head(0))
         else:
-            self.unmatched_snaps = [
-                s for s in self.unmatched_snaps if not (s.side == side and s.key == key)
-            ]
+            setattr(self, attr, snaps.filter(~_key_eq_expr(self.keys, key)))
         self._apply_snapshots()
-        return before - len(self.unmatched_snaps)
+        return before - getattr(self, attr).height
 
     def undo_extra(self, side: str, name: str) -> int:
         before = len(self.extra_snaps)
@@ -1119,7 +1141,8 @@ class Engine:
             raise InTuiError(f"ERROR: {exc.message}") from exc
         # prune snaps that no longer apply by rebuilding on new data
         tmp.cell_snaps = self.cell_snaps
-        tmp.unmatched_snaps = list(self.unmatched_snaps)
+        tmp.unmatched_snaps_a = self.unmatched_snaps_a
+        tmp.unmatched_snaps_b = self.unmatched_snaps_b
         tmp.extra_snaps = list(self.extra_snaps)
         tmp.context_columns = dict(self.context_columns)
         tmp.place = self.place
@@ -1138,20 +1161,29 @@ class Engine:
                         (tuple(str(rec[k]) for k in self.keys), rec["column"])
                     )
         returned_keys: set[tuple[str, tuple[str, ...]]] = set()
-        for side, frame in (("A", tmp.pending_a_only), ("B", tmp.pending_b_only)):
-            for rec in frame.to_dicts():
-                key = tmp.key_of(rec)
-                for s in self.unmatched_snaps:
-                    if s.side == side and s.key == key:
-                        if not tmp._row_matches(rec, s.row):
-                            returned_keys.add((side, key))
-                        break
+        for side, pending, prev_snaps in (
+            ("A", tmp.pending_a_only, self.unmatched_snaps_a),
+            ("B", tmp.pending_b_only, self.unmatched_snaps_b),
+        ):
+            if pending.is_empty() or prev_snaps is None or prev_snaps.is_empty():
+                continue
+            if not all(k in prev_snaps.columns for k in self.keys):
+                continue
+            hit = pending.join(
+                prev_snaps.select(self.keys).unique(), on=self.keys, how="inner"
+            )
+            if not hit.is_empty():
+                for rec in hit.select(self.keys).unique().to_dicts():
+                    returned_keys.add(
+                        (side, tuple(str(rec[k]) for k in self.keys))
+                    )
         returned_extras: set[tuple[str, str]] = set()
         # extras don't return except by vanishing/reappearing; spec has no "back to pending" for extras except —
         self.a = tmp.a
         self.b = tmp.b
         self.cell_snaps = tmp.cell_snaps
-        self.unmatched_snaps = tmp.unmatched_snaps
+        self.unmatched_snaps_a = tmp.unmatched_snaps_a
+        self.unmatched_snaps_b = tmp.unmatched_snaps_b
         self.extra_snaps = tmp.extra_snaps
         self.context_columns = tmp.context_columns
         self._rebuild()
@@ -1232,7 +1264,19 @@ class Engine:
                         "val_b": rec["val_b"],
                     }
                 )
-        return {"cells": cells}
+        unmatched: list[dict[str, Any]] = []
+        for side, snaps in (("A", self.unmatched_snaps_a), ("B", self.unmatched_snaps_b)):
+            if snaps is None or snaps.is_empty():
+                continue
+            for rec in snaps.to_dicts():
+                unmatched.append(
+                    {
+                        "side": side,
+                        "key": [rec[k] for k in self.keys],
+                        "row": {c: str(rec[c]) for c in rec},
+                    }
+                )
+        return {"cells": cells, "unmatched": unmatched}
 
     def to_manifest(self) -> dict[str, Any]:
         return {
@@ -1258,11 +1302,7 @@ class Engine:
             },
             "context_columns": self.context_columns,
             "snapshots": {
-                "cells": self._snapshots_to_manifest()["cells"],
-                "unmatched": [
-                    {"side": s.side, "key": list(s.key), "row": s.row}
-                    for s in self.unmatched_snaps
-                ],
+                **self._snapshots_to_manifest(),
                 "extras": [{"side": s.side, "name": s.name} for s in self.extra_snaps],
             },
             "place": {
@@ -1328,10 +1368,9 @@ class Engine:
         )
         snaps = man.get("snapshots") or {}
         eng.cell_snaps = _cell_snaps_from_json(keys, snaps.get("cells") or [])
-        eng.unmatched_snaps = [
-            UnmatchedSnap(u["side"], tuple(u["key"]), dict(u.get("row") or {}))
-            for u in snaps.get("unmatched") or []
-        ]
+        um = snaps.get("unmatched") or []
+        eng.unmatched_snaps_a = _unmatched_snaps_from_json(keys, um, "A", eng.a_only)
+        eng.unmatched_snaps_b = _unmatched_snaps_from_json(keys, um, "B", eng.b_only)
         eng.extra_snaps = [
             ExtraSnap(e["side"], e["name"]) for e in snaps.get("extras") or []
         ]
