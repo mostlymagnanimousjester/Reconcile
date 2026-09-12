@@ -15,11 +15,8 @@ from reconcile.delimited import abs_path
 from reconcile.errors import HardFail, format_key_tuple
 from reconcile.insights import (
     cell_insights,
-    column_pattern_insight,
     extra_insights,
     first_diff,
-    is_categorical_pending,
-    unmatched_key_insights,
 )
 from reconcile.load import SideTable, load_side
 
@@ -246,6 +243,7 @@ class Engine:
         self.returned_extras: set[tuple[str, str]] = set()
         self.last_refresh_delta: RefreshDelta | None = None
         self.tui_error: str | None = None
+        self._roster_cache: list[RosterRow] = []
         self._rebuild()
 
     # --- construction ---
@@ -351,6 +349,7 @@ class Engine:
         self.pending_a_only, self.accepted_a_only = self._split_unmatched("A")
         self.pending_b_only, self.accepted_b_only = self._split_unmatched("B")
         self.pending_extras, self.accepted_extras = self._split_extras()
+        self._roster_cache = self._build_roster_cache()
 
     def _pending_cells(self) -> pl.DataFrame:
         if self.mismatches.is_empty() or self.cell_snaps.is_empty():
@@ -433,17 +432,20 @@ class Engine:
     # --- roster ---
 
     def roster(self, name_filter: str = "") -> list[RosterRow]:
-        rows: list[RosterRow] = []
-        pending_by_col = {}
-        accepted_by_col = {}
+        rows = list(self._roster_cache)
+        if name_filter:
+            needle = name_filter.lower()
+            rows = [r for r in rows if needle in r.name.lower()]
+        return rows
+
+    def _roster_agg_maps(self) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
+        pending_by_col: dict[str, int] = {}
+        accepted_by_col: dict[str, int] = {}
+        top_pair: dict[str, int] = {}
+        col_stats: dict[str, dict[str, Any]] = {}
         if not self.pending_cells.is_empty():
             for rec in self.pending_cells.group_by("column").len().to_dicts():
                 pending_by_col[rec["column"]] = rec["len"]
-        if not self.accepted_cells.is_empty():
-            for rec in self.accepted_cells.group_by("column").len().to_dicts():
-                accepted_by_col[rec["column"]] = rec["len"]
-        top_pair: dict[str, int] = {}
-        if not self.pending_cells.is_empty():
             grouped = (
                 self.pending_cells.group_by(["column", "val_a", "val_b"])
                 .len()
@@ -451,15 +453,79 @@ class Engine:
             )
             for rec in grouped.group_by("column").first().to_dicts():
                 top_pair[rec["column"]] = rec["len"]
+            stats = self.pending_cells.group_by("column").agg(
+                (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).any().alias("trim"),
+                (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).any().alias("case"),
+                (
+                    pl.col("val_a").str.strip_chars().str.to_lowercase()
+                    == pl.col("val_b").str.strip_chars().str.to_lowercase()
+                ).any().alias("both"),
+                (
+                    pl.col("val_a").cast(pl.Float64, strict=False).is_not_null()
+                    & pl.col("val_b").cast(pl.Float64, strict=False).is_not_null()
+                    & (pl.col("val_a").str.strip_chars() != "")
+                    & (pl.col("val_b").str.strip_chars() != "")
+                    & (
+                        pl.col("val_a").cast(pl.Float64, strict=False)
+                        == pl.col("val_b").cast(pl.Float64, strict=False)
+                    )
+                ).any().alias("numeric"),
+                (
+                    pl.col("val_a").str.contains(r"[\u00a0\t\r\n]")
+                    | pl.col("val_b").str.contains(r"[\u00a0\t\r\n]")
+                    | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
+                    | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
+                ).any().alias("ws"),
+                pl.col("val_a").n_unique().alias("n_a"),
+                pl.col("val_b").n_unique().alias("n_b"),
+                pl.col("val_a").unique().sort().alias("ua"),
+                pl.col("val_b").unique().sort().alias("ub"),
+            ).with_columns(
+                pl.col("ua").list.concat(pl.col("ub")).list.unique().list.len().alias("n_ab"),
+                (pl.col("ua") != pl.col("ub")).alias("pattern"),
+            ).drop("ua", "ub")
+            for rec in stats.to_dicts():
+                col_stats[rec["column"]] = rec
+        if not self.accepted_cells.is_empty():
+            for rec in self.accepted_cells.group_by("column").len().to_dicts():
+                accepted_by_col[rec["column"]] = rec["len"]
+        return pending_by_col, accepted_by_col, top_pair, col_stats
 
+    def _build_roster_cache(self) -> list[RosterRow]:
+        pending_by_col, accepted_by_col, top_pair, col_stats = self._roster_agg_maps()
+        rows: list[RosterRow] = []
+        matched_n = self.matched_a.height
+        mismatch_n: dict[str, int] = {}
+        if not self.mismatches.is_empty():
+            for rec in self.mismatches.group_by("column").len().to_dicts():
+                mismatch_n[rec["column"]] = rec["len"]
         for col in self.comparable:
             pend = pending_by_col.get(col, 0)
             acc = accepted_by_col.get(col, 0)
             conc = (top_pair.get(col, 0) / pend) if pend else 0.0
             pct = f"{conc * 100:.0f}%" if pend else "—"
-            cat = self._categorical_label(col)
-            tags = self._column_tags(col)
-            returned = self.column_has_returned(col)
+            st = col_stats.get(col)
+            if not pend or st is None:
+                cat = "—"
+                tags = ""
+            else:
+                n_a, n_b, n_ab = int(st["n_a"]), int(st["n_b"]), int(st["n_ab"])
+                cat = "yes" if n_a <= 30 and n_b <= 30 and n_ab <= 50 else "no"
+                tag_bits: list[str] = []
+                if st["trim"]:
+                    tag_bits.append("speculative: equal if trim")
+                if st["case"]:
+                    tag_bits.append("speculative: equal if case-fold")
+                if st["both"] and not st["trim"] and not st["case"]:
+                    tag_bits.append("speculative: equal if trim+case")
+                if st["numeric"]:
+                    tag_bits.append("speculative: equal as numbers")
+                if st["ws"]:
+                    tag_bits.append("speculative: invisible/odd whitespace")
+                if st["pattern"] and n_a <= 6 and n_b <= 6:
+                    tag_bits.append("speculative: shared value pattern")
+                tags = ", ".join(tag_bits[:3])
+            equal = str(matched_n - mismatch_n.get(col, 0))
             rows.append(
                 RosterRow(
                     kind="column",
@@ -469,10 +535,10 @@ class Engine:
                     concentration=conc,
                     top_pair_pct=pct,
                     accepted=acc,
-                    equal=str(self.equal_count(col)),
+                    equal=equal,
                     categorical=cat,
                     speculative=tags,
-                    returned=returned,
+                    returned=self.column_has_returned(col),
                 )
             )
         if self.a_only.height > 0:
@@ -531,55 +597,28 @@ class Engine:
                 )
             )
         rows.sort(key=lambda r: (-r.pending, -r.concentration, r.name))
-        if name_filter:
-            needle = name_filter.lower()
-            rows = [r for r in rows if needle in r.name.lower()]
         return rows
 
-    def _categorical_label(self, column: str) -> str:
-        pending = self.pending_cells.filter(pl.col("column") == column)
-        if pending.is_empty():
-            return "—"
-        a = pending["val_a"].to_list()
-        b = pending["val_b"].to_list()
-        return "yes" if is_categorical_pending(a, b) else "no"
-
     def is_categorical(self, column: str) -> bool:
-        return self._categorical_label(column) == "yes"
-
-    def _column_tags(self, column: str) -> str:
-        pending = self.pending_cells.filter(pl.col("column") == column)
-        if pending.is_empty():
-            return ""
-        tags: list[str] = []
-        # sample up to 200 cells for cell-level insights present
-        sample = pending.head(200)
-        seen: set[str] = set()
-        for rec in sample.to_dicts():
-            for t in cell_insights(rec["val_a"], rec["val_b"]):
-                if t not in seen:
-                    seen.add(t)
-                    tags.append(t)
-            if len(tags) >= 3:
-                break
-        pat = column_pattern_insight(pending)
-        if pat and pat not in tags:
-            tags.append(pat)
-        return ", ".join(tags[:3])
+        for row in self._roster_cache:
+            if row.kind == "column" and row.name == column:
+                return row.categorical == "yes"
+        return False
 
     def _unmatched_side_tags(self, side: str) -> str:
         pending = self.pending_a_only if side == "A" else self.pending_b_only
         other = self.pending_b_only if side == "A" else self.pending_a_only
         if pending.is_empty() or other.is_empty():
             return ""
-        other_keys = [
-            tuple(str(rec[k]) for k in self.keys) for rec in other.head(200).to_dicts()
-        ]
-        for rec in pending.head(50).to_dicts():
-            key = tuple(str(rec[k]) for k in self.keys)
-            tags = unmatched_key_insights(key, other_keys)
-            if tags:
-                return tags[0]
+        trim_cols = [pl.col(k).str.strip_chars().alias(k) for k in self.keys]
+        if not pending.select(trim_cols).join(other.select(trim_cols), on=self.keys, how="inner").is_empty():
+            return "speculative: would match if trim"
+        case_cols = [pl.col(k).str.to_lowercase().alias(k) for k in self.keys]
+        if not pending.select(case_cols).join(other.select(case_cols), on=self.keys, how="inner").is_empty():
+            return "speculative: would match if case-fold"
+        fold_cols = [pl.col(k).str.strip_chars().str.to_lowercase().alias(k) for k in self.keys]
+        if not pending.select(fold_cols).join(other.select(fold_cols), on=self.keys, how="inner").is_empty():
+            return "speculative: would match if trim/case"
         return ""
 
     # --- pair list ---
