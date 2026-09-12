@@ -321,7 +321,7 @@ def test_zip_stores_delim_encoding_and_absolute_paths(
     assert man["a_detection"]["encoding"] == "utf8"
     assert man["b_detection"]["delimiter"] == ","
     assert man["b_detection"]["encoding"] == "utf8"
-    loaded = Engine.from_session("job.recon.zip")
+    loaded, _place = Engine.from_session("job.recon.zip")
     assert loaded.a.path == str(abs_a)
     assert loaded.b.path == str(abs_b)
     assert loaded.keys == ["id"]

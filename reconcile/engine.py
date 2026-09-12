@@ -229,7 +229,6 @@ class Engine:
         self.unmatched_snaps_b: pl.DataFrame | None = None
         self.extra_snaps: list[ExtraSnap] = []
         self.context_columns: dict[str, list[str]] = {}
-        self.place = Place()
         self.column_draft: set[str] = set()
         self.pair_draft_col: str | None = None
         self.pair_draft_va: str | None = None
@@ -242,7 +241,6 @@ class Engine:
         )
         self.returned_extras: set[tuple[str, str]] = set()
         self.last_refresh_delta: RefreshDelta | None = None
-        self.tui_error: str | None = None
         self._roster_cache: list[RosterRow] = []
         self._rebuild()
 
@@ -895,7 +893,6 @@ class Engine:
         self.pair_draft_col = column
         self.pair_draft_va = val_a
         self.pair_draft_vb = val_b
-        self.place.last_pair = (column, val_a, val_b)
         return n
 
     # --- accept ---
@@ -935,7 +932,6 @@ class Engine:
             & (pl.col("val_b") == val_b)
         )
         n = self._vstack_cell_snaps(frame)
-        self.place.last_pair = (column, val_a, val_b)
         return n
 
     def accept_cell(self, key: tuple[str, ...], column: str, val_a: str, val_b: str) -> int:
@@ -969,7 +965,6 @@ class Engine:
             )
             frame = frame.join(exc, on=self.keys, how="anti")
         n = self._vstack_cell_snaps(frame)
-        self.place.last_pair = (col, va, vb)
         self.pair_draft_col = None
         self.pair_draft_va = None
         self.pair_draft_vb = None
@@ -1283,28 +1278,25 @@ class Engine:
             ),
         )
         self.last_refresh_delta = delta
-        self.tui_error = None
         return delta
 
-    def prune_place(self) -> None:
-        p = self.place
+    def prune_place(self, place: Place, pair_draft_active: bool = False) -> Place:
+        p = place
         if p.column and p.column not in self.comparable:
-            self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
-            return
+            return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
         if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
             if not p.column or p.column not in self.comparable:
-                self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
-                return
-        if p.screen == "cell_step":
-            if self.pair_draft_col is None:
-                self.place = replace(p, screen="pair_list")
+                return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+        if p.screen == "cell_step" and not pair_draft_active:
+            p = replace(p, screen="pair_list")
         if p.screen == "a_only" and self.a_only.is_empty():
-            self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
         if p.screen == "b_only" and self.b_only.is_empty():
-            self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
         if p.screen == "extras":
             if not self.extras_a and not self.extras_b:
-                self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+        return p
 
     # --- session zip ---
 
@@ -1334,7 +1326,8 @@ class Engine:
                 )
         return {"cells": cells, "unmatched": unmatched}
 
-    def to_manifest(self) -> dict[str, Any]:
+    def to_manifest(self, place: Place | None = None) -> dict[str, Any]:
+        p = place or Place()
         return {
             "schema_version": SCHEMA_VERSION,
             "a_path": abs_path(self.a.path),
@@ -1362,18 +1355,18 @@ class Engine:
                 "extras": [{"side": s.side, "name": s.name} for s in self.extra_snaps],
             },
             "place": {
-                "screen": self.place.screen,
-                "column": self.place.column,
-                "extra_side": self.place.extra_side,
-                "extra_name": self.place.extra_name,
-                "view_tab": self.place.view_tab,
-                "roster_filter": self.place.roster_filter,
-                "last_pair": list(self.place.last_pair) if self.place.last_pair else None,
-                "detail_step": "cell_step" if self.place.screen == "cell_step" else "pair_list",
+                "screen": p.screen,
+                "column": p.column,
+                "extra_side": p.extra_side,
+                "extra_name": p.extra_name,
+                "view_tab": p.view_tab,
+                "roster_filter": p.roster_filter,
+                "last_pair": list(p.last_pair) if p.last_pair else None,
+                "detail_step": "cell_step" if p.screen == "cell_step" else "pair_list",
             },
         }
 
-    def export_zip(self, path: str) -> None:
+    def export_zip(self, path: str, place: Place | None = None) -> None:
         path = abs_path(path)
         if not path.endswith(".recon.zip"):
             if path.endswith(".zip"):
@@ -1381,13 +1374,13 @@ class Engine:
             else:
                 path = path + ".recon.zip"
             path = abs_path(path)
-        manifest = json.dumps(self.to_manifest(), indent=2)
+        manifest = json.dumps(self.to_manifest(place), indent=2)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", manifest)
 
     @classmethod
-    def from_session(cls, path: str) -> Engine:
+    def from_session(cls, path: str) -> tuple[Engine, Place]:
         path = abs_path(path)
         if not Path(path).is_file():
             raise HardFail(f"Missing path: {path}")
@@ -1434,23 +1427,23 @@ class Engine:
             k: list(v) for k, v in (man.get("context_columns") or {}).items()
         }
         eng._rebuild()
-        place = man.get("place") or {}
-        last = place.get("last_pair")
+        place_man = man.get("place") or {}
+        last = place_man.get("last_pair")
         last_t = tuple(last) if last and len(last) == 3 else None
-        screen = place.get("screen") or "roster"
-        if place.get("detail_step") == "cell_step" and screen in ("pair_list", "cell_step"):
+        screen = place_man.get("screen") or "roster"
+        if place_man.get("detail_step") == "cell_step" and screen in ("pair_list", "cell_step"):
             screen = "pair_list"  # drafts are not persisted
-        eng.place = Place(
+        place = Place(
             screen=screen if screen != "cell_step" else "pair_list",
-            column=place.get("column"),
-            extra_side=place.get("extra_side"),
-            extra_name=place.get("extra_name"),
-            view_tab=place.get("view_tab") or "pending",
-            roster_filter=place.get("roster_filter") or "",
+            column=place_man.get("column"),
+            extra_side=place_man.get("extra_side"),
+            extra_name=place_man.get("extra_name"),
+            view_tab=place_man.get("view_tab") or "pending",
+            roster_filter=place_man.get("roster_filter") or "",
             last_pair=last_t,
         )
-        eng.prune_place()
-        return eng
+        place = eng.prune_place(place, pair_draft_active=False)
+        return eng, place
 
     def identity_lines(self) -> list[str]:
         a_det = (

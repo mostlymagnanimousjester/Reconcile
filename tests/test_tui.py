@@ -19,21 +19,21 @@ def test_tui_launches_against_fixture(tmp_path: Path):
             footer = str(app.query_one("#footer").render())
             assert "pending" in footer
             assert app.engine.pending_total() > 0
-            assert app.engine.place.screen == "roster"
+            assert app.place.screen == "roster"
             pending_before = app.engine.pending_total()
             app.query_one("#grid").focus()
             await pilot.pause()
-            if app.engine.place.screen == "roster":
+            if app.place.screen == "roster":
                 app.action_drill()
                 await pilot.pause()
             await pilot.pause()
-            assert app.engine.place.screen in {"pair_list", "a_only", "b_only", "extras"}
+            assert app.place.screen in {"pair_list", "a_only", "b_only", "extras"}
             await pilot.press("escape")
             await pilot.pause()
-            assert app.engine.place.screen == "roster"
+            assert app.place.screen == "roster"
             await pilot.press("escape")
             await pilot.pause()
-            assert app.engine.place.screen == "overview"
+            assert app.place.screen == "overview"
             await pilot.press("question_mark")
             await pilot.pause()
             await pilot.press("escape")
@@ -68,10 +68,10 @@ def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path
             modal.action_ok()
             await pilot.pause()
             assert isinstance(app.screen, SentinelModal)
-            assert not app.engine.draft_in_flight()
+            assert not app.draft_in_flight()
             modal.action_cancel()
             await pilot.pause()
             assert not isinstance(app.screen, SentinelModal)
-            assert not app.engine.draft_in_flight()
+            assert not app.draft_in_flight()
 
     asyncio.run(_run())

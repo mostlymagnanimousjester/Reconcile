@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from reconcile.engine import Engine, InTuiError
+from reconcile.engine import Engine, InTuiError, Place
 from tests.xlsxutil import write_csv
 
 
@@ -272,7 +272,7 @@ def test_next_lever_after_column_accept(tmp_path: Path):
     write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,1\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     eng.accept_column("Status")
-    place = eng.next_lever_place(eng.place)
+    place = eng.next_lever_place(Place())
     # Flag still has pending; next lever is that pair list
     assert place.screen == "pair_list"
     assert place.column == "Flag"
@@ -283,14 +283,12 @@ def test_session_place_restored(tmp_path: Path):
     write_csv(pa, "id,val\n1,Y\n")
     write_csv(pb, "id,val\n1,Yes\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    eng.place.screen = "pair_list"
-    eng.place.column = "val"
-    eng.place.roster_filter = "val"
+    place = Place(screen="pair_list", column="val", roster_filter="val")
     z = tmp_path / "job.recon.zip"
-    eng.export_zip(str(z))
-    loaded = Engine.from_session(str(z))
-    assert loaded.place.column == "val"
-    assert loaded.place.roster_filter == "val"
+    eng.export_zip(str(z), place)
+    loaded, restored = Engine.from_session(str(z))
+    assert restored.column == "val"
+    assert restored.roster_filter == "val"
 
 
 def test_session_zip_roundtrip(tmp_path: Path):
@@ -301,7 +299,7 @@ def test_session_zip_roundtrip(tmp_path: Path):
     eng.accept_column("val")
     z = tmp_path / "job.recon.zip"
     eng.export_zip(str(z))
-    loaded = Engine.from_session(str(z))
+    loaded, _place = Engine.from_session(str(z))
     assert loaded.pending_total() == 0
     assert loaded.keys == ["id"]
     assert loaded.a.path == eng.a.path
@@ -324,6 +322,6 @@ def test_session_zip_from_relative_paths_is_absolute(tmp_path: Path, monkeypatch
     assert Path(man["a_path"]).is_absolute()
     assert Path(man["b_path"]).is_absolute()
     assert man["a_path"] == str((tmp_path / "a.csv").resolve())
-    loaded = Engine.from_session("job.recon.zip")
+    loaded, _place = Engine.from_session("job.recon.zip")
     assert loaded.a.path == man["a_path"]
     assert loaded.b.path == man["b_path"]

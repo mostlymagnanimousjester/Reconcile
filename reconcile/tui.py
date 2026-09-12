@@ -343,12 +343,19 @@ class ReconcileApp(App[int]):
         Binding("?", "help", "Help", show=False),
     ]
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, place: Place | None = None) -> None:
         super().__init__()
         self.engine = engine
+        self.place = place or Place()
+        self.column_draft: set[str] = set()
+        self.pair_draft_unchecked: set[tuple[str, ...]] = set()
+        self.tui_error: str | None = None
         self._roster_index = 0
         self._table_keys: list[Any] = []
-        self.pair_draft_unchecked: set[tuple[str, ...]] = set()
+        self._mounted_screen: str | None = None
+
+    def draft_in_flight(self) -> bool:
+        return bool(self.column_draft) or self.engine.pair_draft_col is not None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="banner", classes="hidden")
@@ -360,10 +367,10 @@ class ReconcileApp(App[int]):
         yield Static("", id="footer")
 
     def on_mount(self) -> None:
-        if self.engine.place.screen == "roster" or not self.engine.place.screen:
-            self.engine.place.screen = "roster"
+        if self.place.screen == "roster" or not self.place.screen:
+            self.place.screen = "roster"
         filt = self.query_one("#filter", Input)
-        filt.value = self.engine.place.roster_filter
+        filt.value = self.place.roster_filter
         self.render_all()
         self.call_after_refresh(self.set_focus_work)
 
@@ -371,7 +378,7 @@ class ReconcileApp(App[int]):
         focused = self.focused
         if not isinstance(focused, Input):
             return False
-        if focused.id == "filter" and self.engine.place.screen != "roster":
+        if focused.id == "filter" and self.place.screen != "roster":
             return False
         return True
 
@@ -389,7 +396,7 @@ class ReconcileApp(App[int]):
         else:
             banner.update("")
             banner.set_class(True, "hidden")
-        self.engine.tui_error = msg
+        self.tui_error = msg
 
     def set_focus_work(self) -> None:
         if self.query("#grid"):
@@ -399,20 +406,25 @@ class ReconcileApp(App[int]):
 
     def render_all(self) -> None:
         self._sync_filter_visibility()
-        self._render_work()
+        screen = self.place.screen
+        if screen != self._mounted_screen:
+            self._remount_work()
+            self._mounted_screen = screen
+        else:
+            self._refill_work()
         self._render_pane()
         self._render_footer()
-        if self.engine.tui_error:
-            self.set_error(self.engine.tui_error)
+        if self.tui_error:
+            self.set_error(self.tui_error)
         self.call_after_refresh(self.set_focus_work)
 
     def _sync_filter_visibility(self) -> None:
         row = self.query_one("#filter-row")
-        row.display = self.engine.place.screen == "roster"
+        row.display = self.place.screen == "roster"
 
     def _render_footer(self) -> None:
         e = self.engine
-        p = e.place
+        p = self.place
         bits = [
             f"pending {e.pending_total()}",
             f"cells {e.pending_cells_n()}",
@@ -422,8 +434,8 @@ class ReconcileApp(App[int]):
         ]
         if e.pending_total() == 0:
             bits[0] = "pending 0"
-        if e.column_draft:
-            bits.append(f"draft {len(e.column_draft)}  y confirm  Esc cancel  Space toggle")
+        if self.column_draft:
+            bits.append(f"draft {len(self.column_draft)}  y confirm  Esc cancel  Space toggle")
         elif e.pair_draft_col is not None:
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
@@ -452,7 +464,7 @@ class ReconcileApp(App[int]):
         self.query_one("#footer", Static).update(" · ".join(bits) + spec + hint)
 
     def _render_pane(self) -> None:
-        p = self.engine.place
+        p = self.place
         pane = self.query_one("#pane", Static)
         if p.screen == "cell_step" and p.pair_val_a is not None:
             va, vb = p.pair_val_a, p.pair_val_b or ""
@@ -470,42 +482,61 @@ class ReconcileApp(App[int]):
         else:
             pane.update("")
 
-    def _render_work(self) -> None:
+    def _work_body(self):
+        screen = self.place.screen
+        if screen == "roster":
+            return self._roster_table()
+        if screen == "overview":
+            return self._overview()
+        if screen == "pair_list":
+            return self._pair_view()
+        if screen in ("cell_step", "accepted", "equal", "all_matched"):
+            return self._cell_grid()
+        if screen == "a_only":
+            return self._unmatched("A")
+        if screen == "b_only":
+            return self._unmatched("B")
+        if screen == "extras":
+            return self._extras()
+        return Static("Empty.")
+
+    def _remount_work(self) -> None:
         work = self.query_one("#work", Vertical)
         for child in list(work.children):
             child.remove()
-        screen = self.engine.place.screen
+        work.mount(self._work_body())
+
+    def _refill_work(self) -> None:
+        if not self.query("#grid"):
+            self._remount_work()
+            return
+        screen = self.place.screen
         if screen == "roster":
-            work.mount(self._roster_table())
-        elif screen == "overview":
-            work.mount(self._overview())
-        elif screen == "pair_list":
-            work.mount(self._pair_view())
-        elif screen in ("cell_step", "accepted", "equal", "all_matched"):
-            work.mount(self._cell_grid())
-        elif screen == "a_only":
-            work.mount(self._unmatched("A"))
-        elif screen == "b_only":
-            work.mount(self._unmatched("B"))
-        elif screen == "extras":
-            work.mount(self._extras())
-        else:
-            work.mount(Static("Empty."))
+            self._fill_roster(self.query_one("#grid", DataTable))
+            return
+        # Same screen, new data: rebuild the existing grid in place.
+        self._remount_work()
+        self._mounted_screen = screen
 
     def _roster_table(self) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
         table.add_columns(" ", "kind", "name", "side", "pending", "top-pair %", "accepted", "equal", "cat", "speculative")
-        rows = self.engine.roster(self.engine.place.roster_filter)
+        self._fill_roster(table)
+        return table
+
+    def _fill_roster(self, table: DataTable) -> None:
+        table.clear()
+        rows = self.engine.roster(self.place.roster_filter)
         self._table_keys = []
         if not rows:
             table.add_row("", "", "(no rows — empty filter or no remaining-work kinds)", "—", "0", "—", "0", "—", "—", "")
             self._table_keys = [None]
-            return table
+            return
         for i, r in enumerate(rows):
             check = " "
-            if self.engine.column_draft:
+            if self.column_draft:
                 if r.kind == "column":
-                    check = "[x]" if r.name in self.engine.column_draft else "[ ]"
+                    check = "[x]" if r.name in self.column_draft else "[ ]"
             name = r.name
             styles = []
             if i == 0:
@@ -531,8 +562,8 @@ class ReconcileApp(App[int]):
             )
             self._table_keys.append(r)
         idx = 0
-        focus_name = self.engine.place.focused_name
-        extra = (self.engine.place.extra_side, self.engine.place.extra_name)
+        focus_name = self.place.focused_name
+        extra = (self.place.extra_side, self.place.extra_name)
         for i, r in enumerate(rows):
             if focus_name and r.name == focus_name:
                 if r.kind == "extra" and extra[0] and r.side != extra[0]:
@@ -540,7 +571,6 @@ class ReconcileApp(App[int]):
                 idx = i
                 break
         table.move_cursor(row=idx)
-        return table
 
     def _overview(self) -> Static:
         e = self.engine
@@ -581,7 +611,7 @@ class ReconcileApp(App[int]):
         return Horizontal(*buttons, id="tabs")
 
     def _pair_view(self) -> Vertical:
-        col = self.engine.place.column or ""
+        col = self.place.column or ""
         if not col:
             return Vertical(Static("No column."))
         body = self._pair_matrix(col) if self.engine.is_categorical(col) else self._pair_list(col)
@@ -590,8 +620,8 @@ class ReconcileApp(App[int]):
     def _pair_list(self, col: str) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid")
         table.add_columns("A", "B", "pending", "speculative")
-        recs, page, pages = self.engine.pair_page(col, self.engine.place.page)
-        self.engine.place.page = page
+        recs, page, pages = self.engine.pair_page(col, self.place.page)
+        self.place.page = page
         self._table_keys = []
         if not recs:
             table.add_row("(no pending pairs)", "", "0", "")
@@ -622,8 +652,8 @@ class ReconcileApp(App[int]):
         return table
 
     def _cell_grid(self) -> Vertical:
-        col = self.engine.place.column or ""
-        tab = self.engine.place.view_tab
+        col = self.place.column or ""
+        tab = self.place.view_tab
         title = {
             "pending": "Pending (cell step)",
             "accepted": "Accepted",
@@ -634,10 +664,10 @@ class ReconcileApp(App[int]):
         headers = [*self.engine.keys, "A", "B", "speculative"]
         table.add_columns(*headers)
         self._table_keys = []
-        if self.engine.place.screen == "cell_step":
-            va, vb = self.engine.place.pair_val_a or "", self.engine.place.pair_val_b or ""
-            recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.engine.place.page)
-            self.engine.place.page = page
+        if self.place.screen == "cell_step":
+            va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
+            recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
+            self.place.page = page
             draft = self.engine.pair_draft_col is not None
             if not recs:
                 table.add_row(*([""] * (len(self.engine.keys) + 2)), "(no pending cells for this pair)")
@@ -658,8 +688,8 @@ class ReconcileApp(App[int]):
                     table.add_row(*key_cells, va_t, rec["val_b"], tags)
                     self._table_keys.append(rec)
         else:
-            recs, page, pages = self.engine.cells_for_tab(col, tab, self.engine.place.page)
-            self.engine.place.page = page
+            recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
+            self.place.page = page
             if not recs:
                 table.add_row(*([""] * (len(self.engine.keys) + 2)), "(empty)")
                 self._table_keys = [None]
@@ -672,12 +702,12 @@ class ReconcileApp(App[int]):
                     style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
                     table.add_row(*key_cells, Text(str(rec["val_a"]), style=style), str(rec["val_b"]), tags)
                     self._table_keys.append(rec)
-        tab_current = tab if self.engine.place.screen != "cell_step" else "pending"
+        tab_current = tab if self.place.screen != "cell_step" else "pending"
         return Vertical(Static(f"COLUMN {col}   {title}"), self._tab_bar(tab_current), table)
 
     def _unmatched(self, side: str) -> Vertical:
-        recs, page, pages = self.engine.unmatched_page(side, self.engine.place.page)
-        self.engine.place.page = page
+        recs, page, pages = self.engine.unmatched_page(side, self.place.page)
+        self.place.page = page
         frame = self.engine.a_only if side == "A" else self.engine.b_only
         cols = list(frame.columns)
         table: DataTable = DataTable(cursor_type="row", id="grid")
@@ -741,7 +771,7 @@ class ReconcileApp(App[int]):
         return rec if isinstance(rec, dict) else None
 
     def _focused_pair(self) -> tuple[str, str] | None:
-        p = self.engine.place
+        p = self.place
         if p.column and self.engine.is_categorical(p.column) and self.query("#grid"):
             table = self.query_one("#grid", DataTable)
             if table.cursor_type == "cell" and getattr(self, "_matrix_b", None):
@@ -759,11 +789,31 @@ class ReconcileApp(App[int]):
             return rec["val_a"], rec["val_b"]
         return None
 
+    def _toggle_column_draft(self, name: str) -> None:
+        if not self.column_draft and self.engine.pair_draft_col is None:
+            return
+        if self.engine.pair_draft_col is not None:
+            return
+        if name not in self.engine.comparable:
+            return
+        if name in self.column_draft:
+            self.column_draft.discard(name)
+            return
+        pend = 0
+        for row in self.engine.roster():
+            if row.kind == "column" and row.name == name:
+                pend = row.pending
+                break
+        if pend > 0:
+            self.column_draft.add(name)
+
     def action_help(self) -> None:
         self.push_screen(HelpModal())
 
     def action_quit_app(self) -> None:
         self.engine.cancel_drafts()
+        self.column_draft = set()
+        self.pair_draft_unchecked = set()
         code = 0 if self.engine.pending_total() == 0 else 1
         self.exit(code)
 
@@ -773,48 +823,48 @@ class ReconcileApp(App[int]):
             self.query_one("#grid").focus() if self.query("#grid") else None
             return
         e = self.engine
-        p = e.place
+        p = self.place
         if p.screen == "cell_step":
             e.clear_pair_draft()
             self.pair_draft_unchecked = set()
-            e.place = Place(
+            self.place = Place(
                 screen="pair_list",
                 column=p.column,
                 roster_filter=p.roster_filter,
                 last_pair=p.last_pair,
                 view_tab="pending",
             )
-        elif e.column_draft and p.screen == "roster":
-            e.column_draft = set()
+        elif self.column_draft and p.screen == "roster":
+            self.column_draft = set()
         elif p.screen in ("pair_list", "a_only", "b_only", "extras", "accepted", "equal", "all_matched"):
-            e.place = Place(
+            self.place = Place(
                 screen="roster",
                 roster_filter=p.roster_filter,
                 last_pair=p.last_pair,
                 focused_name=p.column or p.focused_name,
             )
         elif p.screen == "roster":
-            e.place = Place(screen="overview", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            self.place = Place(screen="overview", roster_filter=p.roster_filter, last_pair=p.last_pair)
         self.render_all()
         self.set_focus_work()
 
     def action_drill(self) -> None:
         if self._in_input():
             # Enter in filter: keep filter, return to list
-            self.engine.place.roster_filter = self.query_one("#filter", Input).value
+            self.place.roster_filter = self.query_one("#filter", Input).value
             self.set_focus_work()
             self.render_all()
             self.set_focus_work()
             return
         e = self.engine
-        p = e.place
+        p = self.place
         try:
             if p.screen == "roster":
                 row = self._focused_roster()
                 if not row:
                     return
                 if row.kind == "column":
-                    e.place = Place(
+                    self.place = Place(
                         screen="pair_list",
                         column=row.name,
                         roster_filter=p.roster_filter,
@@ -822,11 +872,11 @@ class ReconcileApp(App[int]):
                         focused_name=row.name,
                     )
                 elif row.kind == "A-only":
-                    e.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    self.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 elif row.kind == "B-only":
-                    e.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    self.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 elif row.kind == "extra":
-                    e.place = Place(
+                    self.place = Place(
                         screen="extras",
                         extra_side=row.side,
                         extra_name=row.name,
@@ -838,11 +888,11 @@ class ReconcileApp(App[int]):
                 key = table.get_row_at(table.cursor_row)
                 label = str(key[0])
                 if "A-only" in label:
-                    e.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    self.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 elif "B-only" in label:
-                    e.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    self.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 else:
-                    e.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    self.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
             elif p.screen == "pair_list":
                 pair = self._focused_pair()
                 if not pair or not p.column:
@@ -852,13 +902,14 @@ class ReconcileApp(App[int]):
                     self.set_error("ERROR: that pair has no pending cells")
                     return
                 self.pair_draft_unchecked = set()
-                e.place = Place(
+                last = (p.column, pair[0], pair[1])
+                self.place = Place(
                     screen="cell_step",
                     column=p.column,
                     pair_val_a=pair[0],
                     pair_val_b=pair[1],
                     roster_filter=p.roster_filter,
-                    last_pair=(p.column, pair[0], pair[1]),
+                    last_pair=last,
                     view_tab="pending",
                 )
             self.set_error(None)
@@ -871,11 +922,11 @@ class ReconcileApp(App[int]):
 
     def action_toggle(self) -> None:
         e = self.engine
-        if e.place.screen == "roster":
+        if self.place.screen == "roster":
             row = self._focused_roster()
             if row and row.kind == "column":
-                e.toggle_column_draft(row.name)
-        elif e.place.screen == "cell_step":
+                self._toggle_column_draft(row.name)
+        elif self.place.screen == "cell_step":
             rec = self._focused_rec()
             if rec:
                 key = e.key_of(rec)
@@ -888,7 +939,7 @@ class ReconcileApp(App[int]):
 
     def action_accept(self) -> None:
         e = self.engine
-        p = e.place
+        p = self.place
         try:
             if p.screen == "roster":
                 row = self._focused_roster()
@@ -896,47 +947,49 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    e.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.column_draft.discard(row.name)
+                    self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
-                    e.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "B-only":
                     e.accept_all_unmatched("B")
-                    e.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "extra":
                     e.accept_extra(row.side, row.name)
-                    e.place = e.next_lever_place(
+                    self.place = e.next_lever_place(
                         Place(screen="extras", extra_side=row.side, extra_name=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
                     )
             elif p.screen == "pair_list":
                 pair = self._focused_pair()
                 if pair and p.column:
                     e.accept_pair(p.column, pair[0], pair[1])
-                    e.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=(p.column, pair[0], pair[1])))
+                    last = (p.column, pair[0], pair[1])
+                    self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=last))
             elif p.screen == "cell_step":
                 rec = self._focused_rec()
                 if rec and p.column:
                     key = e.key_of(rec)
                     e.accept_cell(key, p.column, rec["val_a"], rec["val_b"])
                     nxt = e.next_pending_cell_in_pair(key)
-                    e.place.focused_key = nxt
+                    self.place.focused_key = nxt
             elif p.screen == "a_only":
                 rec = self._focused_rec()
                 if rec:
                     key = e.key_of(rec)
                     e.accept_unmatched("A", key)
-                    e.place.focused_key = e.next_pending_key_in_grid("A", key)
+                    self.place.focused_key = e.next_pending_key_in_grid("A", key)
             elif p.screen == "b_only":
                 rec = self._focused_rec()
                 if rec:
                     key = e.key_of(rec)
                     e.accept_unmatched("B", key)
-                    e.place.focused_key = e.next_pending_key_in_grid("B", key)
+                    self.place.focused_key = e.next_pending_key_in_grid("B", key)
             elif p.screen == "extras":
                 rec = self._focused_rec()
                 if rec:
                     e.accept_extra(rec["side"], rec["name"])
-                    e.place = e.next_lever_place(p)
+                    self.place = e.next_lever_place(p)
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -946,7 +999,7 @@ class ReconcileApp(App[int]):
 
     def action_accept_all(self) -> None:
         e = self.engine
-        p = e.place
+        p = self.place
         try:
             if p.screen == "roster":
                 row = self._focused_roster()
@@ -954,26 +1007,27 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    e.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.column_draft.discard(row.name)
+                    self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
-                    e.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "B-only":
                     e.accept_all_unmatched("B")
-                    e.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
             elif p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
                 if p.column:
                     if e.pair_draft_col is not None:
                         e.clear_pair_draft()
                         self.pair_draft_unchecked = set()
                     e.accept_column(p.column)
-                    e.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
             elif p.screen == "a_only":
                 e.accept_all_unmatched("A")
-                e.place = e.next_lever_place(p)
+                self.place = e.next_lever_place(p)
             elif p.screen == "b_only":
                 e.accept_all_unmatched("B")
-                e.place = e.next_lever_place(p)
+                self.place = e.next_lever_place(p)
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -984,14 +1038,17 @@ class ReconcileApp(App[int]):
     def action_confirm(self) -> None:
         e = self.engine
         try:
-            if e.column_draft:
-                e.confirm_column_draft()
-                e.place = e.next_lever_place(e.place)
+            if self.column_draft:
+                names = list(self.column_draft)
+                for name in names:
+                    e.accept_column(name)
+                self.column_draft = set()
+                self.place = e.next_lever_place(self.place)
             elif e.pair_draft_col is not None:
                 col = e.pair_draft_col
                 e.confirm_pair_draft(self.pair_draft_unchecked)
                 self.pair_draft_unchecked = set()
-                e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=e.place.last_pair))
+                self.place = e.next_lever_place(Place(column=col, roster_filter=self.place.roster_filter, last_pair=self.place.last_pair))
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1001,7 +1058,7 @@ class ReconcileApp(App[int]):
 
     def action_undo(self) -> None:
         e = self.engine
-        p = e.place
+        p = self.place
         if p.screen == "roster":
             row = self._focused_roster()
             if not row:
@@ -1038,25 +1095,31 @@ class ReconcileApp(App[int]):
         self.set_focus_work()
 
     def action_undo_column(self) -> None:
-        if self.engine.place.column:
-            self.engine.undo_column(self.engine.place.column)
+        if self.place.column:
+            self.engine.undo_column(self.place.column)
             self.render_all()
             self.set_focus_work()
 
     def action_refresh(self) -> None:
         try:
             self.engine.refresh()
-            self.engine.prune_place()
-            p = self.engine.place
+            if self.column_draft:
+                keep = set()
+                for row in self.engine.roster():
+                    if row.kind == "column" and row.name in self.column_draft and row.pending > 0:
+                        keep.add(row.name)
+                self.column_draft = keep
+            p = self.engine.prune_place(self.place, self.engine.pair_draft_col is not None)
+            self.place = p
             still = True
             if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
                 if not p.column or p.column not in self.engine.comparable:
                     still = False
             if p.screen == "cell_step" and self.engine.pair_draft_col is None:
                 still = False
-                self.engine.place.screen = "pair_list"
+                self.place.screen = "pair_list"
             if not still:
-                self.engine.place = self.engine.next_lever_place(p)
+                self.place = self.engine.next_lever_place(p)
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1064,19 +1127,19 @@ class ReconcileApp(App[int]):
         self.set_focus_work()
 
     def action_page_next(self) -> None:
-        self.engine.place.page += 1
+        self.place.page += 1
         self.render_all()
         self.set_focus_work()
 
     def action_page_prev(self) -> None:
-        self.engine.place.page = max(0, self.engine.place.page - 1)
+        self.place.page = max(0, self.place.page - 1)
         self.render_all()
         self.set_focus_work()
 
     def action_regex(self) -> None:
-        if self.engine.place.screen != "roster":
+        if self.place.screen != "roster":
             return
-        if self.engine.draft_in_flight():
+        if self.draft_in_flight():
             self.set_error("ERROR: confirm or cancel the current draft first")
             self.render_all()
             return
@@ -1086,6 +1149,8 @@ class ReconcileApp(App[int]):
                 return
             try:
                 self.engine.start_regex_draft(pat)
+                self.column_draft = set(self.engine.column_draft)
+                self.engine.column_draft = set()
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1095,9 +1160,9 @@ class ReconcileApp(App[int]):
         self.push_screen(RegexModal(), done)
 
     def action_sentinel(self) -> None:
-        if self.engine.place.screen != "roster":
+        if self.place.screen != "roster":
             return
-        if self.engine.draft_in_flight():
+        if self.draft_in_flight():
             self.set_error("ERROR: confirm or cancel the current draft first")
             self.render_all()
             return
@@ -1108,6 +1173,8 @@ class ReconcileApp(App[int]):
             side, sentinel = result
             try:
                 self.engine.start_sentinel_draft(side, sentinel)
+                self.column_draft = set(self.engine.column_draft)
+                self.engine.column_draft = set()
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1118,18 +1185,18 @@ class ReconcileApp(App[int]):
 
     def action_repeat_pair(self) -> None:
         e = self.engine
-        if e.draft_in_flight():
+        if self.draft_in_flight():
             self.set_error("ERROR: confirm or cancel the current draft first")
             self.render_all()
             return
-        lp = e.place.last_pair
+        lp = self.place.last_pair
         if not lp:
             self.set_error("ERROR: no last pair to repeat")
             self.render_all()
             return
         col, va, vb = lp
         if col not in e.comparable:
-            e.place = e.next_lever_place(e.place)
+            self.place = e.next_lever_place(self.place)
             self.render_all()
             return
         try:
@@ -1139,15 +1206,15 @@ class ReconcileApp(App[int]):
             self.render_all()
             return
         if n == 0:
-            e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=lp))
+            self.place = e.next_lever_place(Place(column=col, roster_filter=self.place.roster_filter, last_pair=lp))
         else:
             self.pair_draft_unchecked = set()
-            e.place = Place(
+            self.place = Place(
                 screen="cell_step",
                 column=col,
                 pair_val_a=va,
                 pair_val_b=vb,
-                roster_filter=e.place.roster_filter,
+                roster_filter=self.place.roster_filter,
                 last_pair=lp,
                 view_tab="pending",
             )
@@ -1157,9 +1224,9 @@ class ReconcileApp(App[int]):
 
     def action_context(self) -> None:
         e = self.engine
-        if e.place.screen != "cell_step" or not e.place.column:
+        if self.place.screen != "cell_step" or not self.place.column:
             return
-        col = e.place.column
+        col = self.place.column
         names = [n for n in e.context_pool if n != col]
         selected = set(e.context_columns.get(col, []))
 
@@ -1177,7 +1244,7 @@ class ReconcileApp(App[int]):
             if not path:
                 return
             try:
-                self.engine.export_zip(path)
+                self.engine.export_zip(path, self.place)
                 self.set_error(None)
                 self.query_one("#banner", Static).update(f"Exported {path}")
                 self.query_one("#banner", Static).set_class(False, "hidden")
@@ -1188,7 +1255,7 @@ class ReconcileApp(App[int]):
         self.push_screen(PathModal("Export .recon.zip (confirmed snapshots only; no drafts)", "job.recon.zip"), done)
 
     def action_open_zip(self) -> None:
-        if self.engine.draft_in_flight():
+        if self.draft_in_flight():
             self.set_error("ERROR: confirm or cancel the current draft first")
             self.render_all()
             return
@@ -1197,7 +1264,7 @@ class ReconcileApp(App[int]):
             if not path:
                 return
             try:
-                new = Engine.from_session(path)
+                new, place = Engine.from_session(path)
             except (HardFail, InTuiError) as exc:
                 msg = getattr(exc, "message", str(exc))
                 self.set_error(f"ERROR: {msg}" if not str(msg).startswith("ERROR") else str(msg))
@@ -1208,6 +1275,10 @@ class ReconcileApp(App[int]):
                 self.render_all()
                 return
             self.engine = new
+            self.place = place
+            self.column_draft = set()
+            self.pair_draft_unchecked = set()
+            self._mounted_screen = None
             self.set_error(None)
             self.render_all()
             self.set_focus_work()
@@ -1215,7 +1286,7 @@ class ReconcileApp(App[int]):
         self.push_screen(PathModal("Open .recon.zip (live-rereads sources)", "job.recon.zip"), done)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if self.engine.place.screen in {"roster", "overview", "pair_list"}:
+        if self.place.screen in {"roster", "overview", "pair_list"}:
             event.stop()
             self.action_drill()
 
@@ -1224,34 +1295,33 @@ class ReconcileApp(App[int]):
         if not bid.startswith("tab-"):
             return
         tab = bid[4:]
-        p = self.engine.place
+        p = self.place
         if not p.column:
             return
         if tab == "pending":
             if p.screen == "cell_step":
                 self.engine.clear_pair_draft()
                 self.pair_draft_unchecked = set()
-            self.engine.place.view_tab = "pending"
-            self.engine.place.screen = "pair_list"
+            self.place.view_tab = "pending"
+            self.place.screen = "pair_list"
         else:
             if p.screen == "cell_step":
                 self.engine.clear_pair_draft()
                 self.pair_draft_unchecked = set()
-            self.engine.place.view_tab = tab
-            self.engine.place.screen = tab  # accepted / equal / all_matched
+            self.place.view_tab = tab
+            self.place.screen = tab  # accepted / equal / all_matched
         event.stop()
         self.render_all()
         self.set_focus_work()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filter":
-            self.engine.place.roster_filter = event.value
+            self.place.roster_filter = event.value
             # re-render roster list only when on roster; keep typing focus
-            if self.engine.place.screen == "roster":
-                # don't steal focus
-                work = self.query_one("#work", Vertical)
+            if self.place.screen == "roster":
                 focused = self.focused
-                self._render_work()
+                if self.query("#grid"):
+                    self._fill_roster(self.query_one("#grid", DataTable))
                 self._render_footer()
                 if isinstance(focused, Input):
                     event.input.focus()
@@ -1260,7 +1330,7 @@ class ReconcileApp(App[int]):
         # Tab switching on column detail: 1 pending 2 accepted 3 equal 4 all
         if self._in_input():
             return
-        p = self.engine.place
+        p = self.place
         if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched") and event.character in "1234":
             mapping = {"1": ("pending", "pair_list"), "2": ("accepted", "accepted"), "3": ("equal", "equal"), "4": ("all_matched", "all_matched")}
             tab, screen = mapping[event.character]
@@ -1268,8 +1338,8 @@ class ReconcileApp(App[int]):
                 if tab != "pending" and p.screen == "cell_step":
                     self.engine.clear_pair_draft()
                     self.pair_draft_unchecked = set()
-                self.engine.place.view_tab = tab
-                self.engine.place.screen = screen if tab != "pending" else "pair_list"
+                self.place.view_tab = tab
+                self.place.screen = screen if tab != "pending" else "pair_list"
                 event.stop()
                 self.render_all()
                 self.set_focus_work()

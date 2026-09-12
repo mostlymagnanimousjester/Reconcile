@@ -43,7 +43,7 @@ def test_cli_csv_no_delim_defaults_to_comma(tmp_path: Path):
     b.write_text("id,name\n1,b\n", encoding="utf-8")
     p = build_parser()
     ns = p.parse_args(["--a", str(a), "--b", str(b), "--keys", "id"])
-    eng = engine_from_args(ns)
+    eng = engine_from_args(ns)[0]
     assert eng.a.detection.delimiter == ","
     assert eng.a.detection.delimiter_name == "comma"
     assert eng.b.detection.delimiter == ","
@@ -72,7 +72,7 @@ def test_cli_csv_a_delim_tilde_overrides(tmp_path: Path):
             "tilde",
         ]
     )
-    eng = engine_from_args(ns)
+    eng = engine_from_args(ns)[0]
     assert eng.a.detection.delimiter == "~"
     assert eng.a.detection.delimiter_name == "tilde"
     assert eng.b.detection.delimiter == ","
@@ -226,7 +226,7 @@ def test_cli_encoding_override(tmp_path: Path):
             "windows-1252",
         ]
     )
-    eng = engine_from_args(ns)
+    eng = engine_from_args(ns)[0]
     assert eng.a.detection.encoding == "windows-1252"
     assert eng.b.detection.encoding == "utf8"
     assert eng.a.frame.to_dicts()[0]["name"] == "\u20ac"
@@ -254,7 +254,7 @@ def test_cli_delim_override_mixed_sides(tmp_path: Path):
             "pipe",
         ]
     )
-    eng = engine_from_args(ns)
+    eng = engine_from_args(ns)[0]
     assert eng.a.detection.delimiter == "~"
     assert eng.b.detection.delimiter == "|"
     assert Path(eng.a.path).is_absolute()
@@ -308,7 +308,7 @@ def test_cli_relative_paths_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyP
             "comma",
         ]
     )
-    eng = engine_from_args(ns)
+    eng = engine_from_args(ns)[0]
     assert eng.a.path == str((tmp_path / "a.csv").resolve())
     assert eng.b.path == str((tmp_path / "b.csv").resolve())
 

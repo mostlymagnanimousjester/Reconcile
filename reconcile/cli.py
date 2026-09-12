@@ -12,7 +12,7 @@ from reconcile.delimited import (
     parse_delimiter,
     parse_encoding,
 )
-from reconcile.engine import Engine, InTuiError
+from reconcile.engine import Engine, InTuiError, Place
 from reconcile.errors import HardFail
 
 IDENTITY_FLAGS = (
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def engine_from_args(ns: argparse.Namespace) -> Engine:
+def engine_from_args(ns: argparse.Namespace) -> tuple[Engine, Place]:
     identity = any(
         [
             ns.a,
@@ -137,7 +137,7 @@ def engine_from_args(ns: argparse.Namespace) -> Engine:
         b_delim=b_delim,
         a_encoding=a_encoding,
         b_encoding=b_encoding,
-    )
+    ), Place()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -151,14 +151,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         return int(code) if isinstance(code, int) else 2
     try:
-        engine = engine_from_args(ns)
+        engine, place = engine_from_args(ns)
     except HardFail as exc:
         print(exc.message, file=sys.stderr)
         return 2
     try:
         from reconcile.tui import ReconcileApp
 
-        app = ReconcileApp(engine)
+        app = ReconcileApp(engine, place)
         result = app.run()
         if result is None:
             return 1 if engine.pending_total() else 0
