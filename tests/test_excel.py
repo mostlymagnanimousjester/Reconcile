@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from reconcile.engine import Engine
@@ -18,7 +19,7 @@ def test_excel_text_roundtrip(tmp_path: Path):
     assert {"id": "2", "val": ""} in recs
 
 
-def test_excel_non_text_hard_fail(tmp_path: Path):
+def test_excel_numeric_cells_load_as_strings(tmp_path: Path):
     p = tmp_path / "a.xlsx"
     write_xlsx(
         p,
@@ -26,34 +27,46 @@ def test_excel_non_text_hard_fail(tmp_path: Path):
         [["id", "Age"], ["1", "12"]],
         number_cells={(1, 1)},
     )
-    with pytest.raises(HardFail, match="Non-text Excel"):
-        load_excel(p, "Sheet1")
+    df = load_excel(p, "Sheet1")
+    recs = df.to_dicts()
+    assert recs == [{"id": "1", "Age": "12"}]
+    assert all(dt in (pl.Utf8, pl.String) for dt in df.dtypes)
 
 
-def test_excel_formula_hard_fail(tmp_path: Path):
+def test_excel_formula_loads_cached_value(tmp_path: Path):
     p = tmp_path / "a.xlsx"
     write_xlsx(
         p,
         "Sheet1",
-        [["id", "val"], ["1", "a"]],
+        [["id", "val"], ["1", "cached-42"]],
         formula_cells={(1, 1)},
     )
-    with pytest.raises(HardFail, match="formula"):
-        load_excel(p, "Sheet1")
+    df = load_excel(p, "Sheet1")
+    assert df.to_dicts() == [{"id": "1", "val": "cached-42"}]
 
 
-def test_excel_merged_hard_fail(tmp_path: Path):
+def test_excel_merges_load_without_fail(tmp_path: Path):
     p = tmp_path / "a.xlsx"
-    write_xlsx(p, "Sheet1", [["id", "val"], ["1", "a"]], merges=["A1:B1"])
-    with pytest.raises(HardFail, match="Merged cells"):
-        load_excel(p, "Sheet1")
+    write_xlsx(
+        p,
+        "Sheet1",
+        [["id", "val"], ["hello", ""]],
+        merges=["A2:B2"],
+    )
+    df = load_excel(p, "Sheet1")
+    recs = df.to_dicts()
+    assert recs[0]["id"] == "hello"
+    assert recs[0]["val"] == ""
 
 
 def test_excel_missing_sheet(tmp_path: Path):
     p = tmp_path / "a.xlsx"
     write_xlsx(p, "Sheet1", [["id", "val"], ["1", "a"]])
-    with pytest.raises(HardFail, match="Missing sheet 'Nope'"):
+    with pytest.raises(HardFail, match="Missing sheet 'Nope'") as ei:
         load_excel(p, "Nope")
+    msg = ei.value.message
+    assert str(p.resolve()) in msg
+    assert "Sheet1" in msg
 
 
 def test_excel_delim_flag_illegal(tmp_path: Path):

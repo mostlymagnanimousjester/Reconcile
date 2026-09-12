@@ -70,7 +70,7 @@ Allowed combinations:
 
 Formats: delimited text; `.xlsx`; `.xlsm` (macros ignored; data only).
 
-Excel reads: **Polars + fastexcel**. Do not evaluate or follow formulas. Use only the stored string.
+Excel reads: **Polars + fastexcel** only (no OOXML/ElementTree gate). Do not evaluate or follow formulas. Extract **stored/cached values as-is**. Load with `dtypes="string"` (or equivalent fastexcel API) so numbers, bools, and dates stringify rather than hard-fail.
 
 ### 4.1 Headers
 
@@ -86,11 +86,15 @@ Excel duplicate column names on one side: **hard fail**.
 
 ### 4.3 Excel types
 
-Every cell in the used header+data range must be **text**. Any non-text type (number, date, bool, cached formula result, unused/trailing columns in the used range, etc.): **hard fail**. No special case for “probably unused” trailing columns.
+Excel is loaded as **text columns** via fastexcel (`load_sheet(..., dtypes="string")` or equivalent). Numbers, bools, and dates stringify. Do not evaluate or follow formulas; use the stored/cached value as-is. There is no per-cell XML type/formula refuse and no post-load “dtype must be string” hard-fail: after `dtypes="string"` the frame is already Utf8; still `fill_null("")` and drop all-empty rows in Polars.
 
 Blank Excel cells are true nulls → `""`.
 
-Password-protected workbook, merged cells, or a named sheet that does not exist: **hard fail**. Hidden sheets are usable only if the sheet name is passed on the CLI.
+Merged cells are **not** a hard fail. Secondary cells in a merge may be empty strings.
+
+Password-protected or OLE workbooks: no custom zip/XML detection. Surface fastexcel/calamine errors as **hard fail** with the absolute path (message quality may be worse than a dedicated detector).
+
+A named sheet that does not exist: **hard fail**, via fastexcel (`SheetNotFoundError` or similar), with path, sheet name, and available sheets if the library provides them. Hidden sheets are usable only if the sheet name is passed on the CLI.
 
 ---
 
@@ -171,7 +175,7 @@ Then null→`""` if needed and drop all-empty rows **in Polars**. `pl.read_csv` 
 
 Parse errors (unclosed quotes, long-ragged lines, invalid UTF-8, etc.) are Polars `ComputeError` (byte offset, not 1-based record, not old §16 ragged templates). Surface the Polars message plus the **absolute path** and **side** so the user can retry with `--*-encoding` if it was encoding.
 
-Excel encoding is not a separate concern; fastexcel supplies cell strings. Excel stays on the Utf8 Polars frame (`fill_null("")`, drop all-empty rows in Polars). Shared unification is `pl.DataFrame`, not `list[list[str]]`. Keep fastexcel + XML hard-fails (formula / merge / password / non-text).
+Excel encoding is not a separate concern; fastexcel supplies cell strings (`dtypes="string"`). Excel stays on the Utf8 Polars frame (`fill_null("")`, drop all-empty rows in Polars). Shared unification is `pl.DataFrame`, not `list[list[str]]`. Password/OLE and missing-sheet failures come from fastexcel/calamine, wrapped as `HardFail` with the absolute path (and sheet name / available sheets when the library provides them).
 
 ---
 
@@ -291,7 +295,7 @@ Do **not** open a jump-list overlay. Rows that **returned to pending** are marke
 
 In-flight **column** draft: drop names that vanished or now have pending 0; do not re-run selectors. In-flight **pair** draft: drop cells that are no longer pending or whose `valA`/`valB` changed; if none remain, the pair draft is cancelled (back to the pair list).
 
-On failure (locked file, parse error, missing key column, non-text Excel, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case. Error text must include the same raw identifiers as §16 (keys, column names, types, paths).
+On failure (locked file, parse error, missing key column, Excel fastexcel/calamine error, etc.): **keep the last successful in-memory state**, show the error in the TUI, do not exit. This is standard behavior, not a special case. Error text must include the same raw identifiers as §16 (keys, column names, types, paths).
 
 ### 9.5 Power-user batch column accept
 
@@ -514,7 +518,7 @@ Rules:
 - Key name not on both sides: hard fail (stderr+exit at initial load).
 - Paths on `--a`, `--b`, `--session`, and TUI export/open zip **may be relative to the invocation cwd**. Immediately resolve with the equivalent of `Path(p).expanduser().resolve()` (absolute, normalized) and **store only absolute paths** in in-memory job identity, TUI Overview, and the `.recon.zip` manifest. Zip import/open always re-opens those stored absolute source paths. Relative paths are never written into the zip. If a relative path does not exist, hard fail with the **resolved absolute path** in the error text.
 
-Initial load/parse/schema/dup-key/non-text/unknown-delimiter/unknown-encoding/missing-delim/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
+Initial load/parse/schema/dup-key/unknown-delimiter/unknown-encoding/missing-delim/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
 
 Once the TUI is up: errors stay in the TUI with last good state (§9.4). Stderr+exit only if Textual cannot start.
 
@@ -551,7 +555,7 @@ Export and open from the TUI. Also `--session` on CLI.
 |---|---|
 | `0` | User quits and remaining **pending** is 0 (including all-accepted) |
 | `1` | User quits and pending remains |
-| `2` | Hard fail (load/parse/dup keys/unknown delimiter/unknown encoding/missing delim/non-text/etc.) |
+| `2` | Hard fail (load/parse/dup keys/unknown delimiter/unknown encoding/missing delim/Excel read error/etc.) |
 
 ---
 
@@ -760,7 +764,8 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Duplicate key | Side (`A`/`B`), exact key tuple strings, occurrence count |
 | Delimited parse error (unclosed quote, long-ragged line, invalid encoding, …) | Polars `ComputeError` text, **absolute path**, side (`A`/`B`) |
 | Missing delimiter flag (non-`.csv` delimited side) | Flag (`--a-delim` / `--b-delim`) and absolute path |
-| Non-text Excel | Path, sheet, exact column header, type seen (and cell address if the engine provides it) |
+| Excel read error (password/OLE, corrupt file, …) | fastexcel/calamine message and **absolute path** |
+| Missing Excel sheet | Path, sheet name, available sheets if fastexcel provides them |
 | Missing key column | Exact name, which side lacks it |
 | Duplicate column names (Excel) | Side, exact duplicated header |
 | Unknown delimiter flag | Flag (`--a-delim` / `--b-delim`), raw value, valid values |
@@ -770,7 +775,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Situation | Behavior |
 |---|---|
 | Textual cannot start | stderr + exit `2` |
-| Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, non-text Excel, merged cells, password, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
+| Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, Excel fastexcel/calamine error, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
 | After TUI is up: refresh fail, open-session fail, invalid regex/Polars selector, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
@@ -805,7 +810,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Keys | Required, composite OK via `--keys a,b`; A-only/B-only reviewed; dups hard fail |
 | Column pair | Exact name; extras surfaced |
 | Product | Investigation TUI; session acceptances; shrink or accept |
-| Excel | Text cells only; fastexcel; no formulas; any non-text in used range hard-fails |
+| Excel | fastexcel → Polars only; `dtypes="string"`; stored/cached values as-is; no formula evaluation; silent merges; password/OLE and missing sheet via fastexcel → HardFail |
 | Headers | Required |
 | Platform | Windows PowerShell; Python 3.13; default UTF-8 for delimited (override `--*-encoding`) |
 | Detect | No sniff, no BOM→UTF-8→cp1252 ladder, no `.txt`→tilde default. `.csv` (case-insensitive) defaults to comma when `--*-delim` is omitted; CLI `--a-delim` / `--b-delim` still overrides. Other delimited extensions require `--*-delim`; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh / `.recon.zip` (reuse, do not re-detect; store the resolved character, including the comma default). Ingest is `pl.read_csv`. |
