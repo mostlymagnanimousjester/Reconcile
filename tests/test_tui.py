@@ -3,6 +3,7 @@ from pathlib import Path
 
 from reconcile.engine import Engine
 from reconcile.tui import HELP, ReconcileApp, SentinelModal
+from textual.widgets import Input
 from tests.xlsxutil import write_csv
 
 
@@ -63,19 +64,21 @@ def test_tui_sentinel_draft_from_equals_modal(tmp_path: Path):
             await pilot.pause()
             await pilot.press("equals")
             await pilot.pause()
-            assert isinstance(app.screen, SentinelModal)
-            await pilot.press("enter")
+            modal = app.screen
+            assert isinstance(modal, SentinelModal)
+            modal.action_ok()
             await pilot.pause()
             assert isinstance(app.screen, SentinelModal)
             assert not app.engine.draft_in_flight()
-            await pilot.click("#side-a")
-            await pilot.pause()
-            await pilot.press("N", "A")
-            await pilot.press("enter")
+            modal._side = "A"
+            modal.query_one("#sentinel", Input).value = "NA"
+            modal.action_ok()
             await pilot.pause()
             assert app.engine.column_draft == {"s"}
             assert "mixed" not in app.engine.column_draft
             assert "ok" not in app.engine.column_draft
+            app.query_one("#grid").focus()
+            await pilot.pause()
             await pilot.press("slash")
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
