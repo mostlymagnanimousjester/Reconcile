@@ -221,8 +221,12 @@ class Engine:
         self.pair_draft_col: str | None = None
         self.pair_draft_va: str | None = None
         self.pair_draft_vb: str | None = None
-        self.returned_cells: set[tuple[tuple[str, ...], str]] = set()
-        self.returned_keys: set[tuple[str, tuple[str, ...]]] = set()
+        self.returned_cells_df: pl.DataFrame = _empty_df(
+            {**{k: pl.Utf8 for k in keys}, "column": pl.Utf8}
+        )
+        self.returned_keys_df: pl.DataFrame = _empty_df(
+            {"side": pl.Utf8, **{k: pl.Utf8 for k in keys}}
+        )
         self.returned_extras: set[tuple[str, str]] = set()
         self.last_refresh_delta: RefreshDelta | None = None
         self.tui_error: str | None = None
@@ -445,7 +449,7 @@ class Engine:
             pct = f"{conc * 100:.0f}%" if pend else "—"
             cat = self._categorical_label(col)
             tags = self._column_tags(col)
-            returned = any(c == col for _k, c in self.returned_cells)
+            returned = self.column_has_returned(col)
             rows.append(
                 RosterRow(
                     kind="column",
@@ -474,7 +478,7 @@ class Engine:
                     equal="—",
                     categorical="—",
                     speculative=self._unmatched_side_tags("A"),
-                    returned=any(s == "A" for s, _k in self.returned_keys),
+                    returned=self.side_has_returned("A"),
                 )
             )
         if self.b_only.height > 0:
@@ -490,7 +494,7 @@ class Engine:
                     equal="—",
                     categorical="—",
                     speculative=self._unmatched_side_tags("B"),
-                    returned=any(s == "B" for s, _k in self.returned_keys),
+                    returned=self.side_has_returned("B"),
                 )
             )
         all_extras = [("A", n) for n in self.extras_a] + [("B", n) for n in self.extras_b]
@@ -677,10 +681,9 @@ class Engine:
         }
         for rec in chunk:
             rec["_accepted"] = tuple(str(rec[k]) for k in self.keys) in accepted_keys
-            rec["_returned"] = (
-                side,
-                tuple(str(rec[k]) for k in self.keys),
-            ) in self.returned_keys
+            rec["_returned"] = self.key_is_returned(
+                side, tuple(str(rec[k]) for k in self.keys)
+            )
         return chunk, page, pages
 
     def extras_rows(self) -> list[dict[str, Any]]:
@@ -731,6 +734,36 @@ class Engine:
 
     def first_diff(self, a: str, b: str) -> int:
         return first_diff(a, b)
+
+    def column_has_returned(self, column: str) -> bool:
+        if self.returned_cells_df.is_empty():
+            return False
+        return self.returned_cells_df.filter(pl.col("column") == column).height > 0
+
+    def cell_is_returned(self, key: tuple[str, ...], column: str) -> bool:
+        if self.returned_cells_df.is_empty():
+            return False
+        return (
+            self.returned_cells_df.filter(
+                (pl.col("column") == column) & _key_eq_expr(self.keys, key)
+            ).height
+            > 0
+        )
+
+    def side_has_returned(self, side: str) -> bool:
+        if self.returned_keys_df.is_empty():
+            return False
+        return self.returned_keys_df.filter(pl.col("side") == side).height > 0
+
+    def key_is_returned(self, side: str, key: tuple[str, ...]) -> bool:
+        if self.returned_keys_df.is_empty():
+            return False
+        return (
+            self.returned_keys_df.filter(
+                (pl.col("side") == side) & _key_eq_expr(self.keys, key)
+            ).height
+            > 0
+        )
 
     def key_of(self, rec: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(rec[k]) for k in self.keys)
@@ -1109,61 +1142,49 @@ class Engine:
 
     # --- refresh ---
 
+    def _reload_side(self, table: SideTable, side: str) -> SideTable:
+        return load_side(
+            table.path,
+            table.sheet,
+            side,
+            delimiter=(None if table.detection is None else table.detection.delimiter),
+            encoding=(None if table.detection is None else table.detection.encoding),
+        )
+
     def refresh(self) -> RefreshDelta:
         before_pending = self.pending_total()
         before_acc = self.accepted_total()
-        prev_accepted = self.cell_snaps
+        prev_cell_snaps = self.cell_snaps
+        prev_unmatched_a = self.unmatched_snaps_a
+        prev_unmatched_b = self.unmatched_snaps_b
         try:
-            new_a = load_side(
-                self.a.path,
-                self.a.sheet,
-                "A",
-                delimiter=(
-                    None if self.a.detection is None else self.a.detection.delimiter
-                ),
-                encoding=(
-                    None if self.a.detection is None else self.a.detection.encoding
-                ),
-            )
-            new_b = load_side(
-                self.b.path,
-                self.b.sheet,
-                "B",
-                delimiter=(
-                    None if self.b.detection is None else self.b.detection.delimiter
-                ),
-                encoding=(
-                    None if self.b.detection is None else self.b.detection.encoding
-                ),
-            )
-            tmp = Engine(new_a, new_b, self.keys)
+            new_a = self._reload_side(self.a, "A")
+            new_b = self._reload_side(self.b, "B")
         except HardFail as exc:
             raise InTuiError(f"ERROR: {exc.message}") from exc
-        # prune snaps that no longer apply by rebuilding on new data
-        tmp.cell_snaps = self.cell_snaps
-        tmp.unmatched_snaps_a = self.unmatched_snaps_a
-        tmp.unmatched_snaps_b = self.unmatched_snaps_b
-        tmp.extra_snaps = list(self.extra_snaps)
-        tmp.context_columns = dict(self.context_columns)
-        tmp.place = self.place
-        tmp._rebuild()
-        # returned to pending: previously accepted (and matching then) that are pending now
-        returned_cells: set[tuple[tuple[str, ...], str]] = set()
-        if not tmp.pending_cells.is_empty() and not prev_accepted.is_empty():
-            hit = tmp.pending_cells.join(
-                prev_accepted.select([*self.keys, "column"]).unique(),
-                on=[*self.keys, "column"],
-                how="inner",
+        old_a, old_b = self.a, self.b
+        self.a, self.b = new_a, new_b
+        try:
+            self._rebuild()
+        except HardFail as exc:
+            self.a, self.b = old_a, old_b
+            self._rebuild()
+            raise InTuiError(f"ERROR: {exc.message}") from exc
+        returned_cells = self.pending_cells.head(0).select([*self.keys, "column"])
+        if not self.pending_cells.is_empty() and not prev_cell_snaps.is_empty():
+            returned_cells = (
+                self.pending_cells.join(
+                    prev_cell_snaps.select([*self.keys, "column"]).unique(),
+                    on=[*self.keys, "column"],
+                    how="inner",
+                )
+                .select([*self.keys, "column"])
+                .unique()
             )
-            if not hit.is_empty():
-                for rec in hit.select([*self.keys, "column"]).unique().to_dicts():
-                    returned_cells.add(
-                        (tuple(str(rec[k]) for k in self.keys), rec["column"])
-                    )
-        returned_keys: set[tuple[str, tuple[str, ...]]] = set()
+        parts: list[pl.DataFrame] = []
         for side, pending, prev_snaps in (
-            ("A", tmp.pending_a_only, self.unmatched_snaps_a),
-            ("B", tmp.pending_b_only, self.unmatched_snaps_b),
+            ("A", self.pending_a_only, prev_unmatched_a),
+            ("B", self.pending_b_only, prev_unmatched_b),
         ):
             if pending.is_empty() or prev_snaps is None or prev_snaps.is_empty():
                 continue
@@ -1172,22 +1193,22 @@ class Engine:
             hit = pending.join(
                 prev_snaps.select(self.keys).unique(), on=self.keys, how="inner"
             )
-            if not hit.is_empty():
-                for rec in hit.select(self.keys).unique().to_dicts():
-                    returned_keys.add(
-                        (side, tuple(str(rec[k]) for k in self.keys))
-                    )
-        returned_extras: set[tuple[str, str]] = set()
-        # extras don't return except by vanishing/reappearing; spec has no "back to pending" for extras except —
-        self.a = tmp.a
-        self.b = tmp.b
-        self.cell_snaps = tmp.cell_snaps
-        self.unmatched_snaps_a = tmp.unmatched_snaps_a
-        self.unmatched_snaps_b = tmp.unmatched_snaps_b
-        self.extra_snaps = tmp.extra_snaps
-        self.context_columns = tmp.context_columns
-        self._rebuild()
-        # prune drafts
+            if hit.is_empty():
+                continue
+            parts.append(
+                hit.select(self.keys)
+                .unique()
+                .with_columns(pl.lit(side).alias("side"))
+            )
+        if parts:
+            returned_keys = pl.concat(parts, how="vertical").select(
+                ["side", *self.keys]
+            )
+        else:
+            returned_keys = _empty_df({"side": pl.Utf8, **{k: pl.Utf8 for k in self.keys}})
+        self.returned_cells_df = returned_cells
+        self.returned_keys_df = returned_keys
+        self.returned_extras = set()
         if self.column_draft:
             keep = set()
             for name in self.column_draft:
@@ -1203,17 +1224,12 @@ class Engine:
                 & (pl.col("val_a") == va)
                 & (pl.col("val_b") == vb)
             )
-            still = {self.key_of(r) for r in frame.to_dicts()}
-            self.pair_draft_keys &= still
-            if not self.pair_draft_keys:
+            if frame.is_empty():
                 self.pair_draft_keys = None
                 self.pair_draft_col = None
                 self.pair_draft_va = None
                 self.pair_draft_vb = None
-        self.returned_cells = returned_cells
-        self.returned_keys = returned_keys
-        self.returned_extras = returned_extras
-        returned_n = len(returned_cells) + len(returned_keys) + len(returned_extras)
+        returned_n = returned_cells.height + returned_keys.height + len(self.returned_extras)
         delta = RefreshDelta(
             pending_before=before_pending,
             pending_after=self.pending_total(),

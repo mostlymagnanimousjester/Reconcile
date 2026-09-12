@@ -598,9 +598,7 @@ class ReconcileApp(App[int]):
         for rec in recs:
             va, vb = rec["val_a"], rec["val_b"]
             tags = ", ".join(self.engine.cell_insights(va, vb))
-            returned = any(
-                c == col for (_k, c) in self.engine.returned_cells
-            )
+            returned = self.engine.column_has_returned(col)
             label_a = Text(va, style="reverse" if returned else "bold")
             table.add_row(label_a, vb, str(rec["n"]), tags)
             self._table_keys.append(rec)
@@ -648,7 +646,7 @@ class ReconcileApp(App[int]):
                     mark = ""
                     if draft is not None:
                         mark = "[x] " if key in draft else "[ ] "
-                    returned = (key, col) in self.engine.returned_cells
+                    returned = self.engine.cell_is_returned(key, col)
                     tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                     key_cells = [str(rec[k]) for k in self.engine.keys]
                     va_t = Text(
