@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import fastexcel
+import polars as pl
 
 from reconcile.delimited import abs_path, stringify_and_drop_empty_rows
 from reconcile.errors import HardFail
