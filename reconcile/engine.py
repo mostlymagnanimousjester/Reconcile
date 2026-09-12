@@ -26,6 +26,23 @@ from reconcile.load import SideTable, load_side
 PAGE_SIZE = 100
 SCHEMA_VERSION = 1
 
+
+def _page_dicts(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    """Materialize at most PAGE_SIZE rows. Callers must slice first."""
+    if frame.height > PAGE_SIZE:
+        raise ValueError(
+            f"refusing to materialize {frame.height} rows (PAGE_SIZE={PAGE_SIZE})"
+        )
+    return frame.to_dicts()
+
+
+def _page(frame: pl.DataFrame, page: int) -> tuple[list[dict[str, Any]], int, int]:
+    total = frame.height
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
+    return _page_dicts(chunk), page, pages
+
 ScreenName = Literal[
     "roster",
     "overview",
@@ -583,13 +600,7 @@ class Engine:
         )
 
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-        groups = self.pair_groups(column)
-        total = groups.height
-        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(page, pages - 1))
-        start = page * PAGE_SIZE
-        chunk = groups.slice(start, PAGE_SIZE)
-        return chunk.to_dicts(), page, pages
+        return _page(self.pair_groups(column), page)
 
     def pair_matrix(self, column: str) -> tuple[list[str], list[str], list[list[int]]]:
         groups = self.pair_groups(column)
@@ -600,85 +611,68 @@ class Engine:
         return a_vals, b_vals, matrix
 
     def pair_cells_page(
-        self, column: str, val_a: str, val_b: str, page: int, only_keys: set[tuple[str, ...]] | None = None
+        self, column: str, val_a: str, val_b: str, page: int
     ) -> tuple[list[dict[str, Any]], int, int]:
         frame = self.pending_cells.filter(
             (pl.col("column") == column)
             & (pl.col("val_a") == val_a)
             & (pl.col("val_b") == val_b)
         ).sort(self.keys)
-        if only_keys is not None:
-            keep = []
-            for rec in frame.to_dicts():
-                key = tuple(str(rec[k]) for k in self.keys)
-                if key in only_keys:
-                    keep.append(rec)
-            # rebuild from keep for paging of checked+unchecked? Grid shows the pair draft set (all originally matching).
-        recs = frame.to_dicts()
-        if only_keys is not None:
-            recs = [r for r in recs if tuple(str(r[k]) for k in self.keys) in only_keys or True]
-            # grid shows the draft universe: original pair cells still pending
-        total = len(recs)
-        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(page, pages - 1))
-        chunk = recs[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
-        return chunk, page, pages
+        return _page(frame, page)
 
     def cells_for_tab(self, column: str, tab: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
+        empty = _empty_df(_empty_mismatch_schema(self.keys))
         if tab == "accepted":
             frame = self.accepted_cells.filter(pl.col("column") == column)
         elif tab == "equal":
             if self.matched_a.is_empty():
-                recs: list[dict[str, Any]] = []
+                frame = empty
             else:
                 a = self.matched_a.select(self.keys + [column]).rename({column: "val_a"})
                 b = self.matched_b.select(self.keys + [column]).rename({column: "val_b"})
-                joined = a.join(b, on=self.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
-                recs = joined.sort(self.keys).to_dicts()
-                total = len(recs)
-                pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(0, min(page, pages - 1))
-                return recs[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE], page, pages
-            frame = _empty_df(_empty_mismatch_schema(self.keys))
+                frame = a.join(b, on=self.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
         elif tab == "all_matched":
             if self.matched_a.is_empty():
-                recs = []
+                frame = empty
             else:
                 a = self.matched_a.select(self.keys + [column]).rename({column: "val_a"})
                 b = self.matched_b.select(self.keys + [column]).rename({column: "val_b"})
-                recs = a.join(b, on=self.keys, how="inner").sort(self.keys).to_dicts()
-                total = len(recs)
-                pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-                page = max(0, min(page, pages - 1))
-                return recs[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE], page, pages
-            frame = _empty_df(_empty_mismatch_schema(self.keys))
+                frame = a.join(b, on=self.keys, how="inner")
         else:
             frame = self.pending_cells.filter(pl.col("column") == column)
-        recs = frame.sort(self.keys).to_dicts()
-        total = len(recs)
-        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(page, pages - 1))
-        return recs[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE], page, pages
+        return _page(frame.sort(self.keys), page)
 
     def unmatched_page(self, side: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-        pending = self.pending_a_only if side == "A" else self.pending_b_only
         accepted = self.accepted_a_only if side == "A" else self.accepted_b_only
-        # show pending then? Spec: order composite key tuple. Full set of unmatched (pending + accepted) currently on that side.
         frame = (self.a_only if side == "A" else self.b_only).sort(self.keys)
-        recs = frame.to_dicts()
-        total = len(recs)
+        total = frame.height
         pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(0, min(page, pages - 1))
-        chunk = recs[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
-        accepted_keys = {
-            tuple(str(r[k]) for k in self.keys) for r in accepted.to_dicts()
-        }
-        for rec in chunk:
-            rec["_accepted"] = tuple(str(rec[k]) for k in self.keys) in accepted_keys
-            rec["_returned"] = self.key_is_returned(
-                side, tuple(str(rec[k]) for k in self.keys)
+        chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
+        if chunk.is_empty():
+            return [], page, pages
+        if accepted.is_empty():
+            chunk = chunk.with_columns(pl.lit(False).alias("_accepted"))
+        else:
+            chunk = chunk.join(
+                accepted.select(self.keys).unique().with_columns(pl.lit(True).alias("_accepted")),
+                on=self.keys,
+                how="left",
+            ).with_columns(pl.col("_accepted").fill_null(False))
+        ret = self.returned_keys_df
+        if ret.is_empty():
+            chunk = chunk.with_columns(pl.lit(False).alias("_returned"))
+        else:
+            ret_keys = (
+                ret.filter(pl.col("side") == side)
+                .select(self.keys)
+                .unique()
+                .with_columns(pl.lit(True).alias("_returned"))
             )
-        return chunk, page, pages
+            chunk = chunk.join(ret_keys, on=self.keys, how="left").with_columns(
+                pl.col("_returned").fill_null(False)
+            )
+        return _page_dicts(chunk), page, pages
 
     def extras_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -1078,8 +1072,7 @@ class Engine:
                     focused_name=row.name,
                 )
             if row.kind == "A-only":
-                recs, _, _ = self.unmatched_page("A", 0)
-                fk = self.key_of(recs[0]) if recs else None
+                fk = self._first_pending_key("A")
                 return Place(
                     screen="a_only",
                     roster_filter=current.roster_filter,
@@ -1088,8 +1081,7 @@ class Engine:
                     focused_name="A-only keys",
                 )
             if row.kind == "B-only":
-                recs, _, _ = self.unmatched_page("B", 0)
-                fk = self.key_of(recs[0]) if recs else None
+                fk = self._first_pending_key("B")
                 return Place(
                     screen="b_only",
                     roster_filter=current.roster_filter,
@@ -1112,17 +1104,28 @@ class Engine:
             last_pair=current.last_pair,
         )
 
-    def next_pending_key_in_grid(self, side: str, current: tuple[str, ...]) -> tuple[str, ...] | None:
-        recs, _, _ = self.unmatched_page(side, 0)
-        # full pending keys in key order
+    def _first_pending_key(self, side: str) -> tuple[str, ...] | None:
         pending = self.pending_a_only if side == "A" else self.pending_b_only
-        keys = [self.key_of(r) for r in pending.sort(self.keys).to_dicts()]
-        if current in keys:
-            i = keys.index(current)
-            if i + 1 < len(keys):
-                return keys[i + 1]
-            return keys[0] if keys else None
-        return keys[0] if keys else None
+        if pending.is_empty():
+            return None
+        rec = pending.sort(self.keys).head(1).row(0, named=True)
+        return tuple(str(rec[k]) for k in self.keys)
+
+    def next_pending_key_in_grid(self, side: str, current: tuple[str, ...]) -> tuple[str, ...] | None:
+        pending = self.pending_a_only if side == "A" else self.pending_b_only
+        if pending.is_empty():
+            return None
+        pending = pending.sort(self.keys)
+        parts: list[pl.Expr] = []
+        acc: pl.Expr = pl.lit(True)
+        for i, k in enumerate(self.keys):
+            parts.append(acc & (pl.col(k) > current[i]))
+            acc = acc & (pl.col(k) == current[i])
+        nxt = pending.filter(pl.any_horizontal(parts)).head(1)
+        if nxt.is_empty():
+            nxt = pending.head(1)
+        rec = nxt.row(0, named=True)
+        return tuple(str(rec[k]) for k in self.keys)
 
     def next_pending_cell_in_pair(self, after: tuple[str, ...]) -> tuple[str, ...] | None:
         if self.pair_draft_keys is None:
