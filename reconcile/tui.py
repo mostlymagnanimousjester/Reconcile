@@ -348,6 +348,7 @@ class ReconcileApp(App[int]):
         self.engine = engine
         self._roster_index = 0
         self._table_keys: list[Any] = []
+        self.pair_draft_unchecked: set[tuple[str, ...]] = set()
 
     def compose(self) -> ComposeResult:
         yield Static("", id="banner", classes="hidden")
@@ -423,8 +424,9 @@ class ReconcileApp(App[int]):
             bits[0] = "pending 0"
         if e.column_draft:
             bits.append(f"draft {len(e.column_draft)}  y confirm  Esc cancel  Space toggle")
-        elif e.pair_draft_keys is not None:
-            bits.append(f"draft {len(e.pair_draft_keys)}  y confirm  Esc cancel  Space toggle")
+        elif e.pair_draft_col is not None:
+            n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
+            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
         if p.screen == "pair_list":
             bits.append("pair list")
         elif p.screen == "cell_step":
@@ -636,7 +638,7 @@ class ReconcileApp(App[int]):
             va, vb = self.engine.place.pair_val_a or "", self.engine.place.pair_val_b or ""
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.engine.place.page)
             self.engine.place.page = page
-            draft = self.engine.pair_draft_keys
+            draft = self.engine.pair_draft_col is not None
             if not recs:
                 table.add_row(*([""] * (len(self.engine.keys) + 2)), "(no pending cells for this pair)")
                 self._table_keys = [None]
@@ -644,14 +646,14 @@ class ReconcileApp(App[int]):
                 for rec in recs:
                     key = self.engine.key_of(rec)
                     mark = ""
-                    if draft is not None:
-                        mark = "[x] " if key in draft else "[ ] "
+                    if draft:
+                        mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
                     returned = self.engine.cell_is_returned(key, col)
                     tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                     key_cells = [str(rec[k]) for k in self.engine.keys]
                     va_t = Text(
                         mark + rec["val_a"],
-                        style="reverse" if returned or (draft and key in draft) else "bold",
+                        style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
                     )
                     table.add_row(*key_cells, va_t, rec["val_b"], tags)
                     self._table_keys.append(rec)
@@ -773,8 +775,8 @@ class ReconcileApp(App[int]):
         e = self.engine
         p = e.place
         if p.screen == "cell_step":
-            e.pair_draft_keys = None
-            e.pair_draft_col = None
+            e.clear_pair_draft()
+            self.pair_draft_unchecked = set()
             e.place = Place(
                 screen="pair_list",
                 column=p.column,
@@ -849,6 +851,7 @@ class ReconcileApp(App[int]):
                 if n == 0:
                     self.set_error("ERROR: that pair has no pending cells")
                     return
+                self.pair_draft_unchecked = set()
                 e.place = Place(
                     screen="cell_step",
                     column=p.column,
@@ -857,7 +860,6 @@ class ReconcileApp(App[int]):
                     roster_filter=p.roster_filter,
                     last_pair=(p.column, pair[0], pair[1]),
                     view_tab="pending",
-                    focused_key=next(iter(e.pair_draft_keys)) if e.pair_draft_keys else None,
                 )
             self.set_error(None)
         except InTuiError as exc:
@@ -876,7 +878,11 @@ class ReconcileApp(App[int]):
         elif e.place.screen == "cell_step":
             rec = self._focused_rec()
             if rec:
-                e.toggle_pair_cell(e.key_of(rec))
+                key = e.key_of(rec)
+                if key in self.pair_draft_unchecked:
+                    self.pair_draft_unchecked.discard(key)
+                else:
+                    self.pair_draft_unchecked.add(key)
         self.render_all()
         self.set_focus_work()
 
@@ -957,8 +963,9 @@ class ReconcileApp(App[int]):
                     e.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
             elif p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
                 if p.column:
-                    if e.pair_draft_keys is not None:
-                        e.pair_draft_keys = None
+                    if e.pair_draft_col is not None:
+                        e.clear_pair_draft()
+                        self.pair_draft_unchecked = set()
                     e.accept_column(p.column)
                     e.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
             elif p.screen == "a_only":
@@ -980,9 +987,10 @@ class ReconcileApp(App[int]):
             if e.column_draft:
                 e.confirm_column_draft()
                 e.place = e.next_lever_place(e.place)
-            elif e.pair_draft_keys is not None:
+            elif e.pair_draft_col is not None:
                 col = e.pair_draft_col
-                e.confirm_pair_draft()
+                e.confirm_pair_draft(self.pair_draft_unchecked)
+                self.pair_draft_unchecked = set()
                 e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=e.place.last_pair))
             self.set_error(None)
         except InTuiError as exc:
@@ -1044,7 +1052,7 @@ class ReconcileApp(App[int]):
             if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
                 if not p.column or p.column not in self.engine.comparable:
                     still = False
-            if p.screen == "cell_step" and self.engine.pair_draft_keys is None:
+            if p.screen == "cell_step" and self.engine.pair_draft_col is None:
                 still = False
                 self.engine.place.screen = "pair_list"
             if not still:
@@ -1133,6 +1141,7 @@ class ReconcileApp(App[int]):
         if n == 0:
             e.place = e.next_lever_place(Place(column=col, roster_filter=e.place.roster_filter, last_pair=lp))
         else:
+            self.pair_draft_unchecked = set()
             e.place = Place(
                 screen="cell_step",
                 column=col,
@@ -1220,14 +1229,14 @@ class ReconcileApp(App[int]):
             return
         if tab == "pending":
             if p.screen == "cell_step":
-                self.engine.pair_draft_keys = None
-                self.engine.pair_draft_col = None
+                self.engine.clear_pair_draft()
+                self.pair_draft_unchecked = set()
             self.engine.place.view_tab = "pending"
             self.engine.place.screen = "pair_list"
         else:
             if p.screen == "cell_step":
-                self.engine.pair_draft_keys = None
-                self.engine.pair_draft_col = None
+                self.engine.clear_pair_draft()
+                self.pair_draft_unchecked = set()
             self.engine.place.view_tab = tab
             self.engine.place.screen = tab  # accepted / equal / all_matched
         event.stop()
@@ -1257,7 +1266,8 @@ class ReconcileApp(App[int]):
             tab, screen = mapping[event.character]
             if e_col := p.column:
                 if tab != "pending" and p.screen == "cell_step":
-                    self.engine.pair_draft_keys = None
+                    self.engine.clear_pair_draft()
+                    self.pair_draft_unchecked = set()
                 self.engine.place.view_tab = tab
                 self.engine.place.screen = screen if tab != "pending" else "pair_list"
                 event.stop()

@@ -234,7 +234,6 @@ class Engine:
         self.context_columns: dict[str, list[str]] = {}
         self.place = Place()
         self.column_draft: set[str] = set()
-        self.pair_draft_keys: set[tuple[str, ...]] | None = None
         self.pair_draft_col: str | None = None
         self.pair_draft_va: str | None = None
         self.pair_draft_vb: str | None = None
@@ -759,22 +758,33 @@ class Engine:
     # --- drafts ---
 
     def draft_in_flight(self) -> bool:
-        return bool(self.column_draft) or self.pair_draft_keys is not None
+        return bool(self.column_draft) or self.pair_draft_col is not None
 
     def column_draft_n(self) -> int:
         return len(self.column_draft)
 
+    def pair_draft_height(self) -> int:
+        if self.pair_draft_col is None:
+            return 0
+        return self.pending_cells.filter(
+            (pl.col("column") == self.pair_draft_col)
+            & (pl.col("val_a") == self.pair_draft_va)
+            & (pl.col("val_b") == self.pair_draft_vb)
+        ).height
+
     def cancel_drafts(self) -> None:
         self.column_draft = set()
-        self.pair_draft_keys = None
+        self.clear_pair_draft()
+
+    def clear_pair_draft(self) -> None:
         self.pair_draft_col = None
         self.pair_draft_va = None
         self.pair_draft_vb = None
 
     def toggle_column_draft(self, name: str) -> None:
-        if not self.column_draft and self.pair_draft_keys is None:
+        if not self.column_draft and self.pair_draft_col is None:
             return
-        if self.pair_draft_keys is not None:
+        if self.pair_draft_col is not None:
             return
         if name not in self.comparable:
             return
@@ -834,30 +844,20 @@ class Engine:
     def start_pair_draft(self, column: str, val_a: str, val_b: str) -> int:
         if self.column_draft:
             raise InTuiError("ERROR: confirm or cancel the column draft first")
-        if self.pair_draft_keys is not None:
+        if self.pair_draft_col is not None:
             raise InTuiError("ERROR: confirm or cancel the current pair draft first")
-        frame = self.pending_cells.filter(
+        n = self.pending_cells.filter(
             (pl.col("column") == column)
             & (pl.col("val_a") == val_a)
             & (pl.col("val_b") == val_b)
-        )
-        if frame.is_empty():
+        ).height
+        if n == 0:
             return 0
-        keys = {self.key_of(r) for r in frame.to_dicts()}
-        self.pair_draft_keys = set(keys)
         self.pair_draft_col = column
         self.pair_draft_va = val_a
         self.pair_draft_vb = val_b
         self.place.last_pair = (column, val_a, val_b)
-        return len(keys)
-
-    def toggle_pair_cell(self, key: tuple[str, ...]) -> None:
-        if self.pair_draft_keys is None:
-            return
-        if key in self.pair_draft_keys:
-            self.pair_draft_keys.discard(key)
-        else:
-            self.pair_draft_keys.add(key)
+        return n
 
     # --- accept ---
 
@@ -905,8 +905,6 @@ class Engine:
         data["val_a"] = [val_a]
         data["val_b"] = [val_b]
         n = self._vstack_cell_snaps(pl.DataFrame(data))
-        if self.pair_draft_keys is not None:
-            self.pair_draft_keys.discard(key)
         return n
 
     def confirm_column_draft(self) -> int:
@@ -917,27 +915,22 @@ class Engine:
         self.column_draft = set()
         return total
 
-    def confirm_pair_draft(self) -> int:
-        if self.pair_draft_keys is None or self.pair_draft_col is None:
+    def confirm_pair_draft(self, unchecked: set[tuple[str, ...]] | None = None) -> int:
+        if self.pair_draft_col is None:
             return 0
         col, va, vb = self.pair_draft_col, self.pair_draft_va, self.pair_draft_vb
-        snaps = []
         frame = self.pending_cells.filter(
             (pl.col("column") == col)
             & (pl.col("val_a") == va)
             & (pl.col("val_b") == vb)
         )
-        for rec in frame.to_dicts():
-            key = self.key_of(rec)
-            if key in self.pair_draft_keys:
-                snaps.append(rec)
-        if snaps:
-            n = self._vstack_cell_snaps(pl.DataFrame(snaps))
-        else:
-            n = 0
-            self._apply_snapshots()
+        if unchecked:
+            exc = pl.DataFrame(
+                {k: [key[i] for key in unchecked] for i, k in enumerate(self.keys)}
+            )
+            frame = frame.join(exc, on=self.keys, how="anti")
+        n = self._vstack_cell_snaps(frame)
         self.place.last_pair = (col, va, vb)
-        self.pair_draft_keys = None
         self.pair_draft_col = None
         self.pair_draft_va = None
         self.pair_draft_vb = None
@@ -1128,14 +1121,26 @@ class Engine:
         return tuple(str(rec[k]) for k in self.keys)
 
     def next_pending_cell_in_pair(self, after: tuple[str, ...]) -> tuple[str, ...] | None:
-        if self.pair_draft_keys is None:
+        if self.pair_draft_col is None:
             return None
-        ordered = sorted(self.pair_draft_keys)
-        if after in ordered:
-            i = ordered.index(after)
-            if i + 1 < len(ordered):
-                return ordered[i + 1]
-        return ordered[0] if ordered else None
+        frame = self.pending_cells.filter(
+            (pl.col("column") == self.pair_draft_col)
+            & (pl.col("val_a") == self.pair_draft_va)
+            & (pl.col("val_b") == self.pair_draft_vb)
+        )
+        if frame.is_empty():
+            return None
+        frame = frame.sort(self.keys)
+        parts: list[pl.Expr] = []
+        acc: pl.Expr = pl.lit(True)
+        for i, k in enumerate(self.keys):
+            parts.append(acc & (pl.col(k) > after[i]))
+            acc = acc & (pl.col(k) == after[i])
+        nxt = frame.filter(pl.any_horizontal(parts)).head(1)
+        if nxt.is_empty():
+            nxt = frame.head(1)
+        rec = nxt.row(0, named=True)
+        return tuple(str(rec[k]) for k in self.keys)
 
     # --- refresh ---
 
@@ -1214,15 +1219,14 @@ class Engine:
                     if n > 0:
                         keep.add(name)
             self.column_draft = keep
-        if self.pair_draft_keys is not None:
+        if self.pair_draft_col is not None:
             col, va, vb = self.pair_draft_col, self.pair_draft_va, self.pair_draft_vb
-            frame = self.pending_cells.filter(
+            n = self.pending_cells.filter(
                 (pl.col("column") == col)
                 & (pl.col("val_a") == va)
                 & (pl.col("val_b") == vb)
-            )
-            if frame.is_empty():
-                self.pair_draft_keys = None
+            ).height
+            if n == 0:
                 self.pair_draft_col = None
                 self.pair_draft_va = None
                 self.pair_draft_vb = None
@@ -1253,7 +1257,7 @@ class Engine:
                 self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 return
         if p.screen == "cell_step":
-            if self.pair_draft_keys is None:
+            if self.pair_draft_col is None:
                 self.place = replace(p, screen="pair_list")
         if p.screen == "a_only" and self.a_only.is_empty():
             self.place = Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
