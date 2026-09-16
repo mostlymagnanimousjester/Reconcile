@@ -1073,3 +1073,101 @@ def test_context_modal_space_toggles_without_typeerror(tmp_path: Path):
             assert "Flag" not in modal.selected
 
     asyncio.run(_run())
+
+
+def test_context_values_empty_or_wrong_arity_key_is_empty(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["Status"] = ["Flag"]
+    assert eng.context_values(None, "Status") == []
+    assert eng.context_values((), "Status") == []
+    assert eng.context_values(("1", "extra"), "Status") == []
+    got = eng.context_values(("1",), "Status")
+    assert got == [("Flag", "1", "2")]
+
+
+def test_cell_step_context_with_focused_key_none_does_not_crash(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,3\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,4\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["Status"] = ["Flag"]
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("Status", "Y", "Yes")
+            assert n == 2
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = None
+            app.render_all()
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            pane = str(app.query_one("#pane").render())
+            assert "A:" in pane
+
+    asyncio.run(_run())
+
+
+def test_np_on_cell_step_with_context_does_not_crash(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n" + "".join(f"{i:03d},Y,A{i:03d}\n" for i in range(120)))
+    write_csv(pb, "id,Status,Flag\n" + "".join(f"{i:03d},Yes,B{i:03d}\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["Status"] = ["Flag"]
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("Status", "Y", "Yes")
+            assert n == 120
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("000",)
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.focused_key is None
+            pane = str(app.query_one("#pane").render())
+            assert "A:" in pane
+            await pilot.press("p")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.page == 0
+
+    asyncio.run(_run())
+
+
+def test_enter_cell_step_sets_focused_key(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,3\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,4\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.focused_key == ("1",)
+            assert app.engine.pair_draft_col == "Status"
+
+    asyncio.run(_run())

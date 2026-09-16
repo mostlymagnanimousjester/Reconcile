@@ -262,8 +262,15 @@ class Engine:
     def extras_rows(self) -> list[dict[str, Any]]:
         return pages_mod.extras_rows(self)
 
-    def context_values(self, key: tuple[str, ...], column: str) -> list[tuple[str, str, str]]:
+    def context_values(
+        self, key: tuple[str, ...] | None, column: str
+    ) -> list[tuple[str, str, str]]:
         return pages_mod.context_values(self, key, column)
+
+    def first_pending_key_in_pair(
+        self, column: str, val_a: str, val_b: str
+    ) -> tuple[str, ...] | None:
+        return pages_mod.first_pending_key_in_pair(self, column, val_a, val_b)
 
     def cell_insights(self, val_a: str, val_b: str) -> list[str]:
         return cell_insights(val_a, val_b)

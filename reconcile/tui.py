@@ -647,7 +647,12 @@ class ReconcileApp(App[int]):
             t.append("\n")
             t.append_text(_diff_text("B:", vb, va, first))
             if p.screen == "cell_step" and p.column:
-                ctx = self.engine.context_values(p.focused_key or (), p.column)
+                key = p.focused_key
+                if not key or len(key) != len(self.engine.keys):
+                    rec = self._focused_rec()
+                    if rec:
+                        key = self.engine.key_of(rec)
+                ctx = self.engine.context_values(key, p.column)
                 for name, a, b in ctx:
                     t.append(f"\n{name}  A|{a}  B|{b}")
             pane.update(t)
@@ -1155,6 +1160,7 @@ class ReconcileApp(App[int]):
                     return
                 self.pair_draft_unchecked = set()
                 last = (p.column, pair[0], pair[1])
+                focused = e.first_pending_key_in_pair(p.column, pair[0], pair[1])
                 self.place = Place(
                     screen="cell_step",
                     column=p.column,
@@ -1163,6 +1169,7 @@ class ReconcileApp(App[int]):
                     roster_filter=p.roster_filter,
                     last_pair=last,
                     view_tab="pending",
+                    focused_key=focused,
                 )
             self.set_error(None)
         except InTuiError as exc:
@@ -1719,6 +1726,7 @@ class ReconcileApp(App[int]):
             self.place = e.next_lever_place(Place(column=col, roster_filter=self.place.roster_filter, last_pair=lp))
         else:
             self.pair_draft_unchecked = set()
+            focused = e.first_pending_key_in_pair(col, va, vb)
             self.place = Place(
                 screen="cell_step",
                 column=col,
@@ -1727,6 +1735,7 @@ class ReconcileApp(App[int]):
                 roster_filter=self.place.roster_filter,
                 last_pair=lp,
                 view_tab="pending",
+                focused_key=focused,
             )
         self.set_error(None)
         self.render_all()

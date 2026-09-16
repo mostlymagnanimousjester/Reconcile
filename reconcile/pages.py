@@ -195,10 +195,12 @@ def extras_rows(eng: Engine) -> list[dict[str, Any]]:
 
 
 def context_values(
-    eng: Engine, key: tuple[str, ...], column: str
+    eng: Engine, key: tuple[str, ...] | None, column: str
 ) -> list[tuple[str, str, str]]:
     names = [n for n in eng.context_columns.get(column, []) if n in eng.context_pool and n != column]
     if not names:
+        return []
+    if not key or len(key) != len(eng.keys):
         return []
     filt = None
     for kname, kval in zip(eng.keys, key):
@@ -216,6 +218,20 @@ def context_values(
     for n in names:
         out.append((n, str(rec_a.get(n, "")), str(rec_b.get(n, ""))))
     return out
+
+
+def first_pending_key_in_pair(
+    eng: Engine, column: str, val_a: str, val_b: str
+) -> tuple[str, ...] | None:
+    frame = eng.pending_cells.filter(
+        (pl.col("column") == column)
+        & (pl.col("val_a") == val_a)
+        & (pl.col("val_b") == val_b)
+    )
+    if frame.is_empty():
+        return None
+    rec = frame.sort(eng.keys).head(1).row(0, named=True)
+    return tuple(str(rec[k]) for k in eng.keys)
 
 
 def next_pending_key_in_grid(
