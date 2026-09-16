@@ -306,6 +306,16 @@ class Engine:
             & (pl.col("val_b") == self.pair_draft_vb)
         ).height
 
+    def pair_draft_key_frame(self) -> pl.DataFrame:
+        schema = {k: pl.Utf8 for k in self.keys}
+        if self.pair_draft_col is None:
+            return _empty_df(schema)
+        return self.pending_cells.filter(
+            (pl.col("column") == self.pair_draft_col)
+            & (pl.col("val_a") == self.pair_draft_va)
+            & (pl.col("val_b") == self.pair_draft_vb)
+        ).select(self.keys)
+
     def cancel_drafts(self) -> None:
         self.column_draft = set()
         self.clear_pair_draft()

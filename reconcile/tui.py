@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import polars as pl
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -160,6 +161,14 @@ DataTable > .datatable--cursor {
     color: #8a8070;
 }
 """
+
+
+def _key_tuples(frame: pl.DataFrame, keys: list[str]) -> set[tuple[str, ...]]:
+    """Key tuples from a key-only frame (refresh deltas / small unchecked sets)."""
+    if frame.is_empty() or not keys:
+        return set()
+    cols = [frame.get_column(k).to_list() for k in keys]
+    return set(zip(*cols, strict=True))
 
 
 def _diff_text(label: str, value: str, other: str, first: int) -> Text:
@@ -1410,9 +1419,30 @@ class ReconcileApp(App[int]):
         self.render_all()
         self.set_focus_work()
 
+    def _sync_pair_draft_after_refresh(self, frozen: pl.DataFrame) -> None:
+        """New matching keys stay unchecked; vanished keys leave the draft set."""
+        e = self.engine
+        if e.pair_draft_col is None:
+            self.pair_draft_unchecked = set()
+            return
+        live = e.pair_draft_key_frame()
+        keys = e.keys
+        still: set[tuple[str, ...]] = set()
+        if self.pair_draft_unchecked:
+            data = {k: [key[i] for key in self.pair_draft_unchecked] for i, k in enumerate(keys)}
+            still = _key_tuples(pl.DataFrame(data).join(live, on=keys, how="inner"), keys)
+        appeared = live.join(frozen, on=keys, how="anti")
+        still |= _key_tuples(appeared, keys)
+        self.pair_draft_unchecked = still
+
     def action_refresh(self) -> None:
         try:
+            frozen = None
+            if self.engine.pair_draft_col is not None:
+                frozen = self.engine.pair_draft_key_frame()
             self.engine.refresh()
+            if frozen is not None:
+                self._sync_pair_draft_after_refresh(frozen)
             p = self.engine.prune_place(self.place, self.engine.pair_draft_col is not None)
             self.place = p
             still = True

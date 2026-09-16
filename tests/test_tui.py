@@ -330,6 +330,68 @@ def test_n_after_cell_a_changes_page(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_refresh_pair_draft_new_key_not_accepted_on_y(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 2
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            write_csv(pa, "id,val\n1,Y\n2,Y\n3,Y\n")
+            write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,Yes\n")
+            app.action_refresh()
+            await pilot.pause()
+            assert app.engine.pair_draft_col == "val"
+            assert ("3",) in app.pair_draft_unchecked
+            app.action_confirm()
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == 1
+            assert app.engine.pending_cells.get_column("id").to_list() == ["3"]
+
+    asyncio.run(_run())
+
+
+def test_refresh_pair_draft_new_key_accepted_if_checked(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            write_csv(pa, "id,val\n1,Y\n2,Y\n3,Y\n")
+            write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,Yes\n")
+            app.action_refresh()
+            await pilot.pause()
+            assert ("3",) in app.pair_draft_unchecked
+            app.pair_draft_unchecked.discard(("3",))
+            app.action_confirm()
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == 0
+
+    asyncio.run(_run())
+
+
 def test_cell_a_moves_cursor_and_page_to_focused_key(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
