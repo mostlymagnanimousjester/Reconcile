@@ -79,6 +79,23 @@ def page_index_for_key(
     return i // page_size, i % page_size
 
 
+def page_index_for_pair(
+    eng: Engine, column: str, val_a: str, val_b: str, page_size: int = PAGE_SIZE
+) -> tuple[int, int]:
+    groups = eng.pair_groups(column)
+    if groups.is_empty():
+        return 0, 0
+    hit = (
+        groups.with_row_index("_idx")
+        .filter((pl.col("val_a") == val_a) & (pl.col("val_b") == val_b))
+        .select("_idx")
+    )
+    if hit.height == 0:
+        return 0, 0
+    i = int(hit.item(0, 0))
+    return i // page_size, i % page_size
+
+
 def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
     return _page(eng.pair_groups(column), page)
 

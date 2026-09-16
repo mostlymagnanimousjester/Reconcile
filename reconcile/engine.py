@@ -143,6 +143,7 @@ class Engine:
         )
         self.returned_extras: set[tuple[str, str]] = set()
         self.last_refresh_delta: RefreshDelta | None = None
+        self.last_grain: tuple[Any, ...] | None = None
         self._roster_cache: list[RosterRow] = []
         self._rebuild()
 
@@ -238,6 +239,14 @@ class Engine:
 
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
         return pages_mod.pair_page(self, column, page)
+
+    def page_index_for_pair(self, column: str, val_a: str, val_b: str) -> tuple[int, int]:
+        return pages_mod.page_index_for_pair(self, column, val_a, val_b)
+
+    def place_from_last_pair(
+        self, last_pair: tuple[str, str, str] | None, roster_filter: str = ""
+    ) -> Place | None:
+        return roster_mod.place_from_last_pair(self, last_pair, roster_filter)
 
     def pair_cells_page(
         self, column: str, val_a: str, val_b: str, page: int
@@ -336,6 +345,8 @@ class Engine:
             n = self.pending_cells.filter(pl.col("column") == col).height
             if n > 0:
                 hits.append(col)
+        if not hits:
+            raise InTuiError("ERROR: regex matched 0 pending columns")
         self.column_draft = set(hits)
         return len(hits)
 
@@ -352,8 +363,7 @@ class Engine:
             pending = pending.head(0)
         # group_by omits zero-pending columns, so empty-series .all() cannot draft them
         if pending.is_empty():
-            self.column_draft = set()
-            return 0
+            raise InTuiError("ERROR: sentinel matched 0 pending columns")
         try:
             hits_df = (
                 pending.group_by("column")
@@ -363,6 +373,8 @@ class Engine:
         except Exception as exc:
             raise InTuiError(f"ERROR: sentinel scan error: {exc}") from exc
         hits = hits_df.get_column("column").to_list()
+        if not hits:
+            raise InTuiError("ERROR: sentinel matched 0 pending columns")
         self.column_draft = set(hits)
         return len(hits)
 
@@ -425,6 +437,46 @@ class Engine:
 
     def undo_extra(self, side: str, name: str) -> int:
         return snaps_mod.undo_extra(self, side, name)
+
+    def remember_grain(self, grain: tuple[Any, ...], n: int) -> None:
+        if n > 0:
+            self.last_grain = grain
+
+    def undo_grain(self, grain: tuple[Any, ...]) -> int:
+        kind = grain[0]
+        if kind == "column":
+            return self.undo_column(str(grain[1]))
+        if kind == "columns":
+            total = 0
+            for name in grain[1:]:
+                total += self.undo_column(str(name))
+            return total
+        if kind == "pair":
+            return self.undo_pair(str(grain[1]), str(grain[2]), str(grain[3]))
+        if kind == "cell":
+            key = grain[1]
+            if not isinstance(key, tuple):
+                return 0
+            return self.undo_cell(key, str(grain[2]))
+        if kind == "unmatched":
+            key = grain[2]
+            if not isinstance(key, tuple):
+                return 0
+            return self.undo_unmatched(str(grain[1]), key)
+        if kind == "unmatched_all":
+            return self.undo_unmatched(str(grain[1]))
+        if kind == "extra":
+            return self.undo_extra(str(grain[1]), str(grain[2]))
+        return 0
+
+    def undo_last_grain(self) -> int:
+        g = self.last_grain
+        if not g:
+            return 0
+        n = self.undo_grain(g)
+        if n:
+            self.last_grain = None
+        return n
 
     # --- next lever ---
 
@@ -714,9 +766,11 @@ class Engine:
         eng._rebuild()
         place_man = man.get("place") or {}
         last = place_man.get("last_pair")
-        last_t = tuple(last) if last and len(last) == 3 else None
+        last_t: tuple[str, str, str] | None = None
+        if last and len(last) == 3:
+            last_t = (str(last[0]), str(last[1]), str(last[2]))
         screen = place_man.get("screen") or "roster"
-        if place_man.get("detail_step") == "cell_step" and screen in ("pair_list", "cell_step"):
+        if place_man.get("detail_step") == "cell_step" or screen == "cell_step":
             screen = "pair_list"  # drafts are not persisted
         place = Place(
             screen=screen if screen != "cell_step" else "pair_list",
@@ -728,6 +782,10 @@ class Engine:
             last_pair=last_t,
         )
         place = eng.prune_place(place, pair_draft_active=False)
+        if last_t:
+            landed = eng.place_from_last_pair(last_t, roster_filter=place.roster_filter)
+            if landed is not None:
+                place = landed
         return eng, place
 
     def identity_lines(self) -> list[str]:

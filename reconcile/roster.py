@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -222,7 +222,36 @@ def _first_pending_key(eng: Engine, side: str) -> tuple[str, ...] | None:
     return tuple(str(rec[k]) for k in eng.keys)
 
 
+def place_from_last_pair(
+    eng: Engine, last_pair: tuple[str, str, str] | None, roster_filter: str = ""
+) -> Place | None:
+    if not last_pair:
+        return None
+    col, va, vb = last_pair
+    if col not in eng.comparable:
+        return None
+    n = eng.pending_cells.filter(
+        (pl.col("column") == col) & (pl.col("val_a") == va) & (pl.col("val_b") == vb)
+    ).height
+    if n == 0:
+        return None
+    page, _ = eng.page_index_for_pair(col, va, vb)
+    return Place(
+        screen="pair_list",
+        column=col,
+        pair_val_a=va,
+        pair_val_b=vb,
+        page=page,
+        last_pair=last_pair,
+        view_tab="pending",
+        focused_name=col,
+        roster_filter=roster_filter,
+    )
+
+
 def next_lever_place(eng: Engine, current: Place) -> Place:
+    # Home must show the work we jumped to: never re-apply a filter that
+    # would hide the focused remaining-work row.
     if current.column and current.column in eng.comparable:
         groups = eng.pair_groups(current.column)
         if not groups.is_empty():
@@ -235,6 +264,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
                 pair_val_b=top["val_b"],
                 page=0,
                 view_tab="pending",
+                roster_filter="",
             )
     rows = list(eng._roster_cache)
     for row in rows:
@@ -251,7 +281,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
                 column=row.name,
                 pair_val_a=va,
                 pair_val_b=vb,
-                roster_filter=current.roster_filter,
+                roster_filter="",
                 last_pair=current.last_pair,
                 view_tab="pending",
                 focused_name=row.name,
@@ -260,7 +290,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
             fk = _first_pending_key(eng, "A")
             return Place(
                 screen="a_only",
-                roster_filter=current.roster_filter,
+                roster_filter="",
                 last_pair=current.last_pair,
                 focused_key=fk,
                 focused_name="A-only keys",
@@ -269,7 +299,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
             fk = _first_pending_key(eng, "B")
             return Place(
                 screen="b_only",
-                roster_filter=current.roster_filter,
+                roster_filter="",
                 last_pair=current.last_pair,
                 focused_key=fk,
                 focused_name="B-only keys",
@@ -277,7 +307,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
         if row.kind == "extra":
             return Place(
                 screen="roster",
-                roster_filter=current.roster_filter,
+                roster_filter="",
                 last_pair=current.last_pair,
                 extra_side=row.side,
                 extra_name=row.name,
@@ -285,6 +315,6 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
             )
     return Place(
         screen="roster",
-        roster_filter=current.roster_filter,
+        roster_filter="",
         last_pair=current.last_pair,
     )

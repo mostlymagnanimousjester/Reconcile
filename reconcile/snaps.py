@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.compare import _empty_df, _empty_mismatch_schema
-from reconcile.engine import ExtraSnap
+from reconcile.engine import ExtraSnap, InTuiError
 from reconcile.roster import _build_roster_cache
 
 if TYPE_CHECKING:
@@ -154,6 +154,8 @@ def _vstack_cell_snaps(eng: Engine, frame: pl.DataFrame) -> int:
 
 
 def accept_column(eng: Engine, column: str) -> int:
+    if eng.pair_draft_col is not None:
+        raise InTuiError("ERROR: confirm or cancel the pair draft first")
     n = _vstack_cell_snaps(eng, eng.pending_cells.filter(pl.col("column") == column))
     eng.column_draft.discard(column)
     return n
@@ -203,6 +205,8 @@ def confirm_pair_draft(
             {k: [key[i] for key in unchecked] for i, k in enumerate(eng.keys)}
         )
         frame = frame.join(exc, on=eng.keys, how="anti")
+    if frame.is_empty():
+        raise InTuiError("ERROR: nothing to confirm (all unchecked)")
     n = _vstack_cell_snaps(eng, frame)
     eng.pair_draft_col = None
     eng.pair_draft_va = None

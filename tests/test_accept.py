@@ -126,9 +126,9 @@ def test_regex_draft_is_name_based_not_values(tmp_path: Path):
     write_csv(pa, "id,alpha,beta\n1,NA,x\n")
     write_csv(pb, "id,alpha,beta\n1,y,NA\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    n = eng.start_regex_draft("^NA$")
-    assert n == 0
-    assert eng.column_draft == set()
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_regex_draft("^NA$")
+    assert not eng.draft_in_flight()
     n = eng.start_regex_draft("alp")
     assert n == 1
     assert eng.column_draft == {"alpha"}
@@ -153,9 +153,9 @@ def test_sentinel_drafts_columns_where_all_pending_a_equal(tmp_path: Path):
     assert n == 1
     assert eng.column_draft == {"all_a"}
     eng.cancel_drafts()
-    n = eng.start_sentinel_draft("B", "——")
-    assert n == 0
-    assert eng.column_draft == set()
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("B", "——")
+    assert not eng.draft_in_flight()
 
 
 def test_sentinel_drafts_columns_where_all_pending_b_equal(tmp_path: Path):
@@ -167,8 +167,9 @@ def test_sentinel_drafts_columns_where_all_pending_b_equal(tmp_path: Path):
     assert n == 1
     assert eng.column_draft == {"all_b"}
     eng.cancel_drafts()
-    n = eng.start_sentinel_draft("A", "——")
-    assert n == 0
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", "——")
+    assert not eng.draft_in_flight()
 
 
 def test_sentinel_excludes_mixed_pending_values(tmp_path: Path):
@@ -180,9 +181,9 @@ def test_sentinel_excludes_mixed_pending_values(tmp_path: Path):
 
 def test_sentinel_excludes_zero_pending_columns(tmp_path: Path):
     eng = _sentinel_fixture(tmp_path)
-    n = eng.start_sentinel_draft("A", "same")
-    assert n == 0
-    assert "ok" not in eng.column_draft
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", "same")
+    assert not eng.draft_in_flight()
     n = eng.start_sentinel_draft("A", "——")
     assert "ok" not in eng.column_draft
     assert n == 1
@@ -194,8 +195,9 @@ def test_sentinel_empty_string_is_legal(tmp_path: Path):
     assert n == 1
     assert eng.column_draft == {"blank_a"}
     eng.cancel_drafts()
-    n = eng.start_sentinel_draft("A", "   ")
-    assert n == 0
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", "   ")
+    assert not eng.draft_in_flight()
     write_csv(tmp_path / "a.csv", "id,pad\n1, x\n")
     write_csv(tmp_path / "b.csv", "id,pad\n1,y\n")
     eng = Engine.from_paths(
@@ -204,8 +206,9 @@ def test_sentinel_empty_string_is_legal(tmp_path: Path):
     n = eng.start_sentinel_draft("A", " x")
     assert n == 1
     eng.cancel_drafts()
-    n = eng.start_sentinel_draft("A", "x")
-    assert n == 0
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", "x")
+    assert not eng.draft_in_flight()
 
 
 def test_equals_no_longer_evals_polars(tmp_path: Path):
@@ -214,9 +217,9 @@ def test_equals_no_longer_evals_polars(tmp_path: Path):
     write_csv(pb, "id,val\n1,x\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     expr = '(pl.col("s") == "——").all()'
-    n = eng.start_sentinel_draft("A", expr)
-    assert n == 0
-    assert eng.column_draft == set()
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", expr)
+    assert not eng.draft_in_flight()
     n = eng.start_sentinel_draft("A", "——")
     assert n == 1
     assert eng.column_draft == {"val"}
@@ -312,7 +315,7 @@ def test_next_lever_ignores_roster_filter(tmp_path: Path):
     place = eng.next_lever_place(Place(column="Flag", roster_filter="Flag"))
     assert place.screen == "pair_list"
     assert place.column == "Status"
-    assert place.roster_filter == "Flag"
+    assert place.roster_filter == ""
 
 
 def test_page_index_for_key_polars(tmp_path: Path):
@@ -417,3 +420,71 @@ def test_pair_returned_is_per_pair_not_whole_column(tmp_path: Path):
     assert eng.pair_has_returned("val", "Y2", "Yes2")
     assert not eng.pair_has_returned("val", "N", "No")
     assert eng.column_has_returned("val")
+
+
+def test_accept_column_refused_during_pair_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    n = eng.start_pair_draft("val", "Y", "Yes")
+    assert n == 1
+    pending = eng.pending_cells_n()
+    with pytest.raises(InTuiError, match="pair draft"):
+        eng.accept_column("val")
+    assert eng.pair_draft_col == "val"
+    assert eng.pending_cells_n() == pending
+
+
+def test_confirm_pair_draft_all_unchecked_stays(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.start_pair_draft("val", "Y", "Yes")
+    pending = eng.pending_cells_n()
+    with pytest.raises(InTuiError, match="all unchecked"):
+        eng.confirm_pair_draft({("1",), ("2",)})
+    assert eng.pair_draft_col == "val"
+    assert eng.pending_cells_n() == pending
+
+
+def test_undo_last_grain_after_pair_accept(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    n = eng.accept_pair("Status", "Y", "Yes")
+    eng.remember_grain(("pair", "Status", "Y", "Yes"), n)
+    place = eng.next_lever_place(Place(column="Status"))
+    assert place.column == "Flag"
+    assert next(r for r in eng.roster() if r.name == "Status").pending == 0
+    undone = eng.undo_last_grain()
+    assert undone == 1
+    assert eng.last_grain is None
+    assert next(r for r in eng.roster() if r.name == "Status").pending == 1
+
+
+def test_session_zip_restores_last_pair_focus(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n3,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    last = ("val", "N", "No")
+    place = Place(screen="roster", last_pair=last)
+    z = tmp_path / "job.recon.zip"
+    eng.export_zip(str(z), place)
+    loaded, restored = Engine.from_session(str(z))
+    assert restored.screen == "pair_list"
+    assert restored.column == "val"
+    assert restored.pair_val_a == "N"
+    assert restored.pair_val_b == "No"
+    assert restored.last_pair == last
+    # cell-step in the zip maps to pair_list; drafts are not restored
+    place2 = Place(screen="cell_step", column="val", last_pair=("val", "Y", "Yes"))
+    eng.export_zip(str(z), place2)
+    _loaded, restored2 = Engine.from_session(str(z))
+    assert restored2.screen == "pair_list"
+    assert restored2.pair_val_a == "Y"
+    assert restored2.pair_val_b == "Yes"
+    assert restored2.column == "val"
