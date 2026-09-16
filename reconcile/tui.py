@@ -325,7 +325,7 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
 class ContextModal(ModalScreen[list[str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
-        Binding("enter", "ok", "OK"),
+        Binding("enter", "ok", "OK", priority=True),
         Binding("space", "toggle", "Toggle"),
         Binding("y", "ok", "OK"),
         *[
