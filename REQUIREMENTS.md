@@ -330,6 +330,7 @@ Regex and sentinel do **not** stack, union, or intersect. Each Run starts from a
 - Applied to exact comparable names only (not keys, not extras, not values).
 - Python `re.search`, case-sensitive; user may put `(?i)` or `^` `$` in the pattern.
 - Empty or invalid pattern: in-TUI error, draft unchanged.
+- **Zero hits** (no pending comparable name matches): in-TUI ERROR, no draft started, stay.
 
 **Exact-value sentinel** (roster `=`):
 
@@ -340,6 +341,7 @@ The pending universe is `A ≠ B`. An `.all()` predicate on the **same** constan
 - Per comparable column: that side’s values on **pending mismatches only** (raw strings, nulls already `""`). Draft the column iff it has **at least one pending** mismatch **and** every pending value on the chosen side is **exactly** that string (Python/Polars string equality).
 - Implemented in **Polars**: pending cells grouped by column, `(side == sentinel).all()`. Zero-pending columns are never grouped and are **never** drafted (do not treat empty-series `.all()` as true).
 - Invalid side or other engine error: in-TUI, draft unchanged.
+- **Zero hits**: in-TUI ERROR, no draft started, stay. Sentinel Enter with no side selected: ERROR on the modal.
 
 Choosing Side `B` does not look at A, and vice versa.
 
@@ -376,16 +378,18 @@ Selecting a pair (not Confirm) fills a **pair draft**: every current pending cel
 |---|---|
 | After selecting a pair | Draft := matching pending cells, all checked. If that set is empty, do not start a draft (already reconciled for that pair) |
 | Toggle | Space flips the focused **grid** row in/out of the draft |
-| Confirm (`y`) | Snapshot every still-checked cell `(key, column, valA, valB)`. Undo is **per cell**, not one bundle. Draft empty. Remember this pair as **last pair**. Then **next lever** (§15.9) |
+| Confirm (`y`) | Snapshot every still-checked cell `(key, column, valA, valB)`. Undo is **per cell**, not one bundle. All-unchecked: in-TUI ERROR, stay, draft live (no next lever). Else draft empty, remember this pair as **last pair**, then **next lever** (§15.9) |
 | Cancel (`Esc`) | Draft empty; **back to the pair list** (not the roster). No accepts |
 | In-flight | Session has no other draft. Confirm or Cancel before another pair, and before roster regex/sentinel |
 | Zip / quit | Pair draft is **never** persisted. Confirmed cell snapshots only |
 
 Immediate `a` on a drafted cell: snapshot that cell now; drop it from the pair draft.
 
-Immediate `A` (whole column) while a pair draft is in flight: accept **all** current pending cells in the column (not only the pair); pair draft is discarded; then **next lever**.
+Immediate `A` (whole column) is **refused** while a pair draft is in flight (in-TUI ERROR: confirm or cancel first). `A` does **not** `accept_column` in that state — that would bury Space-unchecked exceptions. `A` = whole column only when no pair draft is live.
 
-`.` **Repeat last pair** (column detail, no pair draft in flight): start a pair draft for the remembered `(column, valA, valB)` if that column still exists and any pending cells still have those exact strings. Does **not** auto-accept. New pending rows with that pair after refresh are included only when `.` is pressed. If none remain, go to next lever. If last pair was on another column, jump to that column’s Pending view first. Refused if a **column** draft is in flight.
+`.` **Repeat last pair** (column detail only: pair list / cell step; no pair draft in flight): start a pair draft for the remembered `(column, valA, valB)` if that column still exists and any pending cells still have those exact strings. Does **not** auto-accept. New pending rows with that pair after refresh are included only when `.` is pressed. If none remain, go to next lever. If last pair was on another column, jump to that column’s Pending view first. If the last-pair **column is gone**: in-TUI ERROR (do not silently next-lever). Refused if a **column** draft is in flight. Refused on roster / Overview / unmatched / extras.
+
+Confirm (`y`) with every pair-draft cell **unchecked**: in-TUI ERROR (nothing to confirm / all unchecked). Stay on the cell step; the draft stays live. Do not next-lever.
 
 Refresh: §9.4. New pending cells that happen to have the same two strings are **not** auto-drafted or auto-accepted.
 
@@ -574,11 +578,11 @@ Do not use the word “summary” for two different screens. Names below are can
 
 A footer/status line is **always visible** (§15.6).
 
-**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: saved place if valid, else roster.
+**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: if `last_pair` still has pending cells, land **pair list** focused on that pair (page/cursor). Cell-step maps to pair_list (drafts are never persisted). Else saved place if valid, else roster.
 
 ### 15.1 Overview (counts, not home)
 
-Quiet counts and job identity. Reachable by `Esc` from the roster. Not the landing screen.
+Quiet counts and job identity. Reachable by `Esc` from the roster. Not the landing screen. `Esc` from Overview returns to the roster.
 
 Shows:
 
@@ -703,17 +707,17 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | Key | Meaning |
 |---|---|
 | `Enter` | Drill: roster row → its child (column → pair list; A-only/B-only → that grid; extra → Schema extras); pair → cell step (draft); Overview entry → that list; modal → Run |
-| `Esc` | Back: close modal → cancel draft (cell step → pair list, or roster draft → roster) → parent screen (pair list / A-only / B-only / extras → roster → Overview) |
-| `Space` | Toggle focused **column** row in the current column draft; no-op if none, or if the focused roster row is not `kind` `column` |
-| `a` | Accept **focused grain** now: entire column (roster `column` row), pair (pair list), cell (cell step), one unmatched key (in that grid), all unmatched on a side (roster `A-only`/`B-only` row), extra |
-| `A` | Accept **entire column** (roster `column` row / detail) or **all unmatched on this side** (roster `A-only`/`B-only` row, or A-only/B-only grid) |
-| `y` | Confirm current draft; no-op if none; then next lever |
-| `u` | Undo focused grain (`U` undo entire column on cell step) |
+| `Esc` | Back: close modal → cancel roster/cell-step draft → parent screen (pair list / A-only / B-only / extras → roster → Overview). Overview `Esc` → roster. On pair list / detail, a **column** draft stays live (`Esc` is back, not cancel) |
+| `Space` | Toggle focused **column** row in the current column draft; ERROR if no column draft (cheap). No-op if the focused roster row is not `kind` `column` |
+| `a` | Accept **focused grain** now: entire column (roster `column` row), pair (pair list), cell (cell step), one unmatched key (in that grid), all unmatched on a side (roster `A-only`/`B-only` row), extra. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, do not next-lever |
+| `A` | Accept **entire column** (roster `column` row / Pending pair list / cell step with **no** pair draft) or **all unmatched on this side** (roster `A-only`/`B-only` row, or A-only/B-only grid). Refused while a pair draft is in flight. Refused on Accepted / Equal / All matched (switch to Pending). 0-pending roster column: stay |
+| `y` | Confirm current draft; no-op if none; then next lever. All-unchecked pair draft: ERROR, stay, draft live |
+| `u` | Undo focused grain. After next lever, `u` undoes the last accepted grain (one last action). Roster `u` on A-only/B-only undoes all unmatched on that side. ERROR if nothing snapshotted for that grain (and no last grain). `U` undo entire column on **cell step only** (ERROR elsewhere) |
 | `r` | Refresh (stay put; mark returned-to-pending) |
-| `.` | Repeat last pair as a new draft (§9.6); refused if a draft is in flight |
-| `/` | Roster: regex **column draft** (not the filter box) |
-| `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path) |
-| `c` | Context-column picker (cell step) |
+| `.` | Repeat last pair as a new draft (§9.6); column detail only (pair list / cell step); refused if a draft is in flight; ERROR if last-pair column is gone |
+| `/` | Roster: regex **column draft** (not the filter box). ERROR off roster |
+| `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
+| `c` | Context-column picker (cell step). ERROR off cell step |
 | `n` / `p` | Next/prev page |
 | `e` | Export `.recon.zip` |
 | `o` | Open zip (refused if a draft is in flight) |
@@ -749,7 +753,7 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
 **Next lever** after a bulk accept (pair `y` or pair-list `a`, column-draft `y`, immediate whole-column `A` / roster `a` on a `column` row, roster `a`/`A` on an unmatched-key row, `A` on an unmatched-key grid, roster or extras-list `a` on an extra):
 
 1. If the current column still has pending pairs, focus the next-highest-count pair on that column’s pair list.
-2. Else the next roster row with pending > 0 from the **unfiltered** roster cache (fixed sort: pending, then concentration, then name). Copy `roster_filter` onto Place for display only; the filter must not hide the next lever:
+2. Else the next roster row with pending > 0 from the **unfiltered** roster cache (fixed sort: pending, then concentration, then name). **Clear `roster_filter`** on this jump so Home shows the work you landed on (do not re-apply a filter that would hide the focused remaining-work row):
    - `column` → that pair list, top pair focused
    - `A-only` / `B-only` → that grid, first pending key focused
    - `extra` → roster, that extra focused (ready for `a`)
