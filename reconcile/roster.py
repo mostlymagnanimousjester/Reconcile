@@ -233,7 +233,7 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
                 page=0,
                 view_tab="pending",
             )
-    rows = roster(eng, current.roster_filter)
+    rows = list(eng._roster_cache)
     for row in rows:
         if row.pending <= 0:
             continue

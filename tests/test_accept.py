@@ -303,6 +303,37 @@ def test_next_lever_after_column_accept(tmp_path: Path):
     assert place.column == "Flag"
 
 
+def test_next_lever_ignores_roster_filter(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,1\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.accept_column("Flag")
+    place = eng.next_lever_place(Place(column="Flag", roster_filter="Flag"))
+    assert place.screen == "pair_list"
+    assert place.column == "Status"
+    assert place.roster_filter == "Flag"
+
+
+def test_page_index_for_key_polars(tmp_path: Path):
+    from reconcile.pages import PAGE_SIZE, page_index_for_key
+
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    frame = eng.pending_cells.sort(eng.keys)
+    page, row = page_index_for_key(frame, eng.keys, ("099",))
+    assert page == 0
+    assert row == 99
+    page, row = page_index_for_key(frame, eng.keys, ("100",))
+    assert page == 1
+    assert row == 0
+    assert PAGE_SIZE == 100
+    page, row = eng.page_index_for_key(frame, ("000",))
+    assert (page, row) == (0, 0)
+
+
 def test_session_place_restored(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")

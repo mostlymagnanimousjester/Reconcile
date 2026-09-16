@@ -32,6 +32,25 @@ def _page(frame: pl.DataFrame, page: int) -> tuple[list[dict[str, Any]], int, in
     return _page_dicts(chunk), page, pages
 
 
+def page_index_for_key(
+    frame: pl.DataFrame,
+    keys: list[str],
+    key: tuple[str, ...] | None,
+    page_size: int = PAGE_SIZE,
+) -> tuple[int, int]:
+    """(page, row_on_page) for key in an already-sorted frame. No full to_dicts."""
+    if frame.is_empty() or not key or len(key) != len(keys):
+        return 0, 0
+    expr: pl.Expr = pl.lit(True)
+    for k, v in zip(keys, key):
+        expr = expr & (pl.col(k) == v)
+    hit = frame.with_row_index("_idx").filter(expr).select("_idx")
+    if hit.height == 0:
+        return 0, 0
+    i = int(hit.item(0, 0))
+    return i // page_size, i % page_size
+
+
 def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
     return _page(eng.pair_groups(column), page)
 

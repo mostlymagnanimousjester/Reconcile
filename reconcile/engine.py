@@ -437,6 +437,27 @@ class Engine:
     def next_pending_cell_in_pair(self, after: tuple[str, ...]) -> tuple[str, ...] | None:
         return pages_mod.next_pending_cell_in_pair(self, after)
 
+    def page_index_for_key(
+        self, frame: pl.DataFrame, key: tuple[str, ...] | None
+    ) -> tuple[int, int]:
+        return pages_mod.page_index_for_key(frame, self.keys, key)
+
+    def page_index_for_pair_key(self, key: tuple[str, ...] | None) -> tuple[int, int]:
+        if self.pair_draft_col is None or not key:
+            return 0, 0
+        frame = self.pending_cells.filter(
+            (pl.col("column") == self.pair_draft_col)
+            & (pl.col("val_a") == self.pair_draft_va)
+            & (pl.col("val_b") == self.pair_draft_vb)
+        ).sort(self.keys)
+        return pages_mod.page_index_for_key(frame, self.keys, key)
+
+    def page_index_for_unmatched_key(
+        self, side: str, key: tuple[str, ...] | None
+    ) -> tuple[int, int]:
+        frame = (self.a_only if side == "A" else self.b_only).sort(self.keys)
+        return pages_mod.page_index_for_key(frame, self.keys, key)
+
     # --- refresh ---
 
     def _reload_side(self, table: SideTable, side: str) -> SideTable:

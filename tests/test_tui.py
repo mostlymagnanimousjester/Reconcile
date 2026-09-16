@@ -159,6 +159,151 @@ def test_categorical_top_row_a_accepts_pair(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_filter_does_not_hide_next_lever(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,1\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            filt = app.query_one("#filter")
+            filt.value = "Flag"
+            app.place.roster_filter = "Flag"
+            app.place.focused_name = "Flag"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            row = app._focused_roster()
+            assert row is not None and row.name == "Flag"
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            assert app.place.roster_filter == "Flag"
+
+    asyncio.run(_run())
+
+
+def test_roster_A_on_extra_accepts_like_a(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,cust\n1,a,1\n")
+    write_csv(pb, "id,val\n1,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.focused_name = "cust"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            row = app._focused_roster()
+            assert row is not None and row.kind == "extra"
+            app.action_accept_all()
+            await pilot.pause()
+            assert app.engine.pending_extras_n() == 0
+
+    asyncio.run(_run())
+
+
+def test_cell_a_moves_cursor_and_page_to_focused_key(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 120
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("099",)
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.place.page == 0
+            assert app.query_one("#grid").cursor_row == 99
+            assert app._focused_rec()["id"] == "099"
+            app.place.focused_key = ("100",)
+            app.render_all()
+            await pilot.pause()
+            assert app.place.page == 1
+            assert app.query_one("#grid").cursor_row == 0
+            assert app._focused_rec()["id"] == "100"
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.focused_key == ("101",)
+            assert app.place.page == 1
+            assert app._focused_rec()["id"] == "101"
+
+    asyncio.run(_run())
+
+
+def test_pair_exhausted_returns_to_this_column_pair_list(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            assert app.engine.pair_draft_col is None
+            assert next(r for r in app.engine.roster() if r.name == "Flag").pending == 1
+
+    asyncio.run(_run())
+
+
+def test_drafted_column_a_stays_on_roster_until_last(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,2\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,9\n2,Yes,8\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("Status|Flag")
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.engine.column_draft == {"Flag"}
+            app.action_accept()
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.place.screen != "roster" or app.engine.pending_cells_n() == 0
+
+    asyncio.run(_run())
+
+
 def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")

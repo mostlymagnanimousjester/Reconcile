@@ -399,7 +399,17 @@ class ReconcileApp(App[int]):
 
     def set_focus_work(self) -> None:
         if self.query("#grid"):
-            self.query_one("#grid").focus()
+            grid = self.query_one("#grid", DataTable)
+            grid.focus()
+            if self.place.focused_key and self.place.screen in {
+                "cell_step",
+                "a_only",
+                "b_only",
+                "accepted",
+                "equal",
+                "all_matched",
+            }:
+                self._move_cursor_to_focused_key(grid)
         elif self.query("#filter-row"):
             pass
 
@@ -652,6 +662,15 @@ class ReconcileApp(App[int]):
         self.place.pair_val_a, self.place.pair_val_b = rec["val_a"], rec["val_b"]
         return table
 
+    def _move_cursor_to_focused_key(self, table: DataTable) -> None:
+        want = self.place.focused_key
+        if not want:
+            return
+        for i, rec in enumerate(self._table_keys):
+            if isinstance(rec, dict) and self.engine.key_of(rec) == want:
+                table.move_cursor(row=i)
+                return
+
     def _cell_grid(self) -> Vertical:
         col = self.place.column or ""
         tab = self.place.view_tab
@@ -667,6 +686,9 @@ class ReconcileApp(App[int]):
         self._table_keys = []
         if self.place.screen == "cell_step":
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
+            if self.place.focused_key:
+                page, _ = self.engine.page_index_for_pair_key(self.place.focused_key)
+                self.place.page = page
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
             self.place.page = page
             draft = self.engine.pair_draft_col is not None
@@ -688,6 +710,7 @@ class ReconcileApp(App[int]):
                     )
                     table.add_row(*key_cells, va_t, rec["val_b"], tags)
                     self._table_keys.append(rec)
+                self._move_cursor_to_focused_key(table)
         else:
             recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
             self.place.page = page
@@ -703,10 +726,14 @@ class ReconcileApp(App[int]):
                     style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
                     table.add_row(*key_cells, Text(str(rec["val_a"]), style=style), str(rec["val_b"]), tags)
                     self._table_keys.append(rec)
+                self._move_cursor_to_focused_key(table)
         tab_current = tab if self.place.screen != "cell_step" else "pending"
         return Vertical(Static(f"COLUMN {col}   {title}"), self._tab_bar(tab_current), table)
 
     def _unmatched(self, side: str) -> Vertical:
+        if self.place.focused_key:
+            page, _ = self.engine.page_index_for_unmatched_key(side, self.place.focused_key)
+            self.place.page = page
         recs, page, pages = self.engine.unmatched_page(side, self.place.page)
         self.place.page = page
         frame = self.engine.a_only if side == "A" else self.engine.b_only
@@ -726,6 +753,7 @@ class ReconcileApp(App[int]):
                 vals = [Text(str(rec[c]), style=style) for c in cols]
                 table.add_row(st, *vals)
                 self._table_keys.append(rec)
+            self._move_cursor_to_focused_key(table)
         return Vertical(
             Static(f"{side}-only keys  (raw columns on this side, including extras)"),
             table,
@@ -918,7 +946,25 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    if e.column_draft:
+                        nxt_name = next(
+                            (
+                                r.name
+                                for r in e._roster_cache
+                                if r.kind == "column" and r.name in e.column_draft
+                            ),
+                            None,
+                        )
+                        self.place = Place(
+                            screen="roster",
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            focused_name=nxt_name,
+                        )
+                    else:
+                        self.place = e.next_lever_place(
+                            Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
+                        )
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
                     self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
@@ -944,19 +990,41 @@ class ReconcileApp(App[int]):
                     key = e.key_of(rec)
                     e.accept_cell(key, p.column, rec["val_a"], rec["val_b"])
                     nxt = e.next_pending_cell_in_pair(key)
-                    self.place.focused_key = nxt
+                    if nxt is None:
+                        e.clear_pair_draft()
+                        self.pair_draft_unchecked = set()
+                        self.place = Place(
+                            screen="pair_list",
+                            column=p.column,
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            view_tab="pending",
+                            focused_name=p.column,
+                        )
+                    else:
+                        self.place.focused_key = nxt
+                        page, _ = e.page_index_for_pair_key(nxt)
+                        self.place.page = page
             elif p.screen == "a_only":
                 rec = self._focused_rec()
                 if rec:
                     key = e.key_of(rec)
                     e.accept_unmatched("A", key)
-                    self.place.focused_key = e.next_pending_key_in_grid("A", key)
+                    nxt = e.next_pending_key_in_grid("A", key)
+                    self.place.focused_key = nxt
+                    if nxt:
+                        page, _ = e.page_index_for_unmatched_key("A", nxt)
+                        self.place.page = page
             elif p.screen == "b_only":
                 rec = self._focused_rec()
                 if rec:
                     key = e.key_of(rec)
                     e.accept_unmatched("B", key)
-                    self.place.focused_key = e.next_pending_key_in_grid("B", key)
+                    nxt = e.next_pending_key_in_grid("B", key)
+                    self.place.focused_key = nxt
+                    if nxt:
+                        page, _ = e.page_index_for_unmatched_key("B", nxt)
+                        self.place.page = page
             elif p.screen == "extras":
                 rec = self._focused_rec()
                 if rec:
@@ -979,13 +1047,42 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
+                    if e.column_draft:
+                        nxt_name = next(
+                            (
+                                r.name
+                                for r in e._roster_cache
+                                if r.kind == "column" and r.name in e.column_draft
+                            ),
+                            None,
+                        )
+                        self.place = Place(
+                            screen="roster",
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            focused_name=nxt_name,
+                        )
+                    else:
+                        self.place = e.next_lever_place(
+                            Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
+                        )
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
                     self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "B-only":
                     e.accept_all_unmatched("B")
                     self.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
+                elif row.kind == "extra":
+                    e.accept_extra(row.side, row.name)
+                    self.place = e.next_lever_place(
+                        Place(
+                            screen="extras",
+                            extra_side=row.side,
+                            extra_name=row.name,
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                        )
+                    )
             elif p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
                 if p.column:
                     if e.pair_draft_col is not None:
@@ -999,6 +1096,11 @@ class ReconcileApp(App[int]):
             elif p.screen == "b_only":
                 e.accept_all_unmatched("B")
                 self.place = e.next_lever_place(p)
+            elif p.screen == "extras":
+                rec = self._focused_rec()
+                if rec:
+                    e.accept_extra(rec["side"], rec["name"])
+                    self.place = e.next_lever_place(p)
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
