@@ -1476,3 +1476,142 @@ def test_empty_pair_values_show_empty_marker(tmp_path: Path):
             assert "(empty)" in pane
 
     asyncio.run(_run())
+
+
+def test_enter_on_extra_from_roster_does_not_crash(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,cust\n1,a,1\n")
+    write_csv(pb, "id,val\n1,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.focused_name = "cust"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            row = app._focused_roster()
+            assert row is not None and row.kind == "extra"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "extras"
+            assert app.query("#grid")
+            rec = app._focused_rec()
+            assert rec is not None and rec["name"] == "cust"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "extras"
+
+    asyncio.run(_run())
+
+
+def test_p_on_first_page_after_a_keeps_next_cell(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("050",)
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.focused_key == ("051",)
+            assert app._focused_rec()["id"] == "051"
+            await pilot.press("p")
+            await pilot.pause()
+            assert app.place.page == 0
+            assert app.place.screen == "cell_step"
+            assert app.tui_error and "first page" in app.tui_error
+            assert app.place.focused_key == ("051",)
+            assert app._focused_rec()["id"] == "051"
+
+    asyncio.run(_run())
+
+
+def test_a_and_enter_on_empty_pair_list_error(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            pending = app.engine.pending_total()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            assert app.engine.pending_total() == pending
+            assert app.tui_error and "pending" in app.tui_error
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.engine.pair_draft_col is None
+            assert app.tui_error and "pending" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_a_on_accepted_unmatched_key_errors(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n2,b\n")
+    write_csv(pb, "id,val\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.focused_name = "A-only keys"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "a_only"
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.engine.pending_a_only_n() == 1
+            grain = app.engine.last_grain
+            app.query_one("#grid").move_cursor(row=0)
+            await pilot.pause()
+            rec = app._focused_rec()
+            assert rec is not None and rec.get("_accepted")
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "a_only"
+            assert app.engine.pending_a_only_n() == 1
+            assert app.engine.last_grain == grain
+            assert app.tui_error and "pending" in app.tui_error
+
+    asyncio.run(_run())

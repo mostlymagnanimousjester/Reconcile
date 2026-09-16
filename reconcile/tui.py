@@ -711,7 +711,12 @@ class ReconcileApp(App[int]):
         work = self.query_one("#work", Vertical)
         for child in list(work.children):
             child.remove()
-        work.mount(self._work_body())
+        body = self._work_body()
+        # remove() is deferred. Roster and extras both use #grid as the work
+        # child; wrapping a bare DataTable avoids DuplicateIds on the sibling.
+        if isinstance(body, DataTable):
+            body = Vertical(body)
+        work.mount(body)
 
     def _refill_work(self) -> None:
         if not self.query("#grid"):
@@ -1009,7 +1014,7 @@ class ReconcileApp(App[int]):
             table,
         )
 
-    def _extras(self) -> DataTable:
+    def _extras(self) -> Vertical:
         table: DataTable = DataTable(cursor_type="row", id="grid")
         table.add_columns("side", "name", "pending", "speculative")
         rows = self.engine.extras_rows()
@@ -1017,17 +1022,20 @@ class ReconcileApp(App[int]):
         if not rows:
             table.add_row("—", "(no extras)", "0", "")
             self._table_keys = [None]
-            return table
-        for rec in rows:
-            style = "reverse" if rec["returned"] else ("bold" if rec["pending"] else "dim")
-            table.add_row(
-                rec["side"],
-                Text(rec["name"], style=style),
-                str(rec["pending"]),
-                ", ".join(rec["speculative"]),
-            )
-            self._table_keys.append(rec)
-        return table
+        else:
+            for rec in rows:
+                style = "reverse" if rec["returned"] else ("bold" if rec["pending"] else "dim")
+                table.add_row(
+                    rec["side"],
+                    Text(rec["name"], style=style),
+                    str(rec["pending"]),
+                    ", ".join(rec["speculative"]),
+                )
+                self._table_keys.append(rec)
+        return Vertical(
+            Static("Schema extras  (exact header + side)"),
+            table,
+        )
 
     def _focused_roster(self) -> RosterRow | None:
         if not self._table_keys:
@@ -1156,7 +1164,7 @@ class ReconcileApp(App[int]):
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
                 pair = self._focused_pair()
                 if not pair or not p.column:
-                    return
+                    raise InTuiError("ERROR: no pending pairs")
                 n = e.start_pair_draft(p.column, pair[0], pair[1])
                 if n == 0:
                     self.set_error("ERROR: that pair has no pending cells")
@@ -1269,11 +1277,14 @@ class ReconcileApp(App[int]):
                 if e.column_draft:
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
                 pair = self._focused_pair()
-                if pair and p.column:
-                    n = e.accept_pair(p.column, pair[0], pair[1])
-                    last = (p.column, pair[0], pair[1])
-                    e.remember_grain(("pair", p.column, pair[0], pair[1]), n)
-                    self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=last))
+                if not pair or not p.column:
+                    raise InTuiError("ERROR: no pending pairs")
+                n = e.accept_pair(p.column, pair[0], pair[1])
+                if n == 0:
+                    raise InTuiError("ERROR: no pending pairs")
+                last = (p.column, pair[0], pair[1])
+                e.remember_grain(("pair", p.column, pair[0], pair[1]), n)
+                self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=last))
             elif p.screen == "cell_step":
                 rec = self._focused_rec()
                 if rec and p.column:
@@ -1302,6 +1313,8 @@ class ReconcileApp(App[int]):
                 if rec:
                     key = e.key_of(rec)
                     n = e.accept_unmatched("A", key)
+                    if n == 0:
+                        raise InTuiError("ERROR: that key is not pending")
                     e.remember_grain(("unmatched", "A", key), n)
                     nxt = e.next_pending_key_in_grid("A", key)
                     self.place.focused_key = nxt
@@ -1313,6 +1326,8 @@ class ReconcileApp(App[int]):
                 if rec:
                     key = e.key_of(rec)
                     n = e.accept_unmatched("B", key)
+                    if n == 0:
+                        raise InTuiError("ERROR: that key is not pending")
                     e.remember_grain(("unmatched", "B", key), n)
                     nxt = e.next_pending_key_in_grid("B", key)
                     self.place.focused_key = nxt
@@ -1323,6 +1338,8 @@ class ReconcileApp(App[int]):
                 rec = self._focused_rec()
                 if rec:
                     n = e.accept_extra(rec["side"], rec["name"])
+                    if n == 0:
+                        raise InTuiError("ERROR: extra is not pending")
                     e.remember_grain(("extra", rec["side"], rec["name"]), n)
                     self.place = e.next_lever_place(p)
             self.set_error(None)
@@ -1406,16 +1423,22 @@ class ReconcileApp(App[int]):
                     self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
             elif p.screen == "a_only":
                 n = e.accept_all_unmatched("A")
+                if n == 0:
+                    raise InTuiError("ERROR: no pending A-only keys")
                 e.remember_grain(("unmatched_all", "A"), n)
                 self.place = e.next_lever_place(p)
             elif p.screen == "b_only":
                 n = e.accept_all_unmatched("B")
+                if n == 0:
+                    raise InTuiError("ERROR: no pending B-only keys")
                 e.remember_grain(("unmatched_all", "B"), n)
                 self.place = e.next_lever_place(p)
             elif p.screen == "extras":
                 rec = self._focused_rec()
                 if rec:
                     n = e.accept_extra(rec["side"], rec["name"])
+                    if n == 0:
+                        raise InTuiError("ERROR: extra is not pending")
                     e.remember_grain(("extra", rec["side"], rec["name"]), n)
                     self.place = e.next_lever_place(p)
             self.set_error(None)
@@ -1671,7 +1694,11 @@ class ReconcileApp(App[int]):
         if not self._is_paged_screen():
             self.set_error("ERROR: no pages on this screen")
             return
-        self.place.page = max(0, self.place.page - 1)
+        if self.place.page <= 0:
+            self.set_error("ERROR: first page")
+            return
+        self.place.page -= 1
+        # Stop render from following the accepted row back onto its old page.
         self.place.focused_key = None
         self.set_error(None)
         self.render_all()
