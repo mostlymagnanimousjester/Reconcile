@@ -843,7 +843,8 @@ class Engine:
         last_t: tuple[str, str, str] | None = None
         if last and len(last) == 3:
             last_t = (str(last[0]), str(last[1]), str(last[2]))
-        screen = place_man.get("screen") or "roster"
+        saved_screen = place_man.get("screen") or "roster"
+        screen = saved_screen
         if place_man.get("detail_step") == "cell_step" or screen == "cell_step":
             screen = "pair_list"  # drafts are not persisted
         place = Place(
@@ -856,7 +857,17 @@ class Engine:
             last_pair=last_t,
         )
         place = eng.prune_place(place, pair_draft_active=False)
-        if last_t:
+        # last_pair focuses pair_list/cell_step for that column, or lands
+        # pair list only when the saved screen is gone. Do not override a
+        # still-valid roster / Overview / unmatched / extras place.
+        if place.screen in {"pair_list", "accepted", "equal", "all_matched"} and last_t:
+            if place.column is None or last_t[0] == place.column:
+                landed = eng.place_from_last_pair(last_t, roster_filter=place.roster_filter)
+                if landed is not None:
+                    if place.screen != "pair_list":
+                        landed = replace(landed, screen=place.screen, view_tab=place.view_tab)
+                    place = landed
+        elif place.screen == "roster" and saved_screen not in {"roster", "overview"} and last_t:
             landed = eng.place_from_last_pair(last_t, roster_filter=place.roster_filter)
             if landed is not None:
                 place = landed

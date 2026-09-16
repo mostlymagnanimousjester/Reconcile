@@ -711,7 +711,10 @@ def test_zip_restores_last_pair_focus(tmp_path: Path):
     write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,No\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     z = tmp_path / "job.recon.zip"
-    eng.export_zip(str(z), Place(screen="roster", last_pair=("val", "N", "No")))
+    eng.export_zip(
+        str(z),
+        Place(screen="pair_list", column="val", last_pair=("val", "N", "No")),
+    )
     loaded, place = Engine.from_session(str(z))
     app = ReconcileApp(loaded, place)
 
@@ -725,6 +728,28 @@ def test_zip_restores_last_pair_focus(tmp_path: Path):
             pane = str(app.query_one("#pane").render())
             assert "N" in pane
             assert "No" in pane
+            assert app.engine.pair_draft_col is None
+
+    asyncio.run(_run())
+
+
+def test_zip_from_a_only_restores_a_only_even_if_last_pair_exists(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n9,onlyA\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    z = tmp_path / "job.recon.zip"
+    last = ("val", "Y", "Yes")
+    eng.export_zip(str(z), Place(screen="a_only", last_pair=last, focused_key=("9",)))
+    loaded, place = Engine.from_session(str(z))
+    app = ReconcileApp(loaded, place)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.place.screen == "a_only"
+            assert app.place.last_pair == last
+            assert app.engine.pending_a_only_n() == 1
             assert app.engine.pair_draft_col is None
 
     asyncio.run(_run())

@@ -578,7 +578,7 @@ Do not use the word “summary” for two different screens. Names below are can
 
 A footer/status line is **always visible** (§15.6).
 
-**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: if `last_pair` still has pending cells, land **pair list** focused on that pair (page/cursor). Cell-step maps to pair_list (drafts are never persisted). Else saved place if valid, else roster.
+**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: prefer the saved `place.screen` if it is still valid (A-only stays A-only when those keys still exist). Cell-step maps to pair_list (drafts are never persisted). Use `last_pair` to focus the pair only when restoring **pair_list / cell-step** for that column, or when the saved screen is gone. Else roster. `last_pair` is always kept for `.` repeat when it still exists.
 
 ### 15.1 Overview (counts, not home)
 

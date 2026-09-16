@@ -475,11 +475,17 @@ def test_session_zip_restores_last_pair_focus(tmp_path: Path):
     z = tmp_path / "job.recon.zip"
     eng.export_zip(str(z), place)
     loaded, restored = Engine.from_session(str(z))
-    assert restored.screen == "pair_list"
-    assert restored.column == "val"
-    assert restored.pair_val_a == "N"
-    assert restored.pair_val_b == "No"
+    assert restored.screen == "roster"
     assert restored.last_pair == last
+    # pair_list + last_pair for that column focuses the pair
+    place_pl = Place(screen="pair_list", column="val", last_pair=last)
+    eng.export_zip(str(z), place_pl)
+    _loaded, restored_pl = Engine.from_session(str(z))
+    assert restored_pl.screen == "pair_list"
+    assert restored_pl.column == "val"
+    assert restored_pl.pair_val_a == "N"
+    assert restored_pl.pair_val_b == "No"
+    assert restored_pl.last_pair == last
     # cell-step in the zip maps to pair_list; drafts are not restored
     place2 = Place(screen="cell_step", column="val", last_pair=("val", "Y", "Yes"))
     eng.export_zip(str(z), place2)
