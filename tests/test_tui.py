@@ -1001,6 +1001,30 @@ def test_cell_a_after_uncheck_draft_n_matches_remaining(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_filter_focused_equals_inserts_equals(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            filt = app.query_one("#filter")
+            filt.focus()
+            await pilot.pause()
+            assert app.focused is filt
+            await pilot.press("=")
+            await pilot.pause()
+            assert filt.value == "="
+            assert not isinstance(app.screen, SentinelModal)
+            assert not app.draft_in_flight()
+            assert app.place.screen == "roster"
+
+    asyncio.run(_run())
+
+
 def test_uncheck_last_column_cancels_draft(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n")

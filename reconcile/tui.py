@@ -1653,6 +1653,8 @@ class ReconcileApp(App[int]):
         self.set_focus_work()
 
     def action_regex(self) -> None:
+        if self._in_input():
+            return
         if self.place.screen != "roster":
             self.set_error("ERROR: regex column draft is only on the roster")
             return
@@ -1675,6 +1677,8 @@ class ReconcileApp(App[int]):
         self.push_screen(RegexModal(), done)
 
     def action_sentinel(self) -> None:
+        if self._in_input():
+            return
         if self.place.screen != "roster":
             self.set_error("ERROR: exact sentinel is only on the roster")
             return
