@@ -488,3 +488,21 @@ def test_session_zip_restores_last_pair_focus(tmp_path: Path):
     assert restored2.pair_val_a == "Y"
     assert restored2.pair_val_b == "Yes"
     assert restored2.column == "val"
+
+
+def test_refresh_clears_stale_last_grain(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    n = eng.accept_cell(("1",), "val", "Y", "Yes")
+    eng.remember_grain(("cell", ("1",), "val"), n)
+    assert eng.last_grain is not None
+    write_csv(pa, "id,val\n1,Y2\n")
+    write_csv(pb, "id,val\n1,Yes2\n")
+    eng.refresh()
+    assert eng.last_grain is None
+    pending_before = eng.pending_cells_n()
+    undone = eng.undo_last_grain()
+    assert undone == 0
+    assert eng.pending_cells_n() == pending_before

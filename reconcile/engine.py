@@ -483,10 +483,65 @@ class Engine:
         g = self.last_grain
         if not g:
             return 0
-        n = self.undo_grain(g)
-        if n:
+        if not self.grain_still_applies(g):
             self.last_grain = None
+            return 0
+        n = self.undo_grain(g)
+        self.last_grain = None
         return n
+
+    def grain_still_applies(self, grain: tuple[Any, ...] | None) -> bool:
+        """True iff last_grain still matches a live accepted diff (not an orphan snap)."""
+        if not grain:
+            return False
+        kind = grain[0]
+        if kind == "column":
+            if self.accepted_cells.is_empty():
+                return False
+            return self.accepted_cells.filter(pl.col("column") == str(grain[1])).height > 0
+        if kind == "columns":
+            if self.accepted_cells.is_empty():
+                return False
+            names = [str(n) for n in grain[1:]]
+            if not names:
+                return False
+            return self.accepted_cells.filter(pl.col("column").is_in(names)).height > 0
+        if kind == "pair":
+            if self.accepted_cells.is_empty():
+                return False
+            return (
+                self.accepted_cells.filter(
+                    (pl.col("column") == str(grain[1]))
+                    & (pl.col("val_a") == str(grain[2]))
+                    & (pl.col("val_b") == str(grain[3]))
+                ).height
+                > 0
+            )
+        if kind == "cell":
+            key = grain[1]
+            if not isinstance(key, tuple) or self.accepted_cells.is_empty():
+                return False
+            expr = pl.col("column") == str(grain[2])
+            for k, v in zip(self.keys, key):
+                expr = expr & (pl.col(k) == v)
+            return self.accepted_cells.filter(expr).height > 0
+        if kind == "unmatched":
+            key = grain[2]
+            if not isinstance(key, tuple):
+                return False
+            frame = self.accepted_a_only if str(grain[1]) == "A" else self.accepted_b_only
+            if frame.is_empty():
+                return False
+            expr = pl.lit(True)
+            for k, v in zip(self.keys, key):
+                expr = expr & (pl.col(k) == v)
+            return frame.filter(expr).height > 0
+        if kind == "unmatched_all":
+            frame = self.accepted_a_only if str(grain[1]) == "A" else self.accepted_b_only
+            return frame.height > 0
+        if kind == "extra":
+            return (str(grain[1]), str(grain[2])) in self.accepted_extras
+        return False
 
     # --- next lever ---
 
@@ -625,6 +680,8 @@ class Engine:
             ),
         )
         self.last_refresh_delta = delta
+        if self.last_grain is not None and not self.grain_still_applies(self.last_grain):
+            self.last_grain = None
         return delta
 
     def prune_place(self, place: Place, pair_draft_active: bool = False) -> Place:

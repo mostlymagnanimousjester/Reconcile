@@ -24,7 +24,7 @@ Space  toggle focused column/cell in the current draft
 a      accept focused grain now (refused on Accepted / Equal / All matched)
 A      accept entire column (only when no pair draft) / all unmatched on this side
 y      confirm the live draft (column XOR pair cells; all-unchecked pair draft stays)
-u      undo focused grain. After next lever, u undoes that last accepted grain.
+u      undo last accept, then focused grain.
        Roster u on A-only / B-only undoes all unmatched on that side (same grain as roster a).
 U      undo entire column (cell step only)
 r      refresh (re-read live files; last good state on failure)
@@ -1388,19 +1388,86 @@ class ReconcileApp(App[int]):
     def action_undo(self) -> None:
         e = self.engine
         try:
-            n = self._undo_focused()
-            if n == 0 and e.last_grain is not None:
+            if e.last_grain is not None:
+                grain = e.last_grain
                 n = e.undo_last_grain()
-            elif n > 0:
-                e.last_grain = None
-            if n == 0:
-                raise InTuiError("ERROR: nothing snapshotted to undo")
+                if n == 0:
+                    raise InTuiError("ERROR: nothing snapshotted to undo")
+                self._focus_grain(grain)
+            else:
+                n = self._undo_focused()
+                if n == 0:
+                    raise InTuiError("ERROR: nothing snapshotted to undo")
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
             return
         self.render_all()
         self.set_focus_work()
+
+    def _focus_grain(self, grain: tuple[Any, ...]) -> None:
+        """After undo-last, stay/return to that grain if it still exists as a place."""
+        p = self.place
+        rf, lp = p.roster_filter, p.last_pair
+        kind = grain[0]
+        if kind == "cell":
+            key, col = grain[1], str(grain[2])
+            if p.screen == "cell_step" and p.column == col and isinstance(key, tuple):
+                self.place.focused_key = key
+                return
+            self.place = Place(
+                screen="pair_list",
+                column=col,
+                roster_filter=rf,
+                last_pair=lp,
+                focused_name=col,
+            )
+        elif kind == "pair":
+            col, va, vb = str(grain[1]), str(grain[2]), str(grain[3])
+            self.place = Place(
+                screen="pair_list",
+                column=col,
+                pair_val_a=va,
+                pair_val_b=vb,
+                roster_filter=rf,
+                last_pair=lp,
+                focused_name=col,
+            )
+        elif kind == "column":
+            col = str(grain[1])
+            self.place = Place(
+                screen="pair_list",
+                column=col,
+                roster_filter=rf,
+                last_pair=lp,
+                focused_name=col,
+            )
+        elif kind == "columns":
+            self.place = Place(screen="roster", roster_filter=rf, last_pair=lp)
+        elif kind == "unmatched":
+            side, key = str(grain[1]), grain[2]
+            self.place = Place(
+                screen="a_only" if side == "A" else "b_only",
+                roster_filter=rf,
+                last_pair=lp,
+                focused_key=key if isinstance(key, tuple) else None,
+            )
+        elif kind == "unmatched_all":
+            side = str(grain[1])
+            self.place = Place(
+                screen="a_only" if side == "A" else "b_only",
+                roster_filter=rf,
+                last_pair=lp,
+            )
+        elif kind == "extra":
+            self.place = Place(
+                screen="extras",
+                extra_side=str(grain[1]),
+                extra_name=str(grain[2]),
+                roster_filter=rf,
+                last_pair=lp,
+                focused_name=str(grain[2]),
+            )
 
     def action_undo_column(self) -> None:
         p = self.place

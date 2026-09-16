@@ -132,6 +132,7 @@ def test_help_power_user_grain():
     assert "column detail only" in HELP
     assert "A-only / B-only undoes all unmatched" in HELP
     assert "refused while a pair draft" in HELP
+    assert "undo last accept" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -722,5 +723,65 @@ def test_zip_restores_last_pair_focus(tmp_path: Path):
             assert "N" in pane
             assert "No" in pane
             assert app.engine.pair_draft_col is None
+
+    asyncio.run(_run())
+
+
+def test_unmatched_last_a_then_u_restores_that_key(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n2,b\n")
+    write_csv(pb, "id,val\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "a_only"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            app.action_accept()
+            await pilot.pause()
+            assert app.engine.pending_a_only_n() == 0
+            assert app.place.focused_key is None
+            app.action_undo()
+            await pilot.pause()
+            assert app.engine.pending_a_only_n() == 1
+            assert app.engine.pending_a_only.get_column("id").to_list() == ["2"]
+            assert app.engine.last_grain is None
+
+    asyncio.run(_run())
+
+
+def test_u_after_next_lever_prefers_last_grain_even_if_new_pair_has_snaps(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.accept_cell(("1",), "Flag", "1", "2")
+            app.engine.remember_grain(("cell", ("1",), "Flag"), n)
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.column == "Flag"
+            assert next(r for r in app.engine.roster() if r.name == "Status").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "Flag").accepted == 1
+            app.action_undo()
+            await pilot.pause()
+            assert next(r for r in app.engine.roster() if r.name == "Status").pending == 2
+            assert next(r for r in app.engine.roster() if r.name == "Flag").accepted == 1
+            assert app.engine.last_grain is None
 
     asyncio.run(_run())
