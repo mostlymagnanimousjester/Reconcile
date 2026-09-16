@@ -296,6 +296,40 @@ def test_roster_A_on_extra_accepts_like_a(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_n_after_cell_a_changes_page(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(250)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(250)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 250
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.place.page == 0
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.focused_key == ("001",)
+            assert app.place.page == 0
+            app.action_page_next()
+            await pilot.pause()
+            assert app.place.page == 1
+            footer = str(app.query_one("#footer").render())
+            assert "page 2/3" in footer
+
+    asyncio.run(_run())
+
+
 def test_cell_a_moves_cursor_and_page_to_focused_key(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))

@@ -762,6 +762,19 @@ class ReconcileApp(App[int]):
                 table.move_cursor(row=i)
                 return
 
+    def _follow_focused_key_page(self, lookup) -> None:
+        """Jump page from focused_key only when that key is not on the current page.
+
+        After an accept, the handler already sets page; this still lands a newly
+        assigned focused_key. n/p clear focused_key so render cannot yank back.
+        """
+        want = self.place.focused_key
+        if not want:
+            return
+        key_page, _ = lookup(want)
+        if key_page != self.place.page:
+            self.place.page = key_page
+
     def _cell_grid(self) -> Vertical:
         col = self.place.column or ""
         tab = self.place.view_tab
@@ -782,9 +795,7 @@ class ReconcileApp(App[int]):
         self._table_keys = []
         if self.place.screen == "cell_step":
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
-            if self.place.focused_key:
-                page, _ = self.engine.page_index_for_pair_key(self.place.focused_key)
-                self.place.page = page
+            self._follow_focused_key_page(self.engine.page_index_for_pair_key)
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
             self.place.page = page
             self._page_count = pages
@@ -863,9 +874,9 @@ class ReconcileApp(App[int]):
         return Vertical(Static(f"COLUMN {col}   {title}"), self._tab_bar(tab_current), table)
 
     def _unmatched(self, side: str) -> Vertical:
-        if self.place.focused_key:
-            page, _ = self.engine.page_index_for_unmatched_key(side, self.place.focused_key)
-            self.place.page = page
+        self._follow_focused_key_page(
+            lambda key: self.engine.page_index_for_unmatched_key(side, key)
+        )
         recs, page, pages = self.engine.unmatched_page(side, self.place.page)
         self.place.page = page
         self._page_count = pages
@@ -1421,11 +1432,14 @@ class ReconcileApp(App[int]):
 
     def action_page_next(self) -> None:
         self.place.page += 1
+        # Stop render from following the accepted row back onto its old page.
+        self.place.focused_key = None
         self.render_all()
         self.set_focus_work()
 
     def action_page_prev(self) -> None:
         self.place.page = max(0, self.place.page - 1)
+        self.place.focused_key = None
         self.render_all()
         self.set_focus_work()
 
