@@ -591,6 +591,8 @@ Shows:
 - Entry points: **A-only keys**, **B-only keys**, **Schema extras** (same lists as `Enter` from the matching roster row)
 - Speculative chips only as secondary, labeled `speculative`
 
+`a` / `A` on Overview: in-TUI ERROR (not remaining work), not a silent no-op.
+
 No separate biggest-lever widget. The roster’s first row is that lever.
 
 ### 15.2 Roster (home)
@@ -718,7 +720,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `/` | Roster: regex **column draft** (not the filter box). ERROR off roster |
 | `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
 | `c` | Context-column picker (cell step). ERROR off cell step |
-| `n` / `p` | Next/prev page |
+| `n` / `p` | Next/prev page on paged screens. Roster / Overview: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `e` | Export `.recon.zip` |
 | `o` | Open zip (refused if a draft is in flight) |
 | `q` | Quit; discard unconfirmed draft |

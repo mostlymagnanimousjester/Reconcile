@@ -1307,3 +1307,93 @@ def test_enter_cell_step_sets_focused_key(tmp_path: Path):
             assert app.engine.pair_draft_col == "Status"
 
     asyncio.run(_run())
+
+
+def test_overview_a_shows_error(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "overview"
+            pending = app.engine.pending_total()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "overview"
+            assert app.engine.pending_total() == pending
+            assert app.tui_error and "ERROR" in app.tui_error
+            await pilot.press("A")
+            await pilot.pause()
+            assert app.place.screen == "overview"
+            assert app.engine.pending_total() == pending
+            assert app.tui_error and "ERROR" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_n_on_roster_and_overview_does_not_bump_page(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.place.page == 0
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.place.page == 0
+            assert app.tui_error and "ERROR" in app.tui_error
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "overview"
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.place.screen == "overview"
+            assert app.place.page == 0
+            assert app.tui_error and "ERROR" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_last_page_n_stays_no_wrap(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.place.page == 1
+            footer = str(app.query_one("#footer").render())
+            assert "page 2/2" in footer
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.place.page == 1
+            assert app.place.screen == "cell_step"
+            assert app.tui_error and "last page" in app.tui_error
+
+    asyncio.run(_run())

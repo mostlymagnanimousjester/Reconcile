@@ -1212,7 +1212,7 @@ class ReconcileApp(App[int]):
         e = self.engine
         p = self.place
         try:
-            if p.screen in ("accepted", "equal", "all_matched"):
+            if p.screen in ("accepted", "equal", "all_matched", "overview"):
                 raise InTuiError("ERROR: not remaining work; switch to Pending")
             if p.screen == "roster":
                 row = self._focused_roster()
@@ -1333,8 +1333,8 @@ class ReconcileApp(App[int]):
         e = self.engine
         p = self.place
         try:
-            if p.screen in ("accepted", "equal", "all_matched"):
-                raise InTuiError("ERROR: switch to Pending to accept the column")
+            if p.screen in ("accepted", "equal", "all_matched", "overview"):
+                raise InTuiError("ERROR: not remaining work")
             if e.pair_draft_col is not None and p.screen in ("pair_list", "cell_step"):
                 raise InTuiError("ERROR: confirm or cancel the pair draft first")
             if e.column_draft and p.screen in ("pair_list", "cell_step"):
@@ -1639,16 +1639,38 @@ class ReconcileApp(App[int]):
         self.render_all()
         self.set_focus_work()
 
+    def _is_paged_screen(self) -> bool:
+        return self.place.screen in {
+            "pair_list",
+            "cell_step",
+            "accepted",
+            "equal",
+            "all_matched",
+            "a_only",
+            "b_only",
+        }
+
     def action_page_next(self) -> None:
+        if not self._is_paged_screen():
+            self.set_error("ERROR: no pages on this screen")
+            return
+        if self.place.page + 1 >= self._page_count:
+            self.set_error("ERROR: last page")
+            return
         self.place.page += 1
         # Stop render from following the accepted row back onto its old page.
         self.place.focused_key = None
+        self.set_error(None)
         self.render_all()
         self.set_focus_work()
 
     def action_page_prev(self) -> None:
+        if not self._is_paged_screen():
+            self.set_error("ERROR: no pages on this screen")
+            return
         self.place.page = max(0, self.place.page - 1)
         self.place.focused_key = None
+        self.set_error(None)
         self.render_all()
         self.set_focus_work()
 
