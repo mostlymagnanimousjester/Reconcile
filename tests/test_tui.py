@@ -131,7 +131,7 @@ def test_help_xor_and_no_digit_tab_keys():
 
 def test_help_power_user_grain():
     assert "Overview Esc" in HELP
-    assert "cell step only" in HELP
+    assert "pair list only" in HELP or "pair-list only" in HELP
     assert "column detail only" in HELP
     assert "A-only / B-only undoes all unmatched" in HELP
     assert "refused while a pair draft" in HELP
@@ -910,6 +910,59 @@ def test_U_refused_during_pair_draft(tmp_path: Path):
             assert app.engine.pending_cells_n() == pending
             assert app.engine.accepted_cells.height == accepted
             assert app.tui_error and "pair draft" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_U_from_pair_list_undoes_column(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.accept_pair("val", "N", "No")
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.engine.accepted_cells.height == 1
+            await pilot.press("U")
+            await pilot.pause()
+            assert app.engine.accepted_cells.height == 0
+            assert next(r for r in app.engine.roster() if r.name == "val").pending == 2
+            assert app.place.screen == "pair_list"
+            assert app.engine.pair_draft_col is None
+            footer = str(app.query_one("#footer").render())
+            assert "U column" in footer
+
+    asyncio.run(_run())
+
+
+def test_cell_step_footer_does_not_advertise_U(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "U column" not in footer
+            assert "cell step" in footer
 
     asyncio.run(_run())
 

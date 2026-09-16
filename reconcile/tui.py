@@ -26,7 +26,7 @@ A      accept entire column (only when no pair draft) / all unmatched on this si
 y      confirm the live draft (column XOR pair cells; all-unchecked pair draft stays)
 u      undo last accept, then focused grain.
        Roster u on A-only / B-only undoes all unmatched on that side (same grain as roster a).
-U      undo entire column (cell step only)
+U      undo entire column (pair list only; refused while a pair draft is in flight)
 r      refresh (re-read live files; last good state on failure)
 .      repeat last pair as a new draft (column detail only: pair list / cell step)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
@@ -40,7 +40,7 @@ At most one draft: column (roster / regex, = sentinel) XOR pair cells (cell step
 A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
-U is cell-step only. . is column detail only. Overview Esc returns to the roster.
+U is pair-list only. . is column detail only. Overview Esc returns to the roster.
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 
 This TUI never writes, opens, or copies into the source files.
@@ -543,7 +543,7 @@ class ReconcileApp(App[int]):
         p = self.place
         e = self.engine
         if p.screen == "cell_step" and e.pair_draft_col is not None:
-            return "Space toggle  y confirm  Esc cancel  a cell  c context  U column  ? help  q quit"
+            return "Space toggle  y confirm  Esc cancel  a cell  c context  ? help  q quit"
         if e.column_draft and p.screen == "roster":
             return "Space toggle  y confirm  Esc cancel  a grain  ? help  q quit"
         if e.column_draft:
@@ -554,9 +554,9 @@ class ReconcileApp(App[int]):
                 "/ regex  = sentinel  Esc overview  ? help  q quit"
             )
         if p.screen == "pair_list":
-            return "Enter cells  a pair  A column  n/p page  Esc roster  ? help  q quit"
+            return "Enter cells  a pair  A column  U column  n/p page  Esc roster  ? help  q quit"
         if p.screen == "cell_step":
-            return "a cell  c context  U column  Esc pairs  ? help  q quit"
+            return "a cell  c context  Esc pairs  ? help  q quit"
         if p.screen in ("accepted", "equal", "all_matched"):
             return "n/p page  Esc roster  ? help  q quit"
         if p.screen in ("a_only", "b_only"):
@@ -595,7 +595,7 @@ class ReconcileApp(App[int]):
         # Esc on pair list does not cancel a column draft — don't claim it does.
         if p.screen == "cell_step" and e.pair_draft_col is not None:
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
-            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context  U column")
+            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
         elif e.column_draft and p.screen == "roster":
             bits.append(f"draft {e.column_draft_n()}  y confirm  Esc cancel  Space toggle")
         elif e.column_draft:
@@ -1577,14 +1577,14 @@ class ReconcileApp(App[int]):
 
     def action_undo_column(self) -> None:
         p = self.place
-        if p.screen != "cell_step":
-            self.set_error("ERROR: U undoes the entire column on the cell step only")
-            return
-        if not p.column:
-            self.set_error("ERROR: U undoes the entire column on the cell step only")
-            return
         if self.engine.pair_draft_col is not None:
             self.set_error("ERROR: confirm or cancel the pair draft first")
+            return
+        if p.screen != "pair_list":
+            self.set_error("ERROR: U undoes the entire column on the pair list only")
+            return
+        if not p.column:
+            self.set_error("ERROR: U undoes the entire column on the pair list only")
             return
         n = self.engine.undo_column(p.column)
         if n == 0:
