@@ -475,7 +475,14 @@ class ReconcileApp(App[int]):
             return False
         return True
 
+    def _modal_active(self) -> bool:
+        return isinstance(self.screen, ModalScreen)
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # App enter/escape are priority=True so they otherwise steal every modal.
+        # Disabled bindings are skipped; the modal's Esc/Enter then run.
+        if action in {"drill", "back"} and self._modal_active():
+            return False
         if self._in_input() and action not in {"back", "drill"}:
             return False
         return True

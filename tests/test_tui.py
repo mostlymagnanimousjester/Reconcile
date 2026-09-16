@@ -4,7 +4,7 @@ from pathlib import Path
 from textual.widgets import Button
 
 from reconcile.engine import Engine, Place
-from reconcile.tui import HELP, ContextModal, ReconcileApp, SentinelModal
+from reconcile.tui import HELP, ContextModal, HelpModal, ReconcileApp, RegexModal, SentinelModal
 from tests.xlsxutil import write_csv
 
 
@@ -938,5 +938,105 @@ def test_uncheck_last_column_cancels_draft(tmp_path: Path):
             await pilot.pause()
             assert app.engine.pending_cells_n() == pending
             assert app.place.screen == "roster"
+
+    asyncio.run(_run())
+
+
+def test_regex_modal_escape_closes_without_app_back(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.pause()
+            assert isinstance(app.screen, RegexModal)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, RegexModal)
+            assert app.place.screen == "roster"
+            assert not app.draft_in_flight()
+
+    asyncio.run(_run())
+
+
+def test_regex_modal_enter_runs(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.pause()
+            assert isinstance(app.screen, RegexModal)
+            app.screen.query_one("#pat").value = "Status"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not isinstance(app.screen, RegexModal)
+            assert app.place.screen == "roster"
+            assert app.engine.column_draft == {"Status"}
+
+    asyncio.run(_run())
+
+
+def test_help_escape_closes_help_stays_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert isinstance(app.screen, HelpModal)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, HelpModal)
+            assert app.place.screen == "roster"
+
+    asyncio.run(_run())
+
+
+def test_context_escape_closes_picker_keeps_cell_step_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ContextModal)
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "Status"
 
     asyncio.run(_run())
