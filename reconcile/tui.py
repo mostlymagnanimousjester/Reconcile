@@ -1277,6 +1277,7 @@ class ReconcileApp(App[int]):
                     key = e.key_of(rec)
                     n = e.accept_cell(key, p.column, rec["val_a"], rec["val_b"])
                     e.remember_grain(("cell", key, p.column), n)
+                    self.pair_draft_unchecked.discard(key)
                     nxt = e.next_pending_cell_in_pair(key)
                     if nxt is None:
                         e.clear_pair_draft()

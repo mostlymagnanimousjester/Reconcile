@@ -967,6 +967,40 @@ def test_cell_step_footer_does_not_advertise_U(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_cell_a_after_uncheck_draft_n_matches_remaining(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n3,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 3
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("1",)
+            app.pair_draft_unchecked = {("1",)}
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "draft 2" in footer
+            app.query_one("#grid").focus()
+            await pilot.press("a")
+            await pilot.pause()
+            assert ("1",) not in app.pair_draft_unchecked
+            assert app.engine.pair_draft_height() == 2
+            footer = str(app.query_one("#footer").render())
+            assert "draft 2" in footer
+            assert app.engine.pending_cells_n() == 2
+
+    asyncio.run(_run())
+
+
 def test_uncheck_last_column_cancels_draft(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n")
