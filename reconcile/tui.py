@@ -28,7 +28,7 @@ u      undo last accept, then focused grain.
        Roster u on A-only / B-only undoes all unmatched on that side (same grain as roster a).
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 r      refresh (re-read live files; last good state on failure)
-.      repeat last pair as a new draft (column detail only: pair list / cell step)
+.      last pair: cell-step if already on that column's pair list; else that pair on its pair list (column detail only)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
 c      context-column picker (cell step)
 n / p  next / previous page
@@ -204,6 +204,9 @@ def _diff_text(label: str, value: str, other: str, first: int) -> Text:
     t = Text()
     if label:
         t.append(f"{label} ", style="bold")
+    if not value:
+        t.append(_display_text(value))
+        return t
     t.append(value[:first])
     if first < len(value):
         t.append(value[first], style="reverse bold")
@@ -838,8 +841,8 @@ class ReconcileApp(App[int]):
             tags = ", ".join(self.engine.cell_insights(va, vb))
             returned = self.engine.pair_has_returned(col, va, vb)
             style = "reverse" if returned else "bold"
-            label_a = Text(va, style=style)
-            label_b = Text(vb, style=style)
+            label_a = Text(_display_text(va), style=style)
+            label_b = Text(_display_text(vb), style=style)
             table.add_row(label_a, label_b, str(rec["n"]), tags)
             self._table_keys.append(rec)
             if want_a is not None and va == want_a and vb == want_b:
@@ -1742,6 +1745,18 @@ class ReconcileApp(App[int]):
         if col not in e.comparable:
             self.set_error("ERROR: last-pair column is gone")
             self.render_all()
+            return
+        if not (p.screen == "pair_list" and p.column == col):
+            landed = e.place_from_last_pair(lp, roster_filter=p.roster_filter)
+            if landed is None:
+                self.place = e.next_lever_place(
+                    Place(column=col, roster_filter=p.roster_filter, last_pair=lp)
+                )
+            else:
+                self.place = landed
+            self.set_error(None)
+            self.render_all()
+            self.set_focus_work()
             return
         try:
             n = e.start_pair_draft(col, va, vb)

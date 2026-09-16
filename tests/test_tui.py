@@ -1397,3 +1397,82 @@ def test_last_page_n_stays_no_wrap(tmp_path: Path):
             assert app.tui_error and "last page" in app.tui_error
 
     asyncio.run(_run())
+
+
+def test_dot_from_other_column_pair_list_focuses_last_pair(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,N,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,No,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.last_pair = ("Status", "Y", "Yes")
+            app.place.screen = "pair_list"
+            app.place.column = "Flag"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press(".")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            assert app.place.pair_val_a == "Y"
+            assert app.place.pair_val_b == "Yes"
+            assert app.engine.pair_draft_col is None
+            pane = str(app.query_one("#pane").render())
+            assert "Y" in pane
+            assert "Yes" in pane
+
+    asyncio.run(_run())
+
+
+def test_dot_on_same_column_pair_list_starts_cell_step(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.last_pair = ("val", "Y", "Yes")
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press(".")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.place.pair_val_a == "Y"
+            assert app.place.pair_val_b == "Yes"
+
+    asyncio.run(_run())
+
+
+def test_empty_pair_values_show_empty_marker(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,\n")
+    write_csv(pb, "id,val\n1,x\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            table = app.query_one("#grid")
+            row = table.get_row_at(0)
+            assert "(empty)" in str(row[0])
+            pane = str(app.query_one("#pane").render())
+            assert "(empty)" in pane
+
+    asyncio.run(_run())
