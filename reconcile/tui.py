@@ -376,7 +376,7 @@ class ContextModal(ModalScreen[list[str] | None]):
             mark = "[x]" if n in self.selected else "[ ]"
             table.add_row(mark, n, key=n)
 
-    def _name(self) -> str | None:
+    def _focused_column(self) -> str | None:
         table = self.query_one("#ctx", DataTable)
         if not self.names:
             return None
@@ -384,7 +384,7 @@ class ContextModal(ModalScreen[list[str] | None]):
         return str(row[1])
 
     def action_toggle(self) -> None:
-        name = self._name()
+        name = self._focused_column()
         if not name:
             return
         if name in self.selected:

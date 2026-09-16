@@ -1040,3 +1040,36 @@ def test_context_escape_closes_picker_keeps_cell_step_draft(tmp_path: Path):
             assert app.engine.pair_draft_col == "Status"
 
     asyncio.run(_run())
+
+
+def test_context_modal_space_toggles_without_typeerror(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ContextModal)
+            assert "Flag" not in modal.selected
+            await pilot.press("space")
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            assert "Flag" in modal.selected
+            await pilot.press("space")
+            await pilot.pause()
+            assert "Flag" not in modal.selected
+
+    asyncio.run(_run())
