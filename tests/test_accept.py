@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from reconcile.engine import Engine, InTuiError, Place
+from reconcile.errors import HardFail
 from tests.xlsxutil import write_csv
 
 
@@ -348,6 +349,20 @@ def test_session_place_restored(tmp_path: Path):
     loaded, restored = Engine.from_session(str(z))
     assert restored.column == "val"
     assert restored.roster_filter == "val"
+
+
+def test_session_keys_only_manifest_hard_fail(tmp_path: Path):
+    import json
+    import zipfile
+
+    z = tmp_path / "keys-only.recon.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"keys": ["id"]}))
+    with pytest.raises(HardFail) as ei:
+        Engine.from_session(str(z))
+    msg = ei.value.message
+    assert str(z.resolve()) in msg or str(z) in msg
+    assert "a_path" in msg or "schema_version" in msg or "missing" in msg.lower()
 
 
 def test_session_zip_roundtrip(tmp_path: Path):

@@ -1329,6 +1329,7 @@ def test_overview_a_shows_error(tmp_path: Path):
             assert app.place.screen == "overview"
             assert app.engine.pending_total() == pending
             assert app.tui_error and "ERROR" in app.tui_error
+            assert "Pending" not in app.tui_error
             await pilot.press("A")
             await pilot.pause()
             assert app.place.screen == "overview"
@@ -1506,6 +1507,60 @@ def test_enter_on_extra_from_roster_does_not_crash(tmp_path: Path):
             await pilot.press("enter")
             await pilot.pause()
             assert app.place.screen == "extras"
+
+    asyncio.run(_run())
+
+
+def test_enter_on_zzz_extra_then_a_snaps_zzz_not_aaa(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,aaa,zzz\n1,a,1,2\n")
+    write_csv(pb, "id,val\n1,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.focused_name = "zzz"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            row = app._focused_roster()
+            assert row is not None and row.kind == "extra" and row.name == "zzz"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "extras"
+            assert app.place.extra_name == "zzz"
+            rec = app._focused_rec()
+            assert rec is not None and rec["name"] == "zzz"
+            await pilot.press("a")
+            await pilot.pause()
+            assert ("A", "zzz") in app.engine.accepted_extras
+            assert ("A", "aaa") in app.engine.pending_extras
+
+    asyncio.run(_run())
+
+
+def test_zip_restore_extras_focus(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,aaa,zzz\n1,a,1,2\n")
+    write_csv(pb, "id,val\n1,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    z = tmp_path / "job.recon.zip"
+    eng.export_zip(
+        str(z),
+        Place(screen="extras", extra_side="A", extra_name="zzz"),
+    )
+    loaded, place = Engine.from_session(str(z))
+    app = ReconcileApp(loaded, place)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.place.screen == "extras"
+            assert app.place.extra_name == "zzz"
+            rec = app._focused_rec()
+            assert rec is not None and rec["name"] == "zzz" and rec["side"] == "A"
 
     asyncio.run(_run())
 

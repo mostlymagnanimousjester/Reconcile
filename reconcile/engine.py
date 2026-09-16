@@ -806,9 +806,28 @@ class Engine:
             man = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise HardFail(f"Invalid manifest.json in {path}") from exc
-        keys = list(man.get("keys") or [])
-        if not keys:
+        if not isinstance(man, dict):
+            raise HardFail(f"Invalid manifest.json in {path}")
+        schema_ver = man.get("schema_version")
+        if schema_ver is None:
+            raise HardFail(f"Session {path} missing schema_version")
+        if schema_ver != SCHEMA_VERSION:
+            raise HardFail(
+                f"Session {path} has unsupported schema_version {schema_ver!r} "
+                f"(expected {SCHEMA_VERSION})"
+            )
+        raw_keys = man.get("keys")
+        if not isinstance(raw_keys, list) or not raw_keys:
             raise HardFail(f"Session {path} has no keys")
+        keys = [str(k) for k in raw_keys]
+        if any(k == "" for k in keys):
+            raise HardFail(f"Session {path} has no keys")
+        a_path = man.get("a_path")
+        b_path = man.get("b_path")
+        if not isinstance(a_path, str) or not a_path:
+            raise HardFail(f"Session {path} missing a_path")
+        if not isinstance(b_path, str) or not b_path:
+            raise HardFail(f"Session {path} missing b_path")
         a_det = man.get("a_detection") or {}
         b_det = man.get("b_detection") or {}
         a_delim = a_det.get("delimiter") if a_det else None
@@ -816,8 +835,8 @@ class Engine:
         a_encoding = a_det.get("encoding") if a_det else None
         b_encoding = b_det.get("encoding") if b_det else None
         eng = cls.from_paths(
-            man["a_path"],
-            man["b_path"],
+            a_path,
+            b_path,
             keys,
             man.get("a_sheet"),
             man.get("b_sheet"),

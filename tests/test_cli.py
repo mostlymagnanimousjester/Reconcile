@@ -1,3 +1,5 @@
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -102,6 +104,22 @@ def test_cli_missing_delim_exit_2(tmp_path: Path, capsys):
     err = capsys.readouterr().err
     assert "--a-delim" in err
     assert str(a.resolve()) in err
+
+
+def test_cli_session_keys_only_manifest_hard_fail(tmp_path: Path, capsys):
+    z = tmp_path / "keys-only.recon.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"keys": ["id"]}))
+    code = main(["--session", str(z)])
+    captured = capsys.readouterr()
+    err = captured.err
+    assert code == 2
+    assert err.strip()
+    assert "Traceback" not in err
+    assert "Traceback" not in captured.out
+    assert str(z.resolve()) in err or str(z) in err
+    lower = err.lower()
+    assert "schema_version" in lower or "a_path" in lower or "missing" in lower
 
 
 def test_cli_mix_session_exit_2(tmp_path: Path, capsys):

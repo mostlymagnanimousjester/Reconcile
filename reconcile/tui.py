@@ -1032,6 +1032,17 @@ class ReconcileApp(App[int]):
                     ", ".join(rec["speculative"]),
                 )
                 self._table_keys.append(rec)
+            idx = 0
+            want_side, want_name = self.place.extra_side, self.place.extra_name
+            if want_name:
+                for i, rec in enumerate(rows):
+                    if rec["name"] != want_name:
+                        continue
+                    if want_side and rec["side"] != want_side:
+                        continue
+                    idx = i
+                    break
+            table.move_cursor(row=idx)
         return Vertical(
             Static("Schema extras  (exact header + side)"),
             table,
@@ -1223,7 +1234,9 @@ class ReconcileApp(App[int]):
         e = self.engine
         p = self.place
         try:
-            if p.screen in ("accepted", "equal", "all_matched", "overview"):
+            if p.screen == "overview":
+                raise InTuiError("ERROR: not remaining work")
+            if p.screen in ("accepted", "equal", "all_matched"):
                 raise InTuiError("ERROR: not remaining work; switch to Pending")
             if p.screen == "roster":
                 row = self._focused_roster()
