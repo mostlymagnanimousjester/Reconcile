@@ -381,3 +381,39 @@ def test_session_zip_from_relative_paths_is_absolute(tmp_path: Path, monkeypatch
     loaded, _place = Engine.from_session("job.recon.zip")
     assert loaded.a.path == man["a_path"]
     assert loaded.b.path == man["b_path"]
+
+
+def test_context_columns_attached_after_slice(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,val,other\n" + "".join(f"{i:03d},Y,A{i:03d}\n" for i in range(120)),
+    )
+    write_csv(
+        pb,
+        "id,val,other\n" + "".join(f"{i:03d},Yes,B{i:03d}\n" for i in range(120)),
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["other"]
+    recs, page, pages = eng.pair_cells_page("val", "Y", "Yes", 1)
+    assert page == 1
+    assert pages == 2
+    assert len(recs) == 20
+    assert recs[0]["other__ctx_a"] == "A100"
+    assert recs[0]["other__ctx_b"] == "B100"
+    recs0, _, _ = eng.cells_for_tab("val", "pending", 0)
+    assert recs0[0]["other__ctx_a"] == "A000"
+
+
+def test_pair_returned_is_per_pair_not_whole_column(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n3,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.accept_pair("val", "Y", "Yes")
+    write_csv(pa, "id,val\n1,Y2\n2,Y2\n3,N\n")
+    write_csv(pb, "id,val\n1,Yes2\n2,Yes2\n3,No\n")
+    eng.refresh()
+    assert eng.pair_has_returned("val", "Y2", "Yes2")
+    assert not eng.pair_has_returned("val", "N", "No")
+    assert eng.column_has_returned("val")

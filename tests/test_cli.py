@@ -334,3 +334,37 @@ def test_cli_missing_relative_shows_absolute(
     assert code == 2
     err = capsys.readouterr().err
     assert str((tmp_path / "missing.csv").resolve()) in err
+
+
+def test_cli_textual_cannot_start_only_for_import_or_construct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    a.write_text("id,val\n1,a\n", encoding="utf-8")
+    b.write_text("id,val\n1,b\n", encoding="utf-8")
+    args = ["--a", str(a), "--b", str(b), "--keys", "id"]
+
+    class BoomConstruct:
+        def __init__(self, *a, **k):
+            raise RuntimeError("no tty")
+
+    import reconcile.tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "ReconcileApp", BoomConstruct)
+    assert main(args) == 2
+    err = capsys.readouterr().err
+    assert "Textual cannot start" in err
+
+    class BoomRun:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self):
+            raise RuntimeError("run exploded")
+
+    monkeypatch.setattr(tui_mod, "ReconcileApp", BoomRun)
+    with pytest.raises(RuntimeError, match="run exploded"):
+        main(args)
+    err = capsys.readouterr().err
+    assert "Textual cannot start" not in err

@@ -85,6 +85,26 @@ Screen {
     height: 3;
     padding: 0 1;
 }
+Button {
+    background: #5a4030;
+    color: #fff8e8;
+    border: tall #8a6040;
+}
+Button:hover, Button:focus, Button.-active {
+    background: #6a5040;
+    color: #fff8e8;
+    border: tall #c08040;
+}
+Button.-primary, Button.primary {
+    background: #5a4030;
+    color: #fff8e8;
+    border: tall #c08040;
+}
+#tabs Button {
+    background: #3a2a18;
+    color: #ffe566;
+    border: tall #8a6040;
+}
 DataTable {
     height: 1fr;
 }
@@ -134,17 +154,14 @@ DataTable > .datatable--cursor {
 """
 
 
-def _diff_text(label: str, value: str, other: str) -> Text:
+def _diff_text(label: str, value: str, other: str, first: int) -> Text:
     t = Text()
-    t.append(f"{label} ", style="bold")
-    i = 0
-    n = min(len(value), len(other))
-    while i < n and value[i] == other[i]:
-        i += 1
-    t.append(value[:i])
-    if i < len(value):
-        t.append(value[i], style="reverse bold")
-        t.append(value[i + 1 :])
+    if label:
+        t.append(f"{label} ", style="bold")
+    t.append(value[:first])
+    if first < len(value):
+        t.append(value[first], style="reverse bold")
+        t.append(value[first + 1 :])
     elif len(value) != len(other):
         t.append("∎", style="reverse bold")
     return t
@@ -352,6 +369,7 @@ class ReconcileApp(App[int]):
         self._roster_index = 0
         self._table_keys: list[Any] = []
         self._mounted_screen: str | None = None
+        self._page_count = 1
 
     def draft_in_flight(self) -> bool:
         return self.engine.draft_in_flight()
@@ -431,6 +449,31 @@ class ReconcileApp(App[int]):
         row = self.query_one("#filter-row")
         row.display = self.place.screen == "roster"
 
+    def _now_keys(self) -> str:
+        p = self.place
+        e = self.engine
+        if p.screen == "cell_step" and e.pair_draft_col is not None:
+            return "Space toggle  y confirm  Esc cancel  a cell  A column  ? help  q quit"
+        if e.column_draft and p.screen == "roster":
+            return "Space toggle  y confirm  Esc cancel  a grain  ? help  q quit"
+        if e.column_draft:
+            return "y roster  Esc cancel draft  ? help  q quit"
+        if p.screen == "roster":
+            return "Enter drill  a grain  A column  / regex  = sentinel  Esc overview  ? help  q quit"
+        if p.screen == "pair_list":
+            return "Enter cells  a pair  A column  n/p page  Esc roster  ? help  q quit"
+        if p.screen == "cell_step":
+            return "a cell  A column  c context  Esc pairs  ? help  q quit"
+        if p.screen in ("accepted", "equal", "all_matched"):
+            return "A column  n/p page  Esc roster  ? help  q quit"
+        if p.screen in ("a_only", "b_only"):
+            return "a key  A all  n/p page  Esc roster  ? help  q quit"
+        if p.screen == "extras":
+            return "a extra  Esc roster  ? help  q quit"
+        if p.screen == "overview":
+            return "Enter list  Esc roster  ? help  q quit"
+        return "? help  q quit"
+
     def _render_footer(self) -> None:
         e = self.engine
         p = self.place
@@ -465,7 +508,7 @@ class ReconcileApp(App[int]):
             "a_only",
             "b_only",
         }:
-            bits.append(f"page {p.page + 1}")
+            bits.append(f"page {p.page + 1}/{self._page_count}")
         if e.last_refresh_delta:
             bits.append(e.last_refresh_delta.message)
         spec = ""
@@ -473,7 +516,7 @@ class ReconcileApp(App[int]):
             tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
             if tags:
                 spec = "  " + ", ".join(tags)
-        hint = "  ? help  q quit"
+        hint = "  " + self._now_keys()
         self.query_one("#footer", Static).update(" · ".join(bits) + spec + hint)
 
     def _render_pane(self) -> None:
@@ -488,10 +531,11 @@ class ReconcileApp(App[int]):
                 pair = (p.pair_val_a, p.pair_val_b or "")
         if pair is not None:
             va, vb = pair
+            first = self.engine.first_diff(va, vb)
             t = Text()
-            t.append_text(_diff_text("A:", va, vb))
+            t.append_text(_diff_text("A:", va, vb, first))
             t.append("\n")
-            t.append_text(_diff_text("B:", vb, va))
+            t.append_text(_diff_text("B:", vb, va, first))
             if p.screen == "cell_step" and p.column:
                 ctx = self.engine.context_values(p.focused_key or (), p.column)
                 for name, a, b in ctx:
@@ -641,6 +685,7 @@ class ReconcileApp(App[int]):
         table.add_columns("A", "B", "pending", "speculative")
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
+        self._page_count = pages
         self._table_keys = []
         if not recs:
             table.add_row("(no pending pairs)", "", "0", "")
@@ -651,7 +696,7 @@ class ReconcileApp(App[int]):
         for i, rec in enumerate(recs):
             va, vb = rec["val_a"], rec["val_b"]
             tags = ", ".join(self.engine.cell_insights(va, vb))
-            returned = self.engine.column_has_returned(col)
+            returned = self.engine.pair_has_returned(col, va, vb)
             label_a = Text(va, style="reverse" if returned else "bold")
             table.add_row(label_a, vb, str(rec["n"]), tags)
             self._table_keys.append(rec)
@@ -681,7 +726,12 @@ class ReconcileApp(App[int]):
             "all_matched": "All matched",
         }.get(tab, tab)
         table: DataTable = DataTable(cursor_type="row", id="grid")
-        headers = [*self.engine.keys, "A", "B", "speculative"]
+        ctx_names = [
+            n
+            for n in self.engine.context_columns.get(col, [])
+            if n in self.engine.context_pool and n != col
+        ]
+        headers = [*self.engine.keys, "A", "B", *ctx_names, "speculative"]
         table.add_columns(*headers)
         self._table_keys = []
         if self.place.screen == "cell_step":
@@ -691,12 +741,19 @@ class ReconcileApp(App[int]):
                 self.place.page = page
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
             self.place.page = page
+            self._page_count = pages
             draft = self.engine.pair_draft_col is not None
             if not recs:
-                table.add_row(*([""] * (len(self.engine.keys) + 2)), "(no pending cells for this pair)")
+                table.add_row(*([""] * (len(headers) - 1)), "(no pending cells for this pair)")
                 self._table_keys = [None]
             else:
-                for rec in recs:
+                focus_i = 0
+                if self.place.focused_key:
+                    for i, rec in enumerate(recs):
+                        if self.engine.key_of(rec) == self.place.focused_key:
+                            focus_i = i
+                            break
+                for i, rec in enumerate(recs):
                     key = self.engine.key_of(rec)
                     mark = ""
                     if draft:
@@ -704,27 +761,56 @@ class ReconcileApp(App[int]):
                     returned = self.engine.cell_is_returned(key, col)
                     tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                     key_cells = [str(rec[k]) for k in self.engine.keys]
-                    va_t = Text(
-                        mark + rec["val_a"],
-                        style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
-                    )
-                    table.add_row(*key_cells, va_t, rec["val_b"], tags)
+                    ctx_cells = [
+                        f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+                        for n in ctx_names
+                    ]
+                    if i == focus_i:
+                        fd = self.engine.first_diff(rec["val_a"], rec["val_b"])
+                        va_t = Text(mark)
+                        va_t.append_text(_diff_text("", rec["val_a"], rec["val_b"], fd))
+                        vb_t = _diff_text("", rec["val_b"], rec["val_a"], fd)
+                    else:
+                        va_t = Text(
+                            mark + rec["val_a"],
+                            style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
+                        )
+                        vb_t = rec["val_b"]
+                    table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
                     self._table_keys.append(rec)
                 self._move_cursor_to_focused_key(table)
         else:
             recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
             self.place.page = page
+            self._page_count = pages
             if not recs:
-                table.add_row(*([""] * (len(self.engine.keys) + 2)), "(empty)")
+                table.add_row(*([""] * (len(headers) - 1)), "(empty)")
                 self._table_keys = [None]
             else:
-                for rec in recs:
+                focus_i = 0
+                if self.place.focused_key:
+                    for i, rec in enumerate(recs):
+                        if self.engine.key_of(rec) == self.place.focused_key:
+                            focus_i = i
+                            break
+                for i, rec in enumerate(recs):
                     tags = ""
                     if rec.get("val_a") != rec.get("val_b"):
                         tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                     key_cells = [str(rec[k]) for k in self.engine.keys]
-                    style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
-                    table.add_row(*key_cells, Text(str(rec["val_a"]), style=style), str(rec["val_b"]), tags)
+                    ctx_cells = [
+                        f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+                        for n in ctx_names
+                    ]
+                    if i == focus_i and rec.get("val_a") != rec.get("val_b"):
+                        fd = self.engine.first_diff(str(rec["val_a"]), str(rec["val_b"]))
+                        va_t = _diff_text("", str(rec["val_a"]), str(rec["val_b"]), fd)
+                        vb_t = _diff_text("", str(rec["val_b"]), str(rec["val_a"]), fd)
+                    else:
+                        style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
+                        va_t = Text(str(rec["val_a"]), style=style)
+                        vb_t = str(rec["val_b"])
+                    table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
                     self._table_keys.append(rec)
                 self._move_cursor_to_focused_key(table)
         tab_current = tab if self.place.screen != "cell_step" else "pending"
@@ -736,6 +822,7 @@ class ReconcileApp(App[int]):
             self.place.page = page
         recs, page, pages = self.engine.unmatched_page(side, self.place.page)
         self.place.page = page
+        self._page_count = pages
         frame = self.engine.a_only if side == "A" else self.engine.b_only
         cols = list(frame.columns)
         table: DataTable = DataTable(cursor_type="row", id="grid")
@@ -1371,16 +1458,15 @@ class ReconcileApp(App[int]):
         p = self.place
         if not p.column:
             return
+        if self.engine.pair_draft_col is not None:
+            self.set_error("ERROR: confirm or cancel the pair draft first")
+            event.stop()
+            self._render_footer()
+            return
         if tab == "pending":
-            if p.screen == "cell_step":
-                self.engine.clear_pair_draft()
-                self.pair_draft_unchecked = set()
             self.place.view_tab = "pending"
             self.place.screen = "pair_list"
         else:
-            if p.screen == "cell_step":
-                self.engine.clear_pair_draft()
-                self.pair_draft_unchecked = set()
             self.place.view_tab = tab
             self.place.screen = tab  # accepted / equal / all_matched
         event.stop()
@@ -1398,21 +1484,3 @@ class ReconcileApp(App[int]):
                 self._render_footer()
                 if isinstance(focused, Input):
                     event.input.focus()
-
-    def on_key(self, event) -> None:
-        # Tab switching on column detail: 1 pending 2 accepted 3 equal 4 all
-        if self._in_input():
-            return
-        p = self.place
-        if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched") and event.character in "1234":
-            mapping = {"1": ("pending", "pair_list"), "2": ("accepted", "accepted"), "3": ("equal", "equal"), "4": ("all_matched", "all_matched")}
-            tab, screen = mapping[event.character]
-            if e_col := p.column:
-                if tab != "pending" and p.screen == "cell_step":
-                    self.engine.clear_pair_draft()
-                    self.pair_draft_unchecked = set()
-                self.place.view_tab = tab
-                self.place.screen = screen if tab != "pending" else "pair_list"
-                event.stop()
-                self.render_all()
-                self.set_focus_work()

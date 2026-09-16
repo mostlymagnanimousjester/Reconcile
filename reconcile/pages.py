@@ -32,6 +32,34 @@ def _page(frame: pl.DataFrame, page: int) -> tuple[list[dict[str, Any]], int, in
     return _page_dicts(chunk), page, pages
 
 
+def _attach_context(eng: Engine, chunk: pl.DataFrame, column: str) -> pl.DataFrame:
+    names = [
+        n
+        for n in eng.context_columns.get(column, [])
+        if n in eng.context_pool and n != column
+    ]
+    if not names or chunk.is_empty() or eng.matched_a.is_empty():
+        return chunk
+    a_sel = eng.matched_a.select(eng.keys + names).rename({n: f"{n}__ctx_a" for n in names})
+    b_sel = eng.matched_b.select(eng.keys + names).rename({n: f"{n}__ctx_b" for n in names})
+    out = chunk.join(a_sel, on=eng.keys, how="left").join(b_sel, on=eng.keys, how="left")
+    fills = [pl.col(f"{n}__ctx_a").fill_null("").cast(pl.Utf8) for n in names] + [
+        pl.col(f"{n}__ctx_b").fill_null("").cast(pl.Utf8) for n in names
+    ]
+    return out.with_columns(fills)
+
+
+def _page_with_context(
+    eng: Engine, frame: pl.DataFrame, page: int, column: str
+) -> tuple[list[dict[str, Any]], int, int]:
+    total = frame.height
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
+    chunk = _attach_context(eng, chunk, column)
+    return _page_dicts(chunk), page, pages
+
+
 def page_index_for_key(
     frame: pl.DataFrame,
     keys: list[str],
@@ -63,7 +91,7 @@ def pair_cells_page(
         & (pl.col("val_a") == val_a)
         & (pl.col("val_b") == val_b)
     ).sort(eng.keys)
-    return _page(frame, page)
+    return _page_with_context(eng, frame, page, column)
 
 
 def cells_for_tab(
@@ -88,7 +116,7 @@ def cells_for_tab(
             frame = a.join(b, on=eng.keys, how="inner")
     else:
         frame = eng.pending_cells.filter(pl.col("column") == column)
-    return _page(frame.sort(eng.keys), page)
+    return _page_with_context(eng, frame.sort(eng.keys), page, column)
 
 
 def unmatched_page(

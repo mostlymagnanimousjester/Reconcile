@@ -27,6 +27,31 @@ def first_diff(a: str, b: str) -> int:
     return n
 
 
+_POLARS_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%dT%H:%M:%S",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%Y%m%d",
+)
+
+
+def unambiguous_date_expr(col: str) -> pl.Expr:
+    """Polars equivalent of parse_unambiguous_date: one unique calendar date or null."""
+    parsed = [
+        pl.col(col).str.to_datetime(fmt, strict=False).dt.date()
+        for fmt in _POLARS_DATE_FORMATS
+    ]
+    lst = pl.concat_list(parsed).list.drop_nulls().list.unique()
+    return pl.when(lst.list.len() == 1).then(lst.list.first()).otherwise(pl.lit(None))
+
+
+def same_date_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    da = unambiguous_date_expr(col_a)
+    db = unambiguous_date_expr(col_b)
+    return da.is_not_null() & db.is_not_null() & (da == db)
+
+
 def parse_unambiguous_date(s: str):
     found: list = []
     for fmt in DATE_FORMATS:

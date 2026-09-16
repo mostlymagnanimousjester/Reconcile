@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.engine import Place, RosterRow
-from reconcile.insights import extra_insights
+from reconcile.insights import extra_insights, same_date_expr
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -62,6 +62,7 @@ def _roster_agg_maps(
                 | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
                 | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
             ).any().alias("ws"),
+            same_date_expr().any().alias("same_date"),
             pl.col("val_a").n_unique().alias("n_a"),
             pl.col("val_b").n_unique().alias("n_b"),
             pl.col("val_a").unique().sort().alias("ua"),
@@ -126,6 +127,8 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 tag_bits.append("speculative: equal as numbers")
             if st["ws"]:
                 tag_bits.append("speculative: invisible/odd whitespace")
+            if st["same_date"]:
+                tag_bits.append("speculative: same date")
             if st["pattern"] and n_a <= 6 and n_b <= 6:
                 tag_bits.append("speculative: shared value pattern")
             tags = ", ".join(tag_bits[:3])

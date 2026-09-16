@@ -159,10 +159,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from reconcile.tui import ReconcileApp
 
         app = ReconcileApp(engine, place)
-        result = app.run()
-        if result is None:
-            return 1 if engine.pending_total() else 0
-        return int(result)
     except InTuiError as exc:
         print(exc.message, file=sys.stderr)
         return 2
@@ -172,3 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(f"ERROR: Textual cannot start: {exc}", file=sys.stderr)
         return 2
+    result = app.run()
+    if result is None:
+        return 1 if engine.pending_total() else 0
+    return int(result)

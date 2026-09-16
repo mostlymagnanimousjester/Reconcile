@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+from textual.widgets import Button
+
 from reconcile.engine import Engine
 from reconcile.tui import HELP, ReconcileApp, SentinelModal
 from tests.xlsxutil import write_csv
@@ -43,7 +45,69 @@ def test_tui_launches_against_fixture(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_help_says_exact_sentinel_not_polars_selector():
+def test_footer_page_n_over_m(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n" + "".join(f"{i:03d},Y\n" for i in range(120)))
+    write_csv(pb, "id,val\n" + "".join(f"{i:03d},Yes\n" for i in range(120)))
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "page 1/2" in footer
+            app.action_page_next()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "page 2/2" in footer
+            assert "Enter cells" in footer or "a cell" in footer or "? help" in footer
+
+    asyncio.run(_run())
+
+
+def test_keys_1_to_4_do_not_switch_tabs(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("2")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("3")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 1
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#tab-accepted", Button).press()
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.tui_error and "pair draft" in app.tui_error
+
+    asyncio.run(_run())
     assert "Polars selector" not in HELP
     assert "exact sentinel" in HELP
     assert "regex column draft" in HELP

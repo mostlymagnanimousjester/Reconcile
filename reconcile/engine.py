@@ -268,6 +268,9 @@ class Engine:
     def cell_is_returned(self, key: tuple[str, ...], column: str) -> bool:
         return snaps_mod.cell_is_returned(self, key, column)
 
+    def pair_has_returned(self, column: str, val_a: str, val_b: str) -> bool:
+        return snaps_mod.pair_has_returned(self, column, val_a, val_b)
+
     def side_has_returned(self, side: str) -> bool:
         return snaps_mod.side_has_returned(self, side)
 
