@@ -36,11 +36,12 @@ e      export .recon.zip     o  open zip (refused while a draft is in flight)
 q      quit (discards unconfirmed draft)
 ?      this help
 
-At most one draft: column (roster / =) XOR pair cells (cell step).
+At most one draft: column (roster / regex, = sentinel) XOR pair cells (cell step).
 A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
 U is cell-step only. . is column detail only. Overview Esc returns to the roster.
+Long strings wrap in the footer pane (the grid is a one-line navigator).
 
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
@@ -76,7 +77,8 @@ Screen {
 }
 #pane {
     height: auto;
-    max-height: 8;
+    max-height: 24;
+    overflow-y: auto;
     padding: 0 1;
     color: #f4efe4;
     background: #22180f;
@@ -161,6 +163,20 @@ DataTable > .datatable--cursor {
     color: #8a8070;
 }
 """
+
+
+def _speculative_line(spec: str) -> str:
+    s = spec.strip()
+    if not s:
+        return ""
+    if "speculative" in s.lower():
+        return s
+    return f"speculative: {s}"
+
+
+def _display_text(value: str) -> str:
+    """Blank key/value cells stay visible in the pane and navigator."""
+    return value if value else "(empty)"
 
 
 def _key_tuples(frame: pl.DataFrame, keys: list[str]) -> set[tuple[str, ...]]:
@@ -540,6 +556,8 @@ class ReconcileApp(App[int]):
             bits.append(f"page {p.page + 1}/{self._page_count}")
         if e.last_refresh_delta:
             bits.append(e.last_refresh_delta.message)
+        if p.focused_key:
+            bits.append("key " + ", ".join(_display_text(x) for x in p.focused_key))
         spec = ""
         if p.screen in ("pair_list", "cell_step") and p.pair_val_a is not None:
             tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
@@ -577,7 +595,7 @@ class ReconcileApp(App[int]):
                 for name, val in rec.items():
                     if str(name).startswith("_"):
                         continue
-                    t.append(f"{name}: {val}\n")
+                    t.append(f"{name}: {_display_text(str(val))}\n")
                 pane.update(t)
             else:
                 pane.update("")
@@ -590,7 +608,8 @@ class ReconcileApp(App[int]):
                 t.append(f"Side {rec.get('side', '')}\n", style="bold")
                 t.append(str(rec.get("name", "")))
                 if spec:
-                    t.append(f"\nspeculative: {spec}", style="dim")
+                    line = _speculative_line(spec)
+                    t.append(f"\n{line}", style="dim")
                 pane.update(t)
             else:
                 pane.update("")
@@ -826,7 +845,7 @@ class ReconcileApp(App[int]):
                         mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
                     returned = self.engine.cell_is_returned(key, col)
                     tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
-                    key_cells = [str(rec[k]) for k in self.engine.keys]
+                    key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
                     ctx_cells = [
                         f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
                         for n in ctx_names
@@ -863,7 +882,7 @@ class ReconcileApp(App[int]):
                     tags = ""
                     if rec.get("val_a") != rec.get("val_b"):
                         tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
-                    key_cells = [str(rec[k]) for k in self.engine.keys]
+                    key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
                     ctx_cells = [
                         f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
                         for n in ctx_names
@@ -903,7 +922,14 @@ class ReconcileApp(App[int]):
                 style = "dim" if rec.get("_accepted") else "bold"
                 if rec.get("_returned"):
                     style = "reverse"
-                vals = [Text(str(rec[c]), style=style) for c in cols]
+                key_names = set(self.engine.keys)
+                vals = [
+                    Text(
+                        _display_text(str(rec[c])) if c in key_names else str(rec[c]),
+                        style=style,
+                    )
+                    for c in cols
+                ]
                 table.add_row(st, *vals)
                 self._table_keys.append(rec)
             self._move_cursor_to_focused_key(table)

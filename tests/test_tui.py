@@ -119,6 +119,9 @@ def test_help_says_exact_sentinel_not_polars_selector():
 def test_help_xor_and_no_digit_tab_keys():
     assert "column XOR pair" in HELP
     assert "No keys 1–4" in HELP or "No keys 1-4" in HELP
+    xor = next(line for line in HELP.splitlines() if "At most one draft" in line)
+    assert "/" in xor
+    assert "=" in xor
     lower = HELP.lower()
     assert "1 pending" not in lower
     assert "2 accepted" not in lower
