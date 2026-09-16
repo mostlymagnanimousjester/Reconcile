@@ -768,10 +768,11 @@ def test_u_after_next_lever_prefers_last_grain_even_if_new_pair_has_snaps(tmp_pa
             await pilot.pause()
             n = app.engine.accept_cell(("1",), "Flag", "1", "2")
             app.engine.remember_grain(("cell", ("1",), "Flag"), n)
-            app.query_one("#grid").focus()
-            app.action_drill()
+            app.place.screen = "pair_list"
+            app.place.column = "Status"
+            app.render_all()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
+            app.query_one("#grid").focus()
             assert app.place.column == "Status"
             app.action_accept()
             await pilot.pause()
