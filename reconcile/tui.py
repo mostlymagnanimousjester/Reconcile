@@ -347,7 +347,6 @@ class ReconcileApp(App[int]):
         super().__init__()
         self.engine = engine
         self.place = place or Place()
-        self.column_draft: set[str] = set()
         self.pair_draft_unchecked: set[tuple[str, ...]] = set()
         self.tui_error: str | None = None
         self._roster_index = 0
@@ -355,7 +354,7 @@ class ReconcileApp(App[int]):
         self._mounted_screen: str | None = None
 
     def draft_in_flight(self) -> bool:
-        return bool(self.column_draft) or self.engine.pair_draft_col is not None
+        return self.engine.draft_in_flight()
 
     def compose(self) -> ComposeResult:
         yield Static("", id="banner", classes="hidden")
@@ -434,8 +433,12 @@ class ReconcileApp(App[int]):
         ]
         if e.pending_total() == 0:
             bits[0] = "pending 0"
-        if self.column_draft:
-            bits.append(f"draft {len(self.column_draft)}  y confirm  Esc cancel  Space toggle")
+        # Live set only. Never show column-draft N on the cell step (pair XOR).
+        if p.screen == "cell_step" and e.pair_draft_col is not None:
+            n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
+            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
+        elif e.column_draft and p.screen != "cell_step":
+            bits.append(f"draft {e.column_draft_n()}  y confirm  Esc cancel  Space toggle")
         elif e.pair_draft_col is not None:
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
@@ -534,9 +537,9 @@ class ReconcileApp(App[int]):
             return
         for i, r in enumerate(rows):
             check = " "
-            if self.column_draft:
+            if self.engine.column_draft:
                 if r.kind == "column":
-                    check = "[x]" if r.name in self.column_draft else "[ ]"
+                    check = "[x]" if r.name in self.engine.column_draft else "[ ]"
             name = r.name
             styles = []
             if i == 0:
@@ -789,30 +792,11 @@ class ReconcileApp(App[int]):
             return rec["val_a"], rec["val_b"]
         return None
 
-    def _toggle_column_draft(self, name: str) -> None:
-        if not self.column_draft and self.engine.pair_draft_col is None:
-            return
-        if self.engine.pair_draft_col is not None:
-            return
-        if name not in self.engine.comparable:
-            return
-        if name in self.column_draft:
-            self.column_draft.discard(name)
-            return
-        pend = 0
-        for row in self.engine.roster():
-            if row.kind == "column" and row.name == name:
-                pend = row.pending
-                break
-        if pend > 0:
-            self.column_draft.add(name)
-
     def action_help(self) -> None:
         self.push_screen(HelpModal())
 
     def action_quit_app(self) -> None:
         self.engine.cancel_drafts()
-        self.column_draft = set()
         self.pair_draft_unchecked = set()
         code = 0 if self.engine.pending_total() == 0 else 1
         self.exit(code)
@@ -834,8 +818,8 @@ class ReconcileApp(App[int]):
                 last_pair=p.last_pair,
                 view_tab="pending",
             )
-        elif self.column_draft and p.screen == "roster":
-            self.column_draft = set()
+        elif self.engine.column_draft and p.screen == "roster":
+            self.engine.column_draft = set()
         elif p.screen in ("pair_list", "a_only", "b_only", "extras", "accepted", "equal", "all_matched"):
             self.place = Place(
                 screen="roster",
@@ -894,6 +878,8 @@ class ReconcileApp(App[int]):
                 else:
                     self.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
             elif p.screen == "pair_list":
+                if e.column_draft:
+                    raise InTuiError("ERROR: confirm or cancel the column draft first")
                 pair = self._focused_pair()
                 if not pair or not p.column:
                     return
@@ -925,7 +911,7 @@ class ReconcileApp(App[int]):
         if self.place.screen == "roster":
             row = self._focused_roster()
             if row and row.kind == "column":
-                self._toggle_column_draft(row.name)
+                self.engine.toggle_column_draft(row.name)
         elif self.place.screen == "cell_step":
             rec = self._focused_rec()
             if rec:
@@ -947,7 +933,6 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    self.column_draft.discard(row.name)
                     self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
@@ -961,6 +946,8 @@ class ReconcileApp(App[int]):
                         Place(screen="extras", extra_side=row.side, extra_name=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
                     )
             elif p.screen == "pair_list":
+                if e.column_draft:
+                    raise InTuiError("ERROR: confirm or cancel the column draft first")
                 pair = self._focused_pair()
                 if pair and p.column:
                     e.accept_pair(p.column, pair[0], pair[1])
@@ -1007,7 +994,6 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     e.accept_column(row.name)
-                    self.column_draft.discard(row.name)
                     self.place = e.next_lever_place(Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair))
                 elif row.kind == "A-only":
                     e.accept_all_unmatched("A")
@@ -1037,18 +1023,20 @@ class ReconcileApp(App[int]):
 
     def action_confirm(self) -> None:
         e = self.engine
+        p = self.place
         try:
-            if self.column_draft:
-                names = list(self.column_draft)
-                for name in names:
-                    e.accept_column(name)
-                self.column_draft = set()
-                self.place = e.next_lever_place(self.place)
-            elif e.pair_draft_col is not None:
+            if e.pair_draft_col is not None:
                 col = e.pair_draft_col
                 e.confirm_pair_draft(self.pair_draft_unchecked)
                 self.pair_draft_unchecked = set()
-                self.place = e.next_lever_place(Place(column=col, roster_filter=self.place.roster_filter, last_pair=self.place.last_pair))
+                self.place = e.next_lever_place(
+                    Place(column=col, roster_filter=p.roster_filter, last_pair=p.last_pair)
+                )
+            elif e.column_draft:
+                if p.screen != "roster":
+                    raise InTuiError("ERROR: confirm or cancel the column draft first")
+                e.confirm_column_draft()
+                self.place = e.next_lever_place(p)
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1103,12 +1091,6 @@ class ReconcileApp(App[int]):
     def action_refresh(self) -> None:
         try:
             self.engine.refresh()
-            if self.column_draft:
-                keep = set()
-                for row in self.engine.roster():
-                    if row.kind == "column" and row.name in self.column_draft and row.pending > 0:
-                        keep.add(row.name)
-                self.column_draft = keep
             p = self.engine.prune_place(self.place, self.engine.pair_draft_col is not None)
             self.place = p
             still = True
@@ -1149,8 +1131,6 @@ class ReconcileApp(App[int]):
                 return
             try:
                 self.engine.start_regex_draft(pat)
-                self.column_draft = set(self.engine.column_draft)
-                self.engine.column_draft = set()
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1173,8 +1153,6 @@ class ReconcileApp(App[int]):
             side, sentinel = result
             try:
                 self.engine.start_sentinel_draft(side, sentinel)
-                self.column_draft = set(self.engine.column_draft)
-                self.engine.column_draft = set()
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1276,7 +1254,6 @@ class ReconcileApp(App[int]):
                 return
             self.engine = new
             self.place = place
-            self.column_draft = set()
             self.pair_draft_unchecked = set()
             self._mounted_screen = None
             self.set_error(None)

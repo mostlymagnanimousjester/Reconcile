@@ -236,6 +236,31 @@ def test_sentinel_refuses_without_side_and_leaves_draft(tmp_path: Path):
     assert eng.column_draft == {"all_a"}
 
 
+def test_y_confirms_live_draft_xor(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,2\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,9\n2,Yes,8\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.start_regex_draft("Status|Flag")
+    assert eng.column_draft == {"Status", "Flag"}
+    with pytest.raises(InTuiError, match="column draft"):
+        eng.start_pair_draft("Status", "Y", "Yes")
+    n = eng.confirm_column_draft()
+    assert n == 4
+    assert not eng.draft_in_flight()
+    assert eng.pending_cells_n() == 0
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,2\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,9\n2,Yes,8\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    n = eng.start_pair_draft("Status", "Y", "Yes")
+    assert n == 2
+    assert not eng.column_draft
+    eng.confirm_pair_draft()
+    flag = next(r for r in eng.roster() if r.name == "Flag")
+    assert flag.pending == 2
+    assert not eng.draft_in_flight()
+
+
 def test_sentinel_xor_with_regex_and_pair_draft(tmp_path: Path):
     eng = _sentinel_fixture(tmp_path)
     eng.start_regex_draft("all_a")
