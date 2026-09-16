@@ -174,6 +174,19 @@ def _speculative_line(spec: str) -> str:
     return f"speculative: {s}"
 
 
+def _grain_involves_column(grain: tuple[Any, ...], column: str) -> bool:
+    kind = grain[0]
+    if kind == "column":
+        return str(grain[1]) == column
+    if kind == "columns":
+        return column in {str(n) for n in grain[1:]}
+    if kind == "pair":
+        return str(grain[1]) == column
+    if kind == "cell":
+        return str(grain[2]) == column
+    return False
+
+
 def _display_text(value: str) -> str:
     """Blank key/value cells stay visible in the pane and navigator."""
     return value if value else "(empty)"
@@ -312,6 +325,31 @@ class ContextModal(ModalScreen[list[str] | None]):
         Binding("enter", "ok", "OK"),
         Binding("space", "toggle", "Toggle"),
         Binding("y", "ok", "OK"),
+        *[
+            Binding(k, "noop", show=False, priority=True)
+            for k in (
+                "a",
+                "q",
+                "u",
+                "U",
+                "A",
+                "n",
+                "p",
+                "r",
+                "e",
+                "o",
+                "c",
+                "slash",
+                "equals",
+                "full_stop",
+                "question_mark",
+                "question",
+                ".",
+                "/",
+                "=",
+                "?",
+            )
+        ],
     ]
 
     def __init__(self, names: list[str], selected: set[str]) -> None:
@@ -356,6 +394,9 @@ class ContextModal(ModalScreen[list[str] | None]):
         row = self.query_one("#ctx", DataTable).cursor_row
         self._fill()
         self.query_one("#ctx", DataTable).move_cursor(row=row)
+
+    def action_noop(self) -> None:
+        return
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -501,7 +542,10 @@ class ReconcileApp(App[int]):
         if e.column_draft:
             return "y confirm on roster  Esc back (draft stays)  ? help  q quit"
         if p.screen == "roster":
-            return "Enter drill  a grain  A column  / regex  = sentinel  Esc overview  ? help  q quit"
+            return (
+                f"Enter drill  a grain  {self._roster_A_hint()}  "
+                "/ regex  = sentinel  Esc overview  ? help  q quit"
+            )
         if p.screen == "pair_list":
             return "Enter cells  a pair  A column  n/p page  Esc roster  ? help  q quit"
         if p.screen == "cell_step":
@@ -515,6 +559,18 @@ class ReconcileApp(App[int]):
         if p.screen == "overview":
             return "Enter list  Esc roster  ? help  q quit"
         return "? help  q quit"
+
+    def _roster_A_hint(self) -> str:
+        row = self._focused_roster()
+        if row is None:
+            return "A column"
+        if row.kind == "column":
+            return "A column"
+        if row.kind in ("A-only", "B-only"):
+            return "A unmatched"
+        if row.kind == "extra":
+            return "A extra"
+        return "A column"
 
     def _render_footer(self) -> None:
         e = self.engine
@@ -1119,6 +1175,11 @@ class ReconcileApp(App[int]):
             row = self._focused_roster()
             if row and row.kind == "column":
                 self.engine.toggle_column_draft(row.name)
+                if not self.engine.column_draft:
+                    self.set_error("ERROR: draft empty — cancelled")
+                    self.render_all()
+                    self.set_focus_work()
+                    return
         elif p.screen == "cell_step":
             rec = self._focused_rec()
             if rec:
@@ -1261,6 +1322,8 @@ class ReconcileApp(App[int]):
                 raise InTuiError("ERROR: switch to Pending to accept the column")
             if e.pair_draft_col is not None and p.screen in ("pair_list", "cell_step"):
                 raise InTuiError("ERROR: confirm or cancel the pair draft first")
+            if e.column_draft and p.screen in ("pair_list", "cell_step"):
+                raise InTuiError("ERROR: confirm or cancel the column draft first")
             if p.screen == "roster":
                 row = self._focused_roster()
                 if not row:
@@ -1317,6 +1380,9 @@ class ReconcileApp(App[int]):
                     )
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
+                    n_pend = e.pending_cells.filter(pl.col("column") == p.column).height
+                    if n_pend == 0:
+                        raise InTuiError("ERROR: no pending cells in this column")
                     n = e.accept_column(p.column)
                     e.remember_grain(("column", p.column), n)
                     self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=p.last_pair))
@@ -1503,11 +1569,16 @@ class ReconcileApp(App[int]):
         if not p.column:
             self.set_error("ERROR: U undoes the entire column on the cell step only")
             return
+        if self.engine.pair_draft_col is not None:
+            self.set_error("ERROR: confirm or cancel the pair draft first")
+            return
         n = self.engine.undo_column(p.column)
         if n == 0:
             self.set_error("ERROR: nothing snapshotted to undo")
             return
-        self.engine.last_grain = None
+        g = self.engine.last_grain
+        if g is not None and _grain_involves_column(g, p.column):
+            self.engine.last_grain = None
         self.set_error(None)
         self.render_all()
         self.set_focus_work()

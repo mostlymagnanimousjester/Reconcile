@@ -4,7 +4,7 @@ from pathlib import Path
 from textual.widgets import Button
 
 from reconcile.engine import Engine, Place
-from reconcile.tui import HELP, ReconcileApp, SentinelModal
+from reconcile.tui import HELP, ContextModal, ReconcileApp, SentinelModal
 from tests.xlsxutil import write_csv
 
 
@@ -787,5 +787,156 @@ def test_u_after_next_lever_prefers_last_grain_even_if_new_pair_has_snaps(tmp_pa
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 2
             assert next(r for r in app.engine.roster() if r.name == "Flag").accepted == 1
             assert app.engine.last_grain is None
+
+    asyncio.run(_run())
+
+
+def test_A_refused_on_pair_list_during_column_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,2\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,9\n2,Yes,8\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("Status|Flag")
+            assert app.engine.column_draft == {"Status", "Flag"}
+            app.place.screen = "pair_list"
+            app.place.column = "Status"
+            app.render_all()
+            await pilot.pause()
+            pending = app.engine.pending_cells_n()
+            app.action_accept_all()
+            await pilot.pause()
+            assert app.engine.column_draft == {"Status", "Flag"}
+            assert app.engine.pending_cells_n() == pending
+            assert app.place.screen == "pair_list"
+            assert app.tui_error and "column draft" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_context_modal_q_does_not_quit(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.action_context()
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            assert app.engine.pending_cells_n() == 2
+
+    asyncio.run(_run())
+
+
+def test_A_on_zero_pending_pair_list_stays(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            pending = app.engine.pending_total()
+            app.action_accept_all()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
+            assert app.engine.pending_total() == pending
+            assert app.tui_error and "pending" in app.tui_error
+            assert next(r for r in app.engine.roster() if r.name == "Flag").pending == 1
+
+    asyncio.run(_run())
+
+
+def test_U_refused_during_pair_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.accept_pair("val", "N", "No")
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 1
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            pending = app.engine.pending_cells_n()
+            accepted = app.engine.accepted_cells.height
+            app.action_undo_column()
+            await pilot.pause()
+            assert app.engine.pair_draft_col == "val"
+            assert app.engine.pending_cells_n() == pending
+            assert app.engine.accepted_cells.height == accepted
+            assert app.tui_error and "pair draft" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_uncheck_last_column_cancels_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("Status")
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            pending = app.engine.pending_cells_n()
+            app.action_toggle()
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.tui_error and "draft empty" in app.tui_error
+            app.action_confirm()
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == pending
+            assert app.place.screen == "roster"
 
     asyncio.run(_run())
