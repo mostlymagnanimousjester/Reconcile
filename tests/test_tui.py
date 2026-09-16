@@ -121,6 +121,44 @@ def test_cell_step_footer_shows_pair_draft_not_column_n(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_categorical_top_row_a_accepts_pair(tmp_path: Path):
+    """Categorical columns stay on the paged pair list; a on the top row accepts that pair."""
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    lines_a = ["id,Status"] + [f"{i},Y" for i in range(8)] + ["8,N"]
+    lines_b = ["id,Status"] + [f"{i},Yes" for i in range(8)] + ["8,No"]
+    write_csv(pa, "\n".join(lines_a) + "\n")
+    write_csv(pb, "\n".join(lines_b) + "\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    status = next(r for r in eng.roster() if r.name == "Status")
+    assert status.categorical == "yes"
+    assert not hasattr(eng, "pair_matrix")
+    assert not hasattr(ReconcileApp, "_pair_matrix")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            table = app.query_one("#grid")
+            assert table.cursor_type == "row"
+            pane = str(app.query_one("#pane").render())
+            assert "A:" in pane
+            assert "B:" in pane
+            assert "Y" in pane
+            assert "Yes" in pane
+            pending_before = app.engine.pending_cells_n()
+            app.action_accept()
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == pending_before - 8
+            left = next(r for r in app.engine.roster() if r.name == "Status")
+            assert left.pending == 1
+
+    asyncio.run(_run())
+
+
 def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,s,mixed,ok\n1,NA,NA,a\n2,NA,x,a\n")

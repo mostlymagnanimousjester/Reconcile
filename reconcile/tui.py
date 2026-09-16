@@ -469,13 +469,20 @@ class ReconcileApp(App[int]):
     def _render_pane(self) -> None:
         p = self.place
         pane = self.query_one("#pane", Static)
+        pair = None
         if p.screen == "cell_step" and p.pair_val_a is not None:
-            va, vb = p.pair_val_a, p.pair_val_b or ""
+            pair = (p.pair_val_a, p.pair_val_b or "")
+        elif p.screen == "pair_list":
+            pair = self._focused_pair()
+            if pair is None and p.pair_val_a is not None:
+                pair = (p.pair_val_a, p.pair_val_b or "")
+        if pair is not None:
+            va, vb = pair
             t = Text()
             t.append_text(_diff_text("A:", va, vb))
             t.append("\n")
             t.append_text(_diff_text("B:", vb, va))
-            if p.column:
+            if p.screen == "cell_step" and p.column:
                 ctx = self.engine.context_values(p.focused_key or (), p.column)
                 for name, a, b in ctx:
                     t.append(f"\n{name}  A|{a}  B|{b}")
@@ -617,8 +624,7 @@ class ReconcileApp(App[int]):
         col = self.place.column or ""
         if not col:
             return Vertical(Static("No column."))
-        body = self._pair_matrix(col) if self.engine.is_categorical(col) else self._pair_list(col)
-        return Vertical(Static(f"COLUMN {col}"), self._tab_bar("pending"), body)
+        return Vertical(Static(f"COLUMN {col}"), self._tab_bar("pending"), self._pair_list(col))
 
     def _pair_list(self, col: str) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid")
@@ -630,28 +636,20 @@ class ReconcileApp(App[int]):
             table.add_row("(no pending pairs)", "", "0", "")
             self._table_keys = [None]
             return table
-        for rec in recs:
+        focus = 0
+        want_a, want_b = self.place.pair_val_a, self.place.pair_val_b
+        for i, rec in enumerate(recs):
             va, vb = rec["val_a"], rec["val_b"]
             tags = ", ".join(self.engine.cell_insights(va, vb))
             returned = self.engine.column_has_returned(col)
             label_a = Text(va, style="reverse" if returned else "bold")
             table.add_row(label_a, vb, str(rec["n"]), tags)
             self._table_keys.append(rec)
-        return table
-
-    def _pair_matrix(self, col: str) -> DataTable:
-        a_vals, b_vals, matrix = self.engine.pair_matrix(col)
-        table: DataTable = DataTable(cursor_type="cell", id="grid")
-        table.add_columns("A \\ B", *[v if v else "(empty)" for v in b_vals] or ["(no B)"])
-        self._table_keys = []
-        if not a_vals or not b_vals:
-            table.add_row("(no pending pairs)")
-            self._table_keys = [None]
-            return table
-        for i, a in enumerate(a_vals):
-            table.add_row(a if a else "(empty)", *[str(n) for n in matrix[i]])
-            self._table_keys.append(a)
-        self._matrix_b = b_vals
+            if want_a is not None and va == want_a and vb == want_b:
+                focus = i
+        table.move_cursor(row=focus)
+        rec = recs[focus]
+        self.place.pair_val_a, self.place.pair_val_b = rec["val_a"], rec["val_b"]
         return table
 
     def _cell_grid(self) -> Vertical:
@@ -774,19 +772,6 @@ class ReconcileApp(App[int]):
         return rec if isinstance(rec, dict) else None
 
     def _focused_pair(self) -> tuple[str, str] | None:
-        p = self.place
-        if p.column and self.engine.is_categorical(p.column) and self.query("#grid"):
-            table = self.query_one("#grid", DataTable)
-            if table.cursor_type == "cell" and getattr(self, "_matrix_b", None):
-                row, col = table.cursor_row, table.cursor_column
-                if row < 0 or row >= len(self._table_keys):
-                    return None
-                a = self._table_keys[row]
-                if not isinstance(a, str):
-                    return None
-                if col <= 0 or col > len(self._matrix_b):
-                    return None
-                return a, self._matrix_b[col - 1]
         rec = self._focused_rec()
         if rec and "val_a" in rec:
             return rec["val_a"], rec["val_b"]
@@ -1266,6 +1251,15 @@ class ReconcileApp(App[int]):
         if self.place.screen in {"roster", "overview", "pair_list"}:
             event.stop()
             self.action_drill()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if self.place.screen != "pair_list":
+            return
+        pair = self._focused_pair()
+        if pair:
+            self.place.pair_val_a, self.place.pair_val_b = pair
+            self._render_pane()
+            self._render_footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""

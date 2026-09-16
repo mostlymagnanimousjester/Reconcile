@@ -132,15 +132,6 @@ def pair_groups(eng: Engine, column: str) -> pl.DataFrame:
     )
 
 
-def pair_matrix(eng: Engine, column: str) -> tuple[list[str], list[str], list[list[int]]]:
-    groups = pair_groups(eng, column)
-    a_vals = sorted(groups["val_a"].unique().to_list()) if not groups.is_empty() else []
-    b_vals = sorted(groups["val_b"].unique().to_list()) if not groups.is_empty() else []
-    counts = {(r["val_a"], r["val_b"]): int(r["n"]) for r in groups.to_dicts()}
-    matrix = [[counts.get((a, b), 0) for b in b_vals] for a in a_vals]
-    return a_vals, b_vals, matrix
-
-
 def equal_count(eng: Engine, column: str) -> int:
     if column not in eng.comparable:
         return 0

@@ -239,9 +239,6 @@ class Engine:
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
         return pages_mod.pair_page(self, column, page)
 
-    def pair_matrix(self, column: str) -> tuple[list[str], list[str], list[list[int]]]:
-        return compare_mod.pair_matrix(self, column)
-
     def pair_cells_page(
         self, column: str, val_a: str, val_b: str, page: int
     ) -> tuple[list[dict[str, Any]], int, int]:

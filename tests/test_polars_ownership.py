@@ -2,7 +2,7 @@
 
 Hot-path `.to_dicts()` / `.to_list()` on frames taller than PAGE_SIZE are
 forbidden except the explicit allowlist (zip ser/de, schema-sized roster
-handoff, sentinel column names, pair_matrix groups, and page helpers after
+handoff, sentinel column names, and page helpers after
 `.slice`).
 
 This test greps reconcile kernel modules via AST rather than patching Polars
@@ -52,8 +52,6 @@ ALLOWLIST_FUNCS = frozenset(
         # sentinel column names (schema-sized)
         "start_sentinel_draft",
         "sentinel_hits",
-        # pair_matrix groups (categorical layout)
-        "pair_matrix",
         # page helper: callers must slice first; helper itself may to_dicts
         "_page_dicts",
         "_page",
@@ -69,6 +67,7 @@ DELETED_ENGINE_ATTRS = (
     "pending_snaps_for_column",
     "_row_matches",
     "is_unmatched_pending",
+    "pair_matrix",
 )
 
 
