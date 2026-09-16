@@ -22,7 +22,7 @@ Esc    back (close modal → cancel draft → parent → Overview)
 Space  toggle focused column/cell in the current draft
 a      accept focused grain now
 A      accept entire column / all unmatched on this side
-y      confirm current draft
+y      confirm the live draft (column XOR pair cells; one draft in flight)
 u      undo focused grain   U  undo entire column (cell step)
 r      refresh (re-read live files; last good state on failure)
 .      repeat last pair as a new draft
@@ -32,6 +32,10 @@ n / p  next / previous page
 e      export .recon.zip     o  open zip (refused while a draft is in flight)
 q      quit (discards unconfirmed draft)
 ?      this help
+
+At most one draft: column (roster / =) XOR pair cells (cell step).
+Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
+Tab switch is refused while a pair draft is in flight (Esc cancels).
 
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.

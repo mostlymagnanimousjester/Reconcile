@@ -108,9 +108,22 @@ def test_keys_1_to_4_do_not_switch_tabs(tmp_path: Path):
             assert app.tui_error and "pair draft" in app.tui_error
 
     asyncio.run(_run())
+
+
+def test_help_says_exact_sentinel_not_polars_selector():
     assert "Polars selector" not in HELP
     assert "exact sentinel" in HELP
     assert "regex column draft" in HELP
+
+
+def test_help_xor_and_no_digit_tab_keys():
+    assert "column XOR pair" in HELP
+    assert "No keys 1–4" in HELP or "No keys 1-4" in HELP
+    lower = HELP.lower()
+    assert "1 pending" not in lower
+    assert "2 accepted" not in lower
+    assert "3 equal" not in lower
+    assert "4 all" not in lower
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):

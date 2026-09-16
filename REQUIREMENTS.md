@@ -1,8 +1,8 @@
-# Strict data reconciliation TUI — provisional requirements
+# Strict data reconciliation TUI — requirements
 
-Status: **provisional**. Written for review and modification. No implementation yet.
+This document is the locked v1 spec. The implementation in this repository follows it.
 
-This document consolidates decisions from the requirements conversation. Items marked **PROVISIONAL** are proposed defaults that have not been explicitly confirmed.
+This document consolidates decisions from the requirements conversation.
 
 ---
 
@@ -362,14 +362,9 @@ This is how a known recode (`Y` vs `Yes`) is accepted without accepting the whol
 
 #### Pair list
 
-Computed in Polars from **pending** cells of the current column only.
+Computed in Polars from **pending** cells of the current column only. Always a **paged list** of pairs (100). Sort: **count descending**, then `valA` raw, then `valB` raw. There is no categorical count matrix.
 
-| Layout | When |
-|---|---|
-| Full `A → B` count matrix | Column is categorical by §10.5 (nunique pending A ≤ 30, B ≤ 30, union ≤ 50) |
-| Paged list of pairs (100) | Otherwise. Sort: **count descending**, then `valA` raw, then `valB` raw |
-
-Each row: exact `A` string, exact `B` string, pending count. Strings wrap. Side denotation is the two columns headed `A` and `B` (§8.1), not a name prefix.
+Each row: exact `A` string, exact `B` string, pending count. The DataTable is a navigator; the pane shows the focused pair’s full `A:` / `B:` strings with wrap. Side denotation is the two columns headed `A` and `B` (§8.1), not a name prefix.
 
 Pair list is shown only on the **Pending** view tab. Hidden on Accepted / Equal / All matched.
 
@@ -396,7 +391,7 @@ Refresh: §9.4. New pending cells that happen to have the same two strings are *
 
 #### UX (detail: one thing at a time)
 
-Pending view shows the **pair list only** (matrix or paged list). No cell grid on this step.
+Pending view shows the **pair list only** (always the paged list). No cell grid on this step.
 
 - `Enter` on a pair opens the **cell step**: that pair’s pending rows as a pair draft, all checked. First-difference caret and context columns exist only on this step.
 - `Esc` on the cell step cancels the draft and returns to the pair list.
@@ -443,7 +438,7 @@ Try a fixed list:
 
 Emit `speculative: same date` only when each side parses **unambiguously** to the same calendar date. If both US and EU parses are possible, emit **nothing**.
 
-### 10.5 Categorical layout (not an accept path)
+### 10.5 Categorical statistic (not an accept path, not a layout switch)
 
 A comparable column is treated as **categorical** when, among **pending** cells for that column:
 
@@ -451,7 +446,7 @@ A comparable column is treated as **categorical** when, among **pending** cells 
 - `nunique(B) ≤ 30`, and
 - `nunique(A ∪ B) ≤ 50`
 
-That heuristic only chooses **layout** of the exact pending-pair list in §9.6 (full matrix vs paged list). Pair **counts** are exact. Pair **accept** is §9.6, not this section.
+That heuristic is a **roster statistic** (`cat` yes/no) only. Pair list layout is always the paged list (§9.6). Pair **counts** are exact. Pair **accept** is §9.6, not this section.
 
 Speculative chips may still annotate a pair (trim, same-date, …). Those labels must not be the accept target.
 
@@ -542,7 +537,7 @@ Quit and relaunch to compare a different pair of sources or different keys.
 
 Extension: **`.recon.zip`**
 
-Contents (**PROVISIONAL** layout):
+Contents:
 
 - `manifest.json` with a **schema version**
 - Absolute paths for A and B (never relative; CLI may accept relative and must resolve before write)
@@ -646,13 +641,14 @@ Roster is not Polars-paged.
 
 One comparable column. **One thing at a time.**
 
-**Pending (default)** is the **pair list only** (exact `A → B` counts, §9.6). Categorical (§10.5) → full matrix; otherwise paged 100. Sort: count desc, then `valA`, `valB`. Speculative chips on a pair are labels only.
+**Pending (default)** is the **pair list only** (exact `A → B` counts, §9.6). Always paged 100. Sort: count desc, then `valA`, `valB`. Speculative chips on a pair are labels only. The pane shows the focused pair’s full strings. Categorical (§10.5) is a roster `cat` statistic, not a matrix.
 
 - `Enter` → **cell step** (pair draft of those exact strings). Grid, first-difference, context columns.
 - `Esc` from cell step → pair list (draft cancelled if not confirmed).
 - `Esc` from pair list → roster.
 - `a` on a pair → immediate accept that pair.
 - `A` → immediate accept entire column.
+- Named tabs **Pending / Accepted / Equal / All matched** switch views. There are no `1`–`4` keys. Tab switch is refused (error, draft kept) while a pair draft is in flight.
 
 **Accepted / Equal / All matched** tabs: cell grid for that set, no pair list. Behind glass; deadline work stays on Pending.
 
@@ -667,7 +663,7 @@ Grid (cell step or non-Pending tabs), 100-row pages:
 
 **First-difference caret:** on the cell step footer pane and focused `A`/`B` cells, mark the first differing Python `str` index (after null→`""`). Reverse/standout on both sides. Prefix/length-only differences count. Exact, not speculative. Red-lens safe (§15.8).
 
-Paging: key-tuple order. Pair list paging: 100 when not a matrix.
+Paging: key-tuple order. Pair list paging: 100.
 
 Returned-to-pending cells (and pairs/columns that contain them): standout until next successful refresh.
 
@@ -726,7 +722,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 
 No `f`, `s`, or `j`.
 
-View-filter tabs on detail stay named tabs (Pending / Accepted / Equal / All matched), not a `v` cycle. Pending is pair list; the others are cell grids.
+View-filter tabs on detail stay named tabs (Pending / Accepted / Equal / All matched). There are no digit keys `1`–`4`. Pending is pair list; the others are cell grids. Tab switch while a pair draft is in flight is refused (error; draft is not cleared). `Esc` cancels the draft.
 
 ### 15.8 Visual language (red-lens safe)
 
@@ -753,13 +749,13 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
 **Next lever** after a bulk accept (pair `y` or pair-list `a`, column-draft `y`, immediate whole-column `A` / roster `a` on a `column` row, roster `a`/`A` on an unmatched-key row, `A` on an unmatched-key grid, roster or extras-list `a` on an extra):
 
 1. If the current column still has pending pairs, focus the next-highest-count pair on that column’s pair list.
-2. Else the next roster row with pending > 0 (fixed sort: pending, then concentration, then name):
+2. Else the next roster row with pending > 0 from the **unfiltered** roster cache (fixed sort: pending, then concentration, then name). Copy `roster_filter` onto Place for display only; the filter must not hide the next lever:
    - `column` → that pair list, top pair focused
    - `A-only` / `B-only` → that grid, first pending key focused
    - `extra` → roster, that extra focused (ready for `a`)
 3. Else the roster (including pending total 0).
 
-Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid. Single-key `a` on an unmatched-key grid does not jump the roster; it advances to the next pending key in that grid.
+Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid (cursor and page follow `focused_key`). If that pair is exhausted, go back to **this column’s pair list**, not next lever. Single-key `a` on an unmatched-key grid does not jump the roster; it advances to the next pending key in that grid.
 
 **Repeat last pair** `.` — §9.6. In-session and in `.recon.zip`. Never auto-accepts.
 
@@ -833,7 +829,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Fluency | Work is home (roster of all remaining-work kinds); one sort (pending then concentration then name); pair-first detail; unified `Enter`/`Esc`/`a`/`y`; no jump list / `f` / `s` / `j` |
 | Deadline nav | Next lever walks the same roster sort (columns, unmatched keys, extras); `.` repeat pair; returned-to-pending marked in place (§15.9) |
 | Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
-| Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is pair-list **layout** only; no fuzzy keys; no accept-by-insight |
+| Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is a roster `cat` statistic only (pair list is always paged); no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; persisted |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
@@ -843,7 +839,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` is exact-value `.all()` on one side. Draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
-| Detail | Pair list then cells; Accepted/Equal/All matched behind glass; `a` grain / `A` column |
+| Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs only (no `1`–`4`); `a` grain / `A` column |
 | Keybindings | One map (§15.7). `Esc` always back. No `f`/`s`/`j` |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |

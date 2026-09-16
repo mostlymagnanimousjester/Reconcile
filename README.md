@@ -59,9 +59,13 @@ Excel sides require `--a-sheet` / `--b-sheet`. Delimiter and encoding flags are 
 
 ## In the TUI
 
+**Happy path:** launch lands on the **roster** (row 1 is the largest remaining pending pile) → `Enter` into that pile → knock it down with `a` / `A` / pair `y` → **next lever** → edit sources in another tool, save, `r` to refresh. Repeat until **pending = 0**. Regex `/`, sentinel `=`, and Equal / All-matched tabs are real and behind glass. A-only keys, B-only keys, and extras are remaining-work rows on the roster, not a side room.
+
 Home is the **roster** of remaining work (comparable columns, A-only keys, B-only keys, extras), sorted by pending, then top-pair %, then name. `Enter` drills in; `Esc` goes back (roster → Overview). `a` accepts the focused grain; `A` accepts a whole column or all unmatched on a side; `r` re-reads the live files; `e` / `o` export or open a `.recon.zip`; `q` quits; `?` help.
 
-On the roster, `/` drafts comparable columns whose **names** match a Python regex. `=` drafts comparable columns where every **pending** value on one chosen side is exactly a sentinel string (raw text; no trim, no regex, no expression; empty `""` is legal). Both fill a column draft (all-checked); `Space` toggles, `y` confirms accept-entire-column snapshots, `Esc` cancels. At most one draft is in flight. Insights cannot accept. Compare stays exact raw text.
+Column detail is always a **paged pair list** (the table is a navigator; the pane shows the focused pair’s full `A:` / `B:` strings). `Enter` opens the cell step as a pair draft. One draft in flight: **column XOR pair**. `y` confirms the live draft. Named tabs switch Pending / Accepted / Equal / All matched; there are no keys `1`–`4`.
+
+On the roster, `/` drafts comparable columns whose **names** match a Python regex. `=` drafts comparable columns where every **pending** value on one chosen side is exactly a sentinel string (raw text; no trim, no regex, no expression; empty `""` is legal). Both fill a column draft (all-checked); `Space` toggles, `y` confirms accept-entire-column snapshots, `Esc` cancels. Insights cannot accept. Compare stays exact raw text.
 
 ## Exit codes
 
