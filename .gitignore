@@ -9,5 +9,4 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
-*.recon.zip
 .python-version

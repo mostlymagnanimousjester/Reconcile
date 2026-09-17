@@ -38,7 +38,6 @@ python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim tilde -
 python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Sheet1 --b-sheet Sheet1 --keys id
 python Reconcile.py --a C:\data\left.dat --b C:\data\right.txt --a-delim pipe --b-delim tilde --keys id
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding windows-1252 --keys id
-python Reconcile.py --session C:\data\job.recon.zip
 ```
 
 Linux / macOS:
@@ -48,20 +47,19 @@ python Reconcile.py --a ./tests/fixtures/left.csv --b ./tests/fixtures/right.csv
 python Reconcile.py --a ./left.csv --b ./right.csv --a-delim tilde --keys id
 python Reconcile.py --a ./left.dat --b ./right.txt --a-delim pipe --b-delim tilde --keys id
 python Reconcile.py --a ./left.csv --b ./right.csv --a-encoding windows-1252 --keys id
-python Reconcile.py --session ./job.recon.zip
 ```
 
-`--keys` is a single comma-separated list. Surrounding spaces on each name are stripped; there is no quoting. `--session` cannot be mixed with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding`.
+`--keys` is a single comma-separated list. Surrounding spaces on each name are stripped; there is no quoting.
 
-CLI paths (`--a`, `--b`, `--session`) may be relative to the invocation cwd; they are resolved immediately and **only absolute paths** are stored in the job identity and `.recon.zip`.
+CLI paths (`--a`, `--b`) may be relative to the invocation cwd; they are resolved immediately and **only absolute paths** are stored in the in-memory job identity.
 
-Excel sides require `--a-sheet` / `--b-sheet`. Delimiter and encoding flags are illegal on Excel sides. Excel is loaded with fastexcel as string columns: stored/cached values as-is (formulas are not evaluated). Merged cells are allowed; secondary merge cells may be empty strings. A `.csv` side (extension case-insensitive) defaults to comma when `--a-delim` / `--b-delim` is omitted; the flag still overrides. Other delimited files (`.txt`, `.dat`, no extension, …) **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.txt`→tilde default. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). The resolved delimiter character (including the `.csv` comma default) is frozen in `.recon.zip`.
+Excel sides require `--a-sheet` / `--b-sheet`. Delimiter and encoding flags are illegal on Excel sides. Excel is loaded with fastexcel as string columns: stored/cached values as-is (formulas are not evaluated). Merged cells are allowed; secondary merge cells may be empty strings. A `.csv` side (extension case-insensitive) defaults to comma when `--a-delim` / `--b-delim` is omitted; the flag still overrides. Other delimited files (`.txt`, `.dat`, no extension, …) **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.txt`→tilde default. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). The resolved delimiter character (including the `.csv` comma default) is frozen in in-memory job identity and reused on refresh.
 
 ## In the TUI
 
 **Happy path:** launch lands on the **roster** (row 1 is the largest remaining pending pile) → `Enter` into that pile → knock it down with `a` / `A` / pair `y` → **next lever** → edit sources in another tool, save, `r` to refresh. Repeat until **pending = 0**. Regex `/`, sentinel `=`, and Equal / All-matched tabs are real and behind glass. A-only keys, B-only keys, and extras are remaining-work rows on the roster, not a side room.
 
-Home is the **roster** of remaining work (comparable columns, A-only keys, B-only keys, extras), sorted by pending, then top-pair %, then name. `Enter` drills in; `Esc` goes back (roster → Overview). `a` accepts the focused grain; `A` accepts a whole column or all unmatched on a side; `r` re-reads the live files; `e` / `o` export or open a `.recon.zip`; `q` quits; `?` help.
+Home is the **roster** of remaining work (comparable columns, A-only keys, B-only keys, extras), sorted by pending, then top-pair %, then name. `Enter` drills in; `Esc` goes back (roster → Overview). `a` accepts the focused grain; `A` accepts a whole column or all unmatched on a side; `r` re-reads the live files; `q` quits; `?` help.
 
 Column detail is always a **paged pair list** (the table is a navigator; the pane shows the focused pair’s full `A:` / `B:` strings). `Enter` opens the cell step as a pair draft. One draft in flight: **column XOR pair**. `y` confirms the live draft. `A` is refused while a pair draft is in flight. Named tabs switch Pending / Accepted / Equal / All matched; there are no keys `1`–`4`. `Esc` from Overview returns to the roster. `.` from that column’s pair list starts a cell-step draft; from another column’s pair list it focuses the last pair first (Enter to draft). `U` undoes the entire column from the pair list.
 
@@ -75,7 +73,7 @@ On the roster, `/` drafts comparable columns whose **names** match a Python rege
 | `1` | Quit with pending remaining |
 | `2` | Hard fail (load/parse/schema). Message on stderr includes raw identifiers. |
 
-Once the TUI is up, refresh/open/draft errors stay in the TUI and keep the last good state.
+Once the TUI is up, refresh/draft errors stay in the TUI and keep the last good state.
 
 ## Tests
 

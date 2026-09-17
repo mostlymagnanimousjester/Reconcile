@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -16,45 +16,6 @@ if TYPE_CHECKING:
 
 def _empty_cell_snaps(keys: list[str]) -> pl.DataFrame:
     return _empty_df(_empty_mismatch_schema(keys))
-
-
-def _cell_snaps_from_json(keys: list[str], cells: list[dict[str, Any]]) -> pl.DataFrame:
-    if not cells:
-        return _empty_cell_snaps(keys)
-    data: dict[str, list[str]] = {k: [] for k in keys}
-    data["column"] = []
-    data["val_a"] = []
-    data["val_b"] = []
-    for c in cells:
-        key = list(c.get("key") or [])
-        for i, k in enumerate(keys):
-            data[k].append(str(key[i]) if i < len(key) else "")
-        data["column"].append(str(c.get("column", "")))
-        data["val_a"].append(str(c.get("val_a", "")))
-        data["val_b"].append(str(c.get("val_b", "")))
-    return pl.DataFrame(data).unique()
-
-
-def _unmatched_snaps_from_json(
-    keys: list[str],
-    items: list[dict[str, Any]],
-    side: str,
-    template: pl.DataFrame,
-) -> pl.DataFrame:
-    rows = [u for u in items if u.get("side") == side]
-    if not rows:
-        return template.head(0)
-    recs: list[dict[str, str]] = []
-    for u in rows:
-        rec = {c: "" for c in template.columns}
-        rec.update({str(k): str(v) for k, v in dict(u.get("row") or {}).items()})
-        key = list(u.get("key") or [])
-        for i, kname in enumerate(keys):
-            if i < len(key) and kname in rec:
-                rec[kname] = str(key[i])
-        recs.append(rec)
-    data = {c: [r.get(c, "") for r in recs] for c in template.columns}
-    return pl.DataFrame(data)
 
 
 def _key_eq_expr(keys: list[str], key: tuple[str, ...]) -> pl.Expr:

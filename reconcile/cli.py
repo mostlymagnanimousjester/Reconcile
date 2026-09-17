@@ -1,4 +1,4 @@
-"""CLI: identity flags, session zip, exit codes."""
+"""CLI: identity flags and exit codes."""
 
 from __future__ import annotations
 
@@ -14,11 +14,6 @@ from reconcile.delimited import (
 )
 from reconcile.engine import Engine, InTuiError, Place
 from reconcile.errors import HardFail
-
-IDENTITY_FLAGS = (
-    "--a / --b / --a-sheet / --b-sheet / --keys / "
-    "--a-delim / --b-delim / --a-encoding / --b-encoding"
-)
 
 
 def parse_keys(raw: str) -> list[str]:
@@ -87,33 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
             f"({VALID_ENCODING_HELP}; default utf8). Hard fail if B is Excel."
         ),
     )
-    p.add_argument("--session", dest="session", help="Load a .recon.zip and live-reread sources")
     return p
 
 
 def engine_from_args(ns: argparse.Namespace) -> tuple[Engine, Place]:
-    identity = any(
-        [
-            ns.a,
-            ns.b,
-            ns.a_sheet,
-            ns.b_sheet,
-            ns.keys,
-            ns.a_delim,
-            ns.b_delim,
-            ns.a_encoding,
-            ns.b_encoding,
-        ]
-    )
-    if ns.session and identity:
-        raise HardFail(
-            f"Mixing --session with {IDENTITY_FLAGS} is not allowed. "
-            "The zip is the identity."
-        )
-    if ns.session:
-        return Engine.from_session(ns.session)
     if not ns.a or not ns.b or not ns.keys:
-        raise HardFail("Without --session, --a, --b, and --keys are required")
+        raise HardFail("--a, --b, and --keys are required")
     keys = parse_keys(ns.keys)
     a_delim = parse_delimiter(ns.a_delim, "--a-delim") if ns.a_delim is not None else None
     b_delim = parse_delimiter(ns.b_delim, "--b-delim") if ns.b_delim is not None else None

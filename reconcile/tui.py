@@ -13,7 +13,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
-from reconcile.errors import HardFail
 
 HELP = """\
 KEYS (same everywhere; type in a field when focused)
@@ -32,7 +31,6 @@ r      refresh (re-read live files; last good state on failure)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
 c      context-column picker (cell step)
 n / p  next / previous page
-e      export .recon.zip     o  open zip (refused while a draft is in flight)
 q      quit (discards unconfirmed draft)
 ?      this help
 
@@ -228,33 +226,6 @@ class HelpModal(ModalScreen[None]):
         self.dismiss(None)
 
 
-class PathModal(ModalScreen[str | None]):
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("enter", "ok", "OK", priority=True),
-    ]
-
-    def __init__(self, title: str, placeholder: str) -> None:
-        super().__init__()
-        self.title_text = title
-        self.placeholder = placeholder
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="modal"):
-            yield Static(self.title_text)
-            yield Input(placeholder=self.placeholder, id="path")
-            yield Static("Enter confirm · Esc cancel", classes="dim")
-
-    def on_mount(self) -> None:
-        self.query_one("#path", Input).focus()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_ok(self) -> None:
-        self.dismiss(self.query_one("#path", Input).value.strip() or None)
-
-
 class RegexModal(ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -424,8 +395,6 @@ class ReconcileApp(App[int]):
         Binding("r", "refresh", "Refresh", show=False),
         Binding("n", "page_next", "Next", show=False),
         Binding("p", "page_prev", "Prev", show=False),
-        Binding("e", "export", "Export", show=False),
-        Binding("o", "open_zip", "Open", show=False),
         Binding("q", "quit_app", "Quit", show=False),
         Binding("c", "context", "Context", show=False),
         Binding("slash", "regex", "Regex", show=False),
@@ -1840,51 +1809,6 @@ class ReconcileApp(App[int]):
             self.set_focus_work()
 
         self.push_screen(ContextModal(names, selected), done)
-
-    def action_export(self) -> None:
-        def done(path: str | None) -> None:
-            if not path:
-                return
-            try:
-                self.engine.export_zip(path, self.place)
-                self.set_error(None)
-                self.query_one("#banner", Static).update(f"Exported {path}")
-                self.query_one("#banner", Static).set_class(False, "hidden")
-            except Exception as exc:
-                self.set_error(f"ERROR: export failed: {exc}")
-            self.render_all()
-
-        self.push_screen(PathModal("Export .recon.zip (confirmed snapshots only; no drafts)", "job.recon.zip"), done)
-
-    def action_open_zip(self) -> None:
-        if self.draft_in_flight():
-            self.set_error("ERROR: confirm or cancel the current draft first")
-            self.render_all()
-            return
-
-        def done(path: str | None) -> None:
-            if not path:
-                return
-            try:
-                new, place = Engine.from_session(path)
-            except (HardFail, InTuiError) as exc:
-                msg = getattr(exc, "message", str(exc))
-                self.set_error(f"ERROR: {msg}" if not str(msg).startswith("ERROR") else str(msg))
-                self.render_all()
-                return
-            except Exception as exc:
-                self.set_error(f"ERROR: {exc}")
-                self.render_all()
-                return
-            self.engine = new
-            self.place = place
-            self.pair_draft_unchecked = set()
-            self._mounted_screen = None
-            self.set_error(None)
-            self.render_all()
-            self.set_focus_work()
-
-        self.push_screen(PathModal("Open .recon.zip (live-rereads sources)", "job.recon.zip"), done)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if self.place.screen in {"roster", "overview", "pair_list"}:

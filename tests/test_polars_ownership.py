@@ -1,7 +1,7 @@
 """Polars owns the reconcile kernel. Tall-frame Python dumps are defects.
 
 Hot-path `.to_dicts()` / `.to_list()` on frames taller than PAGE_SIZE are
-forbidden except the explicit allowlist (zip ser/de, schema-sized roster
+forbidden except the explicit allowlist (schema-sized roster
 handoff, sentinel column names, and page helpers after
 `.slice`).
 
@@ -39,12 +39,6 @@ MATERIALIZE_ATTRS = frozenset(
 # can move helpers without rewriting the allowlist. Anything else is a defect.
 ALLOWLIST_FUNCS = frozenset(
     {
-        # zip ser/de once per export/open
-        "to_manifest",
-        "export_zip",
-        "_snapshots_to_manifest",
-        "_cell_snaps_from_json",
-        "_unmatched_snaps_from_json",
         # schema-sized roster handoff after cache build
         "roster",
         "_build_roster_cache",
@@ -68,6 +62,9 @@ DELETED_ENGINE_ATTRS = (
     "_row_matches",
     "is_unmatched_pending",
     "pair_matrix",
+    "from_session",
+    "export_zip",
+    "to_manifest",
 )
 
 
