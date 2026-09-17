@@ -22,16 +22,27 @@ def roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
     return rows
 
 
-def visible_column_roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
-    """Pending comparable columns only.
+def column_roster(
+    eng: Engine, name_filter: str = "", include_settled: bool = False
+) -> list[RosterRow]:
+    """Comparable columns. Default hides accepted / all-equal (pending 0).
 
     Columns whose *shared* (matched-key) rows are all equal have pending 0 and
     are treated as auto-accepted: there is nothing to review. A-only / B-only
     keys never contribute cell pending, so they cannot keep such a column on
-    the roster. Accepted columns (pending 0 after snapshots) are hidden too.
-    Unmatched-key and extra rows are remaining work, not columns.
+    the roster. Accepted columns (pending 0 after snapshots) are hidden too
+    unless ``include_settled``. Unmatched-key and extra rows are remaining
+    work, not columns.
     """
-    return [r for r in roster(eng, name_filter) if r.kind == "column" and r.pending > 0]
+    rows = [r for r in roster(eng, name_filter) if r.kind == "column"]
+    if include_settled:
+        return rows
+    return [r for r in rows if r.pending > 0]
+
+
+def visible_column_roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
+    """Pending comparable columns only (accepted / all-equal hidden)."""
+    return column_roster(eng, name_filter, include_settled=False)
 
 
 def _roster_agg_maps(

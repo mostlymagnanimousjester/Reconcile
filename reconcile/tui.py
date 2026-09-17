@@ -1,4 +1,4 @@
-"""Textual TUI: roster home, pair-first detail, unmatched grids, extras."""
+"""Textual TUI: roster home, pair-first detail, unmatched grids, mismatched columns."""
 
 from __future__ import annotations
 
@@ -20,16 +20,16 @@ KEYS (same everywhere; type in a field when focused)
 Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
 Esc    back (close modal → cancel roster/cell-step draft → parent screen)
 Space  toggle focused column/cell in the current draft (ON / off)
-a      accept focused grain on detail (pair / cell / one unmatched key / extra).
-       On the column roster, a accepts the focused COLUMN (not a pair/cell/key).
-A      accept entire column (roster column / pair list; no pair draft) / all unmatched on this side (A-only / B-only grid)
+a      accept the current selection (roster column / pair / cell / unmatched key / extra)
+A      accept all on this screen (entire column from pair list; all unmatched keys on this side)
 y      confirm the live draft (column XOR pair cells; all-unchecked pair draft stays)
 u      undo last accept, then focused grain.
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 r      refresh (re-read live files; last good state on failure)
 .      last pair: cell-step if already on that column's pair list; else that pair on its pair list (column detail only)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
-i      overview modal (counts + unmatched keys / extras). Esc closes.
+i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
+v      roster: show/hide accepted and equal columns (default hidden)
 c      context-column picker (cell step)
 n / p  next / previous page
 q      quit (discards unconfirmed draft)
@@ -41,8 +41,10 @@ A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
 U is pair-list only. . is column detail only.
-The column roster lists pending comparable columns only (accepted / all-equal columns are hidden).
-A-only / B-only keys and extras are not columns: open them from i overview (or next lever).
+The column roster lists pending comparable columns. v shows accepted/equal columns dim, not as remaining work.
+Roster a accepts the focused column in place (does not drill). Enter inspects.
+A-only / B-only keys and mismatched columns (headers on one side only) are not columns:
+open them from i overview (or next lever).
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 
 This TUI never writes, opens, or copies into the source files.
@@ -262,11 +264,12 @@ class OverviewModal(ModalScreen[str | None]):
         lines += [
             "",
             f"matched keys: {e.matched_key_count()}",
+            f"pending columns {e.pending_columns_n()}",
             f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
             f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
-            f"extras pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
+            f"mismatched columns pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
             f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
-            f"remaining pending total {e.pending_total()}",
+            f"remaining work items {e.pending_total()}  (exit 0 when this is 0)",
             "",
             "Enter an entry to open that list. Esc closes. a/A do not accept here.",
         ]
@@ -283,7 +286,7 @@ class OverviewModal(ModalScreen[str | None]):
         e = self.engine
         table.add_row("A-only keys", str(e.pending_a_only_n()), key="a_only")
         table.add_row("B-only keys", str(e.pending_b_only_n()), key="b_only")
-        table.add_row("Schema extras", str(e.pending_extras_n()), key="extras")
+        table.add_row("Mismatched columns", str(e.pending_extras_n()), key="extras")
         table.focus()
 
     def _entry_key(self) -> str | None:
@@ -498,6 +501,7 @@ class ReconcileApp(App[int]):
         Binding("question_mark", "help", "Help", show=False),
         Binding("question", "help", "Help", show=False),
         Binding("i", "overview", "Overview", show=False),
+        Binding("v", "toggle_accepted", "Show accepted", show=False),
         Binding(".", "repeat_pair", "Repeat", show=False),
         Binding("/", "regex", "Regex", show=False),
         Binding("=", "sentinel", "Sentinel", show=False),
@@ -514,6 +518,7 @@ class ReconcileApp(App[int]):
         self._table_keys: list[Any] = []
         self._mounted_screen: str | None = None
         self._page_count = 1
+        self.show_accepted_columns = False
 
     def draft_in_flight(self) -> bool:
         return self.engine.draft_in_flight()
@@ -604,10 +609,10 @@ class ReconcileApp(App[int]):
 
     def render_all(self) -> None:
         self._sync_filter_visibility()
-        screen = self.place.screen
-        if screen != self._mounted_screen:
+        layout = self._work_layout_key()
+        if layout != self._mounted_screen:
             self._remount_work()
-            self._mounted_screen = screen
+            self._mounted_screen = layout
         else:
             self._refill_work()
         self._render_pane()
@@ -636,7 +641,8 @@ class ReconcileApp(App[int]):
         if e.column_draft:
             return "y ACCEPT on roster  Esc back (draft stays)  ? help  q quit"
         if p.screen == "roster":
-            return "Enter drill  a/A column  / regex  = sentinel  i overview  ? help  q quit"
+            vis = "v hide accepted" if self.show_accepted_columns else "v show accepted"
+            return f"Enter drill  a column  {vis}  / regex  = sentinel  i overview  ? help  q quit"
         if p.screen == "pair_list":
             return "Enter cells  a pair  A column  U column  n/p page  Esc roster  ? help  q quit"
         if p.screen == "cell_step":
@@ -649,18 +655,23 @@ class ReconcileApp(App[int]):
             return "a extra  Esc roster  ? help  q quit"
         return "? help  q quit"
 
+    def _work_layout_key(self) -> str:
+        screen = self.place.screen
+        if screen != "roster":
+            return screen
+        return (
+            f"roster:draft={bool(self.engine.column_draft)}:"
+            f"accepted={self.show_accepted_columns}"
+        )
+
     def _render_footer(self) -> None:
         e = self.engine
         p = self.place
         bits = [
-            f"pending {e.pending_total()}",
-            f"cells {e.pending_cells_n()}",
-            f"A-only {e.pending_a_only_n()}",
-            f"B-only {e.pending_b_only_n()}",
-            f"extras {e.pending_extras_n()}",
+            f"pending columns {e.pending_columns_n()}",
+            f"unmatched rows {e.unmatched_rows_n()}",
+            f"mismatched columns {e.pending_extras_n()}",
         ]
-        if e.pending_total() == 0:
-            bits[0] = "pending 0"
         # Live set only. Never show column-draft N on the cell step (pair XOR).
         # Esc on pair list does not cancel a column draft — don't claim it does.
         if p.screen == "cell_step" and e.pair_draft_col is not None:
@@ -793,62 +804,89 @@ class ReconcileApp(App[int]):
             return
         # Same screen, new data: rebuild the existing grid in place.
         self._remount_work()
-        self._mounted_screen = screen
+        self._mounted_screen = self._work_layout_key()
+
+    def _roster_headers(self) -> list[str]:
+        headers: list[str] = []
+        if self.engine.column_draft:
+            headers.append("draft")
+        headers.append("name")
+        if self.show_accepted_columns:
+            headers.append("status")
+        headers.extend(["pending", "top-pair %", "equal", "cat", "speculative"])
+        return headers
+
+    def _column_status(self, row: RosterRow) -> str:
+        if row.pending > 0:
+            return "pending"
+        if row.accepted > 0:
+            return "accepted"
+        return "equal"
 
     def _roster_table(self) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
-        table.add_columns(
-            "accept", "name", "pending", "top-pair %", "accepted", "equal", "cat", "speculative"
-        )
+        table.add_columns(*self._roster_headers())
         self._fill_roster(table)
         return table
 
     def _fill_roster(self, table: DataTable) -> None:
         table.clear()
-        rows = self.engine.visible_column_roster(self.place.roster_filter)
+        rows = self.engine.column_roster(
+            self.place.roster_filter, include_settled=self.show_accepted_columns
+        )
         self._table_keys = []
         draft = bool(self.engine.column_draft)
+        headers = self._roster_headers()
         if not rows:
-            table.add_row(
-                "",
-                "(no pending columns — i overview for unmatched keys & extras)",
-                "0",
-                "—",
-                "0",
-                "—",
-                "—",
-                "",
-            )
+            empty = [""] * len(headers)
+            name_i = headers.index("name")
+            if self.show_accepted_columns:
+                empty[name_i] = (
+                    "(no comparable columns — i overview for unmatched rows & mismatched columns)"
+                )
+            else:
+                empty[name_i] = (
+                    "(no pending columns — v show accepted · i overview for unmatched rows & mismatched columns)"
+                )
+            if "pending" in headers:
+                empty[headers.index("pending")] = "0"
+            table.add_row(*empty)
             self._table_keys = [None]
             return
+        first_pending_i = next((i for i, r in enumerate(rows) if r.pending > 0), None)
         for i, r in enumerate(rows):
+            settled = r.pending <= 0
             if draft:
-                on = r.name in self.engine.column_draft
-                check = Text("[ON]", style="bold") if on else Text("[off]", style="dim")
-            else:
-                check = " "
+                if settled:
+                    check: str | Text = ""
+                elif r.name in self.engine.column_draft:
+                    check = Text("[ON]", style="bold")
+                else:
+                    check = Text("[off]", style="dim")
             styles = []
-            if i == 0:
+            if first_pending_i is not None and i == first_pending_i:
                 styles.append("bold underline")
             if r.returned:
                 styles.append("reverse")
-            if draft and r.name in self.engine.column_draft:
+            if settled:
+                styles.append("dim")
+            elif draft and r.name in self.engine.column_draft:
                 styles.append("bold")
             elif draft:
                 styles.append("dim")
             label = Text(r.name, style=" ".join(styles) if styles else "")
-            key = (r.kind, r.name, r.side)
-            table.add_row(
-                check,
-                label,
-                str(r.pending),
-                r.top_pair_pct,
-                str(r.accepted),
-                r.equal,
-                r.categorical,
-                r.speculative,
-                key=str(key),
+            cells: list[Any] = []
+            if draft:
+                cells.append(check)
+            cells.append(label)
+            if self.show_accepted_columns:
+                status = self._column_status(r)
+                cells.append(Text(status, style="dim") if settled else status)
+            cells.extend(
+                [str(r.pending), r.top_pair_pct, r.equal, r.categorical, r.speculative]
             )
+            key = (r.kind, r.name, r.side)
+            table.add_row(*cells, key=str(key))
             self._table_keys.append(r)
         idx = 0
         focus_name = self.place.focused_name
@@ -1093,7 +1131,7 @@ class ReconcileApp(App[int]):
                     break
             table.move_cursor(row=idx)
         return Vertical(
-            Static("Schema extras  (exact header + side)"),
+            Static("Mismatched columns  (header on one side only)"),
             table,
         )
 
@@ -1210,13 +1248,32 @@ class ReconcileApp(App[int]):
                 if not row:
                     return
                 if row.kind == "column":
-                    self.place = Place(
-                        screen="pair_list",
-                        column=row.name,
-                        roster_filter=p.roster_filter,
-                        last_pair=p.last_pair,
-                        focused_name=row.name,
-                    )
+                    if row.pending > 0:
+                        self.place = Place(
+                            screen="pair_list",
+                            column=row.name,
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            focused_name=row.name,
+                        )
+                    elif row.accepted > 0:
+                        self.place = Place(
+                            screen="accepted",
+                            column=row.name,
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            focused_name=row.name,
+                            view_tab="accepted",
+                        )
+                    else:
+                        self.place = Place(
+                            screen="equal",
+                            column=row.name,
+                            roster_filter=p.roster_filter,
+                            last_pair=p.last_pair,
+                            focused_name=row.name,
+                            view_tab="equal",
+                        )
                 else:
                     raise InTuiError("ERROR: column roster only drills comparable columns")
             elif p.screen == "pair_list":
@@ -1313,9 +1370,7 @@ class ReconcileApp(App[int]):
                         focused_name=nxt_name,
                     )
                 else:
-                    self.place = e.next_lever_place(
-                        Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
-                    )
+                    self._stay_on_roster_after_column(row.name)
             elif p.screen == "pair_list":
                 if e.column_draft:
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
@@ -1428,9 +1483,7 @@ class ReconcileApp(App[int]):
                         focused_name=nxt_name,
                     )
                 else:
-                    self.place = e.next_lever_place(
-                        Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
-                    )
+                    self._stay_on_roster_after_column(row.name)
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
                     n_pend = e.pending_cells.filter(pl.col("column") == p.column).height
@@ -1463,6 +1516,47 @@ class ReconcileApp(App[int]):
         except InTuiError as exc:
             self.set_error(exc.message)
             return
+        self.render_all()
+        self.set_focus_work()
+
+    def _stay_on_roster_after_column(self, accepted_name: str) -> None:
+        """Roster `a` accepts in place: hide the column (unless v) and stay home."""
+        p = self.place
+        rows = self.engine.column_roster(
+            p.roster_filter, include_settled=self.show_accepted_columns
+        )
+        pending = [r.name for r in rows if r.pending > 0]
+        nxt = None
+        if pending:
+            names = [r.name for r in rows]
+            nxt = pending[0]
+            if accepted_name in names:
+                after = [
+                    n for n in names[names.index(accepted_name) + 1 :] if n in set(pending)
+                ]
+                if after:
+                    nxt = after[0]
+        elif rows:
+            nxt = (
+                accepted_name
+                if any(r.name == accepted_name for r in rows)
+                else rows[0].name
+            )
+        self.place = Place(
+            screen="roster",
+            roster_filter=p.roster_filter,
+            last_pair=p.last_pair,
+            focused_name=nxt,
+        )
+
+    def action_toggle_accepted(self) -> None:
+        if self._modal_active():
+            return
+        if self.place.screen != "roster":
+            self.set_error("ERROR: show accepted is a roster toggle")
+            return
+        self.show_accepted_columns = not self.show_accepted_columns
+        self.set_error(None)
         self.render_all()
         self.set_focus_work()
 
