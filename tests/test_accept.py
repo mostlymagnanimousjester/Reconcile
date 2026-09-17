@@ -445,6 +445,11 @@ def test_accepted_column_hidden_from_visible_roster(tmp_path: Path):
     assert [r.name for r in vis] == ["Flag"]
     settled = next(r for r in eng.roster() if r.name == "Status")
     assert settled.pending == 0
+    shown = eng.column_roster(include_settled=True)
+    assert [r.name for r in shown] == ["Flag", "Status"]
+    status = next(r for r in shown if r.name == "Status")
+    assert status.pending == 0
+    assert status.accepted > 0
 
 
 def test_prune_place_maps_overview_screen_to_roster(tmp_path: Path):

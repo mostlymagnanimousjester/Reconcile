@@ -183,6 +183,12 @@ class Engine:
     def pending_extras_n(self) -> int:
         return len(self.pending_extras)
 
+    def pending_columns_n(self) -> int:
+        return sum(1 for r in self._roster_cache if r.kind == "column" and r.pending > 0)
+
+    def unmatched_rows_n(self) -> int:
+        return self.pending_a_only_n() + self.pending_b_only_n()
+
     def pending_total(self) -> int:
         return (
             self.pending_cells_n()
@@ -212,6 +218,9 @@ class Engine:
 
     def visible_column_roster(self, name_filter: str = "") -> list[RosterRow]:
         return roster_mod.visible_column_roster(self, name_filter)
+
+    def column_roster(self, name_filter: str = "", include_settled: bool = False) -> list[RosterRow]:
+        return roster_mod.column_roster(self, name_filter, include_settled)
 
     def _roster_agg_maps(self) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
         return roster_mod._roster_agg_maps(self)

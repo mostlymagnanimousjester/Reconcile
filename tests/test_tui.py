@@ -153,6 +153,9 @@ def test_help_power_user_grain():
     assert "refused while a pair draft" in HELP
     assert "undo last accept" in HELP
     assert "y ACCEPT selected" in HELP
+    assert "current selection" in HELP.lower()
+    assert "v      roster" in HELP or "v shows" in HELP.lower() or "show/hide accepted" in HELP.lower()
+    assert "in place" in HELP.lower()
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -266,7 +269,7 @@ def test_categorical_top_row_a_accepts_pair(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_filter_does_not_hide_next_lever(tmp_path: Path):
+def test_roster_a_stays_on_roster_when_filter_hides_others(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,1\n")
     write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,1\n")
@@ -287,9 +290,9 @@ def test_filter_does_not_hide_next_lever(tmp_path: Path):
             assert row is not None and row.name == "Flag"
             app.action_accept()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
-            assert app.place.roster_filter == ""
+            assert app.place.screen == "roster"
+            assert next(r for r in app.engine.roster() if r.name == "Flag").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "Status").pending > 0
 
     asyncio.run(_run())
 
@@ -503,7 +506,8 @@ def test_drafted_column_a_stays_on_roster_until_last(tmp_path: Path):
             app.action_accept()
             await pilot.pause()
             assert not app.engine.column_draft
-            assert app.place.screen != "roster" or app.engine.pending_cells_n() == 0
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == 0
 
     asyncio.run(_run())
 
@@ -682,10 +686,9 @@ def test_zero_pending_column_is_hidden_on_roster(tmp_path: Path):
             names = [r.name for r in app.engine.visible_column_roster()]
             assert "Status" in names
             assert "ok" not in names
-            table = app.query_one("#grid")
-            shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
-            assert any("Status" in s for s in shown)
-            assert not any(s.strip() == "ok" for s in shown)
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert "Status" in shown
+            assert "ok" not in shown
 
     asyncio.run(_run())
 
@@ -1756,11 +1759,10 @@ def test_roster_hides_accepted_column_and_unmatched_rows(tmp_path: Path):
         async with app.run_test() as pilot:
             await pilot.pause()
             table = app.query_one("#grid")
-            shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
-            assert any("Status" in s for s in shown)
-            assert not any("ok" in s for s in shown)
-            assert not any("A-only" in s for s in shown)
-            assert not any("cust" in s for s in shown)
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert "Status" in shown
+            assert "ok" not in shown
+            assert not any(r.kind in ("A-only", "B-only", "extra") for r in app._table_keys if r)
             app.place.focused_name = "Status"
             app.render_all()
             await pilot.pause()
@@ -1771,12 +1773,11 @@ def test_roster_hides_accepted_column_and_unmatched_rows(tmp_path: Path):
             await pilot.pause()
             vis = [r.name for r in app.engine.visible_column_roster()]
             assert "Status" not in vis
+            assert app.place.screen == "roster"
             assert app.engine.pending_a_only_n() == a_only_before
             assert app.engine.pending_extras_n() == extras_before
-            if app.place.screen == "roster":
-                table = app.query_one("#grid")
-                shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
-                assert not any("Status" in s and "A-only" not in s for s in shown) or "Status" not in vis
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert "Status" not in shown
 
     asyncio.run(_run())
 
@@ -1801,6 +1802,7 @@ def test_roster_a_accepts_column_not_unmatched_grain(tmp_path: Path):
             assert app.engine.pending_a_only_n() == 1
             assert app.engine.last_grain is not None
             assert app.engine.last_grain[0] == "column"
+            assert app.place.screen == "roster"
 
     asyncio.run(_run())
 
@@ -1866,7 +1868,7 @@ def test_overview_enter_opens_a_only(tmp_path: Path):
             vis = [r.name for r in app.engine.visible_column_roster()]
             assert vis == []
             table = app.query_one("#grid")
-            shown = str(table.get_row_at(0)[1])
+            shown = str(table.get_row_at(0)[0])
             assert "i overview" in shown
             app.action_overview()
             await pilot.pause()
@@ -1879,5 +1881,192 @@ def test_overview_enter_opens_a_only(tmp_path: Path):
             await pilot.pause()
             assert app.place.screen == "a_only"
             assert app.engine.pending_a_only_n() == 1
+
+    asyncio.run(_run())
+
+
+def test_roster_a_accepts_column_without_leaving_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            app.query_one("#grid").focus()
+            focused = app._focused_roster()
+            assert focused is not None and focused.kind == "column"
+            accepted_name = focused.name
+            assert focused.pending > 0
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert next(r for r in app.engine.roster() if r.name == accepted_name).pending == 0
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert accepted_name not in shown
+            leftover = [r.name for r in app.engine.visible_column_roster()]
+            if leftover:
+                assert app.place.focused_name == leftover[0]
+
+    asyncio.run(_run())
+
+
+def test_roster_v_toggles_accepted_columns(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,ok\n1,Y,same\n")
+    write_csv(pb, "id,Status,ok\n1,Yes,same\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert shown == ["Status"]
+            footer = str(app.query_one("#footer").render())
+            assert "v show accepted" in footer
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "accepted" not in labels
+            assert "accept" not in labels
+            assert "status" not in labels
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert "Status" not in [r.name for r in app._table_keys if r is not None]
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.show_accepted_columns is True
+            names = [r.name for r in app._table_keys if r is not None]
+            assert "Status" in names
+            assert "ok" in names
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "status" in labels
+            assert "accepted" not in labels
+            footer = str(app.query_one("#footer").render())
+            assert "v hide accepted" in footer
+            status_i = labels.index("status")
+            by_name = {}
+            for i, r in enumerate(app._table_keys):
+                if r is not None:
+                    by_name[r.name] = str(table.get_row_at(i)[status_i])
+            assert by_name["Status"] == "accepted"
+            assert by_name["ok"] == "equal"
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.show_accepted_columns is False
+            assert "Status" not in [r.name for r in app._table_keys if r is not None]
+            assert "ok" not in [r.name for r in app._table_keys if r is not None]
+
+    asyncio.run(_run())
+
+
+def test_a_accepts_grain_on_pair_cell_unmatched_and_extra(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,cust\n1,Y,1\n2,onlyA,2\n")
+    write_csv(pb, "id,Status\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            pending_before = app.engine.pending_cells_n()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == pending_before - 1
+            assert app.engine.last_grain is not None
+            assert app.engine.last_grain[0] == "pair"
+
+            app.place = Place(screen="cell_step", column="Status", pair_val_a="Y", pair_val_b="Yes")
+            # Status already accepted via pair; rebuild a cell-step case on a fresh extra/unmatched.
+            app.place = Place(screen="a_only")
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.engine.pending_a_only_n() == 1
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.engine.pending_a_only_n() == 0
+            assert app.engine.last_grain[0] == "unmatched"
+
+            app.place = Place(screen="extras", extra_name="cust", extra_side="A")
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            assert app.engine.pending_extras_n() == 1
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.engine.pending_extras_n() == 0
+            assert app.engine.last_grain[0] == "extra"
+
+    asyncio.run(_run())
+
+
+def test_a_on_cell_step_accepts_cell(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 2
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            pending_before = app.engine.pending_cells_n()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == pending_before - 1
+            assert app.engine.last_grain is not None
+            assert app.engine.last_grain[0] == "cell"
+            assert app.place.screen == "cell_step"
+
+    asyncio.run(_run())
+
+
+def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,cust\n1,Y,1\n2,onlyA,2\n")
+    write_csv(pb, "id,Status\n1,Yes\n3,onlyB\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "pending columns 1" in footer
+            assert "unmatched rows 2" in footer
+            assert "mismatched columns 1" in footer
+            assert "cells " not in footer
+            assert "extras " not in footer
+            assert "v show accepted" in footer
+            app.action_overview()
+            await pilot.pause()
+            body = str(app.screen.query_one("#overview-body").render())
+            assert "mismatched columns pending 1" in body
+            assert "extras pending" not in body
+            table = app.screen.query_one("#ov-entries")
+            labels = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+            assert "Mismatched columns" in labels
+            assert "Schema extras" not in labels
 
     asyncio.run(_run())
