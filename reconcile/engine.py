@@ -210,6 +210,9 @@ class Engine:
     def roster(self, name_filter: str = "") -> list[RosterRow]:
         return roster_mod.roster(self, name_filter)
 
+    def visible_column_roster(self, name_filter: str = "") -> list[RosterRow]:
+        return roster_mod.visible_column_roster(self, name_filter)
+
     def _roster_agg_maps(self) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
         return roster_mod._roster_agg_maps(self)
 
@@ -697,6 +700,13 @@ class Engine:
         if p.screen == "extras":
             if not self.extras_a and not self.extras_b:
                 return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
+        if p.screen == "overview":
+            return Place(
+                screen="roster",
+                roster_filter=p.roster_filter,
+                last_pair=p.last_pair,
+                focused_name=p.focused_name,
+            )
         return p
 
     def identity_lines(self) -> list[str]:

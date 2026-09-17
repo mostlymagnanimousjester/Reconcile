@@ -432,3 +432,26 @@ def test_refresh_clears_stale_last_grain(tmp_path: Path):
     undone = eng.undo_last_grain()
     assert undone == 0
     assert eng.pending_cells_n() == pending_before
+
+
+def test_accepted_column_hidden_from_visible_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert {r.name for r in eng.visible_column_roster()} == {"Status", "Flag"}
+    eng.accept_column("Status")
+    vis = eng.visible_column_roster()
+    assert [r.name for r in vis] == ["Flag"]
+    settled = next(r for r in eng.roster() if r.name == "Status")
+    assert settled.pending == 0
+
+
+def test_prune_place_maps_overview_screen_to_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    restored = eng.prune_place(Place(screen="overview", roster_filter="val"))
+    assert restored.screen == "roster"
+    assert restored.roster_filter == "val"

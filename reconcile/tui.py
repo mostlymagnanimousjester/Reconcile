@@ -17,28 +17,32 @@ from reconcile.engine import Engine, InTuiError, Place, RosterRow
 HELP = """\
 KEYS (same everywhere; type in a field when focused)
 
-Enter  drill (roster row, pair → cell step, modal Run)
-Esc    back (close modal → cancel roster/cell-step draft → parent; Overview Esc → roster)
-Space  toggle focused column/cell in the current draft
-a      accept focused grain now (refused on Accepted / Equal / All matched)
-A      accept entire column (only when no pair draft) / all unmatched on this side
+Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
+Esc    back (close modal → cancel roster/cell-step draft → parent screen)
+Space  toggle focused column/cell in the current draft (ON / off)
+a      accept focused grain on detail (pair / cell / one unmatched key / extra).
+       On the column roster, a accepts the focused COLUMN (not a pair/cell/key).
+A      accept entire column (roster column / pair list; no pair draft) / all unmatched on this side (A-only / B-only grid)
 y      confirm the live draft (column XOR pair cells; all-unchecked pair draft stays)
 u      undo last accept, then focused grain.
-       Roster u on A-only / B-only undoes all unmatched on that side (same grain as roster a).
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 r      refresh (re-read live files; last good state on failure)
 .      last pair: cell-step if already on that column's pair list; else that pair on its pair list (column detail only)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
+i      overview modal (counts + unmatched keys / extras). Esc closes.
 c      context-column picker (cell step)
 n / p  next / previous page
 q      quit (discards unconfirmed draft)
 ?      this help
 
 At most one draft: column (roster / regex, = sentinel) XOR pair cells (cell step).
+After / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
 A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
-U is pair-list only. . is column detail only. Overview Esc returns to the roster.
+U is pair-list only. . is column detail only.
+The column roster lists pending comparable columns only (accepted / all-equal columns are hidden).
+A-only / B-only keys and extras are not columns: open them from i overview (or next lever).
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 
 This TUI never writes, opens, or copies into the source files.
@@ -60,6 +64,11 @@ Screen {
 }
 #banner.hidden {
     display: none;
+}
+#banner.draft {
+    background: #3a2a10;
+    color: #ffe566;
+    text-style: bold;
 }
 #filter-row {
     height: 3;
@@ -226,6 +235,91 @@ class HelpModal(ModalScreen[None]):
         self.dismiss(None)
 
 
+class OverviewModal(ModalScreen[str | None]):
+    """Counts + unmatched/extras entries. Not a place.screen. Esc closes."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", priority=True),
+        Binding("enter", "pick", "Open", priority=True),
+        Binding("a", "refuse", show=False, priority=True),
+        Binding("A", "refuse", show=False, priority=True),
+        Binding("u", "refuse", show=False, priority=True),
+        Binding("U", "refuse", show=False, priority=True),
+        Binding("y", "noop", show=False, priority=True),
+        Binding("n", "no_pages", show=False, priority=True),
+        Binding("p", "no_pages", show=False, priority=True),
+        Binding("space", "noop", show=False, priority=True),
+    ]
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__()
+        self.engine = engine
+
+    def compose(self) -> ComposeResult:
+        e = self.engine
+        lines = ["OVERVIEW (counts)", ""]
+        lines.extend(e.identity_lines())
+        lines += [
+            "",
+            f"matched keys: {e.matched_key_count()}",
+            f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
+            f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
+            f"extras pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
+            f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
+            f"remaining pending total {e.pending_total()}",
+            "",
+            "Enter an entry to open that list. Esc closes. a/A do not accept here.",
+        ]
+        with Vertical(id="modal"):
+            yield Static("\n".join(lines), id="overview-body")
+            table: DataTable = DataTable(cursor_type="row", id="ov-entries")
+            table.add_columns("entry", "pending")
+            yield table
+            yield Static("Enter open list · Esc close", classes="dim")
+            yield Static("", id="modal-err", classes="error")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#ov-entries", DataTable)
+        e = self.engine
+        table.add_row("A-only keys", str(e.pending_a_only_n()), key="a_only")
+        table.add_row("B-only keys", str(e.pending_b_only_n()), key="b_only")
+        table.add_row("Schema extras", str(e.pending_extras_n()), key="extras")
+        table.focus()
+
+    def _entry_key(self) -> str | None:
+        table = self.query_one("#ov-entries", DataTable)
+        if table.row_count <= 0:
+            return None
+        row = table.get_row_at(table.cursor_row)
+        label = str(row[0])
+        if "A-only" in label:
+            return "a_only"
+        if "B-only" in label:
+            return "b_only"
+        return "extras"
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_pick(self) -> None:
+        key = self._entry_key()
+        if key in {"a_only", "b_only", "extras"}:
+            self.dismiss(key)
+
+    def action_refuse(self) -> None:
+        self.query_one("#modal-err", Static).update("ERROR: not remaining work")
+
+    def action_no_pages(self) -> None:
+        self.query_one("#modal-err", Static).update("ERROR: no pages on this screen")
+
+    def action_noop(self) -> None:
+        return
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.action_pick()
+
+
 class RegexModal(ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -262,7 +356,7 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
                 yield Button("B", id="side-b")
             yield Input(placeholder="exact string (empty is legal)", id="sentinel")
             yield Static(
-                "Enter Run · Esc cancel. Run is refused until a side is selected. No trim.",
+                "Enter Run · Esc cancel. After Run: y ACCEPT selected, Space select/deselect.",
                 classes="dim",
             )
             yield Static("", id="modal-err", classes="error")
@@ -313,6 +407,7 @@ class ContextModal(ModalScreen[list[str] | None]):
                 "e",
                 "o",
                 "c",
+                "i",
                 "slash",
                 "equals",
                 "full_stop",
@@ -402,6 +497,7 @@ class ReconcileApp(App[int]):
         Binding("full_stop", "repeat_pair", "Repeat", show=False),
         Binding("question_mark", "help", "Help", show=False),
         Binding("question", "help", "Help", show=False),
+        Binding("i", "overview", "Overview", show=False),
         Binding(".", "repeat_pair", "Repeat", show=False),
         Binding("/", "regex", "Regex", show=False),
         Binding("=", "sentinel", "Sentinel", show=False),
@@ -432,7 +528,7 @@ class ReconcileApp(App[int]):
         yield Static("", id="footer")
 
     def on_mount(self) -> None:
-        if self.place.screen == "roster" or not self.place.screen:
+        if self.place.screen in {"roster", "overview"} or not self.place.screen:
             self.place.screen = "roster"
         filt = self.query_one("#filter", Input)
         filt.value = self.place.roster_filter
@@ -455,20 +551,40 @@ class ReconcileApp(App[int]):
         # Disabled bindings are skipped; the modal's Esc/Enter then run.
         if action in {"drill", "back"} and self._modal_active():
             return False
+        if action == "overview" and self._modal_active():
+            return False
         if self._in_input() and action not in {"back", "drill"}:
             return False
         return True
 
     def set_error(self, msg: str | None) -> None:
-        banner = self.query_one("#banner", Static)
-        if msg:
-            banner.update(msg if msg.startswith("ERROR") else f"ERROR: {msg}")
-            banner.set_class(False, "hidden")
-            banner.add_class("error")
-        else:
-            banner.update("")
-            banner.set_class(True, "hidden")
         self.tui_error = msg
+        self._paint_banner()
+
+    def _paint_banner(self) -> None:
+        banner = self.query_one("#banner", Static)
+        if self.tui_error:
+            banner.update(
+                self.tui_error if self.tui_error.startswith("ERROR") else f"ERROR: {self.tui_error}"
+            )
+            banner.set_class(False, "hidden")
+            banner.remove_class("draft")
+            banner.add_class("error")
+            return
+        if self.engine.column_draft:
+            n = self.engine.column_draft_n()
+            banner.update(
+                f"{n} column(s) selected for accept. "
+                "y ACCEPT selected · Space select/deselect · a this column · Esc cancel"
+            )
+            banner.set_class(False, "hidden")
+            banner.remove_class("error")
+            banner.add_class("draft")
+            return
+        banner.update("")
+        banner.set_class(True, "hidden")
+        banner.remove_class("error")
+        banner.remove_class("draft")
 
     def set_focus_work(self) -> None:
         if self.query("#grid"):
@@ -496,8 +612,7 @@ class ReconcileApp(App[int]):
             self._refill_work()
         self._render_pane()
         self._render_footer()
-        if self.tui_error:
-            self.set_error(self.tui_error)
+        self._paint_banner()
         self.call_after_refresh(self.set_focus_work)
 
     def _sync_filter_visibility(self) -> None:
@@ -517,14 +632,11 @@ class ReconcileApp(App[int]):
         if p.screen == "cell_step" and e.pair_draft_col is not None:
             return "Space toggle  y confirm  Esc cancel  a cell  c context  ? help  q quit"
         if e.column_draft and p.screen == "roster":
-            return "Space toggle  y confirm  Esc cancel  a grain  ? help  q quit"
+            return "y ACCEPT selected  Space select/deselect  a this column  Esc cancel  ? help  q quit"
         if e.column_draft:
-            return "y confirm on roster  Esc back (draft stays)  ? help  q quit"
+            return "y ACCEPT on roster  Esc back (draft stays)  ? help  q quit"
         if p.screen == "roster":
-            return (
-                f"Enter drill  a grain  {self._roster_A_hint()}  "
-                "/ regex  = sentinel  Esc overview  ? help  q quit"
-            )
+            return "Enter drill  a/A column  / regex  = sentinel  i overview  ? help  q quit"
         if p.screen == "pair_list":
             return "Enter cells  a pair  A column  U column  n/p page  Esc roster  ? help  q quit"
         if p.screen == "cell_step":
@@ -535,21 +647,7 @@ class ReconcileApp(App[int]):
             return "a key  A all  n/p page  Esc roster  ? help  q quit"
         if p.screen == "extras":
             return "a extra  Esc roster  ? help  q quit"
-        if p.screen == "overview":
-            return "Enter list  Esc roster  ? help  q quit"
         return "? help  q quit"
-
-    def _roster_A_hint(self) -> str:
-        row = self._focused_roster()
-        if row is None:
-            return "A column"
-        if row.kind == "column":
-            return "A column"
-        if row.kind in ("A-only", "B-only"):
-            return "A unmatched"
-        if row.kind == "extra":
-            return "A extra"
-        return "A column"
 
     def _render_footer(self) -> None:
         e = self.engine
@@ -569,9 +667,11 @@ class ReconcileApp(App[int]):
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
         elif e.column_draft and p.screen == "roster":
-            bits.append(f"draft {e.column_draft_n()}  y confirm  Esc cancel  Space toggle")
+            bits.append(
+                f"draft {e.column_draft_n()}  y ACCEPT selected  Space select/deselect"
+            )
         elif e.column_draft:
-            bits.append(f"draft {e.column_draft_n()}  y confirm on roster  Esc back (draft stays)")
+            bits.append(f"draft {e.column_draft_n()}  y ACCEPT on roster  Esc back (draft stays)")
         elif e.pair_draft_col is not None:
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
@@ -653,8 +753,6 @@ class ReconcileApp(App[int]):
                 pane.update(t)
             else:
                 pane.update("")
-        elif p.screen == "overview":
-            pane.update("")
         else:
             pane.update("")
 
@@ -662,8 +760,6 @@ class ReconcileApp(App[int]):
         screen = self.place.screen
         if screen == "roster":
             return self._roster_table()
-        if screen == "overview":
-            return self._overview()
         if screen == "pair_list":
             return self._pair_view()
         if screen in ("cell_step", "accepted", "equal", "all_matched"):
@@ -701,38 +797,50 @@ class ReconcileApp(App[int]):
 
     def _roster_table(self) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
-        table.add_columns(" ", "kind", "name", "side", "pending", "top-pair %", "accepted", "equal", "cat", "speculative")
+        table.add_columns(
+            "accept", "name", "pending", "top-pair %", "accepted", "equal", "cat", "speculative"
+        )
         self._fill_roster(table)
         return table
 
     def _fill_roster(self, table: DataTable) -> None:
         table.clear()
-        rows = self.engine.roster(self.place.roster_filter)
+        rows = self.engine.visible_column_roster(self.place.roster_filter)
         self._table_keys = []
+        draft = bool(self.engine.column_draft)
         if not rows:
-            table.add_row("", "", "(no rows — empty filter or no remaining-work kinds)", "—", "0", "—", "0", "—", "—", "")
+            table.add_row(
+                "",
+                "(no pending columns — i overview for unmatched keys & extras)",
+                "0",
+                "—",
+                "0",
+                "—",
+                "—",
+                "",
+            )
             self._table_keys = [None]
             return
         for i, r in enumerate(rows):
-            check = " "
-            if self.engine.column_draft:
-                if r.kind == "column":
-                    check = "[x]" if r.name in self.engine.column_draft else "[ ]"
-            name = r.name
+            if draft:
+                on = r.name in self.engine.column_draft
+                check = Text("[ON]", style="bold") if on else Text("[off]", style="dim")
+            else:
+                check = " "
             styles = []
             if i == 0:
                 styles.append("bold underline")
             if r.returned:
                 styles.append("reverse")
-            if r.pending == 0:
+            if draft and r.name in self.engine.column_draft:
+                styles.append("bold")
+            elif draft:
                 styles.append("dim")
-            label = Text(name, style=" ".join(styles) if styles else "")
+            label = Text(r.name, style=" ".join(styles) if styles else "")
             key = (r.kind, r.name, r.side)
             table.add_row(
                 check,
-                r.kind,
                 label,
-                r.side,
                 str(r.pending),
                 r.top_pair_pct,
                 str(r.accepted),
@@ -744,39 +852,11 @@ class ReconcileApp(App[int]):
             self._table_keys.append(r)
         idx = 0
         focus_name = self.place.focused_name
-        extra = (self.place.extra_side, self.place.extra_name)
         for i, r in enumerate(rows):
             if focus_name and r.name == focus_name:
-                if r.kind == "extra" and extra[0] and r.side != extra[0]:
-                    continue
                 idx = i
                 break
         table.move_cursor(row=idx)
-
-    def _overview(self) -> Static:
-        e = self.engine
-        lines = ["OVERVIEW (counts — not home)", ""]
-        lines.extend(e.identity_lines())
-        lines += [
-            "",
-            f"matched keys: {e.matched_key_count()}",
-            f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
-            f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
-            f"extras pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
-            f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
-            f"remaining pending total {e.pending_total()}",
-            "",
-            "Enter on A-only / B-only / Schema extras below, or Esc back to the roster.",
-            "A-only keys · B-only keys · Schema extras (same lists as roster Enter)",
-        ]
-        body = "\n".join(lines)
-        # compact entry table
-        table: DataTable = DataTable(cursor_type="row", id="grid")
-        table.add_columns("entry")
-        table.add_row("A-only keys", key="a_only")
-        table.add_row("B-only keys", key="b_only")
-        table.add_row("Schema extras", key="extras")
-        return Vertical(Static(body), table)
 
     def _tab_bar(self, current: str) -> Horizontal:
         labels = [
@@ -1050,6 +1130,27 @@ class ReconcileApp(App[int]):
     def action_help(self) -> None:
         self.push_screen(HelpModal())
 
+    def action_overview(self) -> None:
+        if self._modal_active():
+            return
+
+        def done(entry: str | None) -> None:
+            if not entry:
+                self.set_focus_work()
+                return
+            p = self.place
+            if entry == "a_only":
+                self.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            elif entry == "b_only":
+                self.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            else:
+                self.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
+            self.set_error(None)
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(OverviewModal(self.engine), done)
+
     def action_quit_app(self) -> None:
         self.engine.cancel_drafts()
         self.pair_draft_unchecked = set()
@@ -1082,8 +1183,6 @@ class ReconcileApp(App[int]):
                 last_pair=p.last_pair,
                 focused_name=p.column or p.focused_name,
             )
-        elif p.screen == "roster":
-            self.place = Place(screen="overview", roster_filter=p.roster_filter, last_pair=p.last_pair)
         elif p.screen == "overview":
             self.place = Place(
                 screen="roster",
@@ -1091,6 +1190,7 @@ class ReconcileApp(App[int]):
                 last_pair=p.last_pair,
                 focused_name=p.focused_name,
             )
+        # roster Esc: stay (overview is i, not a screen)
         self.render_all()
         self.set_focus_work()
 
@@ -1117,28 +1217,8 @@ class ReconcileApp(App[int]):
                         last_pair=p.last_pair,
                         focused_name=row.name,
                     )
-                elif row.kind == "A-only":
-                    self.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
-                elif row.kind == "B-only":
-                    self.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
-                elif row.kind == "extra":
-                    self.place = Place(
-                        screen="extras",
-                        extra_side=row.side,
-                        extra_name=row.name,
-                        roster_filter=p.roster_filter,
-                        last_pair=p.last_pair,
-                    )
-            elif p.screen == "overview":
-                table = self.query_one("#grid", DataTable)
-                key = table.get_row_at(table.cursor_row)
-                label = str(key[0])
-                if "A-only" in label:
-                    self.place = Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
-                elif "B-only" in label:
-                    self.place = Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair)
                 else:
-                    self.place = Place(screen="extras", roster_filter=p.roster_filter, last_pair=p.last_pair)
+                    raise InTuiError("ERROR: column roster only drills comparable columns")
             elif p.screen == "pair_list":
                 if e.column_draft:
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
@@ -1211,49 +1291,30 @@ class ReconcileApp(App[int]):
                 row = self._focused_roster()
                 if not row:
                     return
-                if row.kind == "column":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending cells in this column")
-                    n = e.accept_column(row.name)
-                    e.remember_grain(("column", row.name), n)
-                    if e.column_draft:
-                        nxt_name = next(
-                            (
-                                r.name
-                                for r in e._roster_cache
-                                if r.kind == "column" and r.name in e.column_draft
-                            ),
-                            None,
-                        )
-                        self.place = Place(
-                            screen="roster",
-                            roster_filter=p.roster_filter,
-                            last_pair=p.last_pair,
-                            focused_name=nxt_name,
-                        )
-                    else:
-                        self.place = e.next_lever_place(
-                            Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
-                        )
-                elif row.kind == "A-only":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending A-only keys")
-                    n = e.accept_all_unmatched("A")
-                    e.remember_grain(("unmatched_all", "A"), n)
-                    self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
-                elif row.kind == "B-only":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending B-only keys")
-                    n = e.accept_all_unmatched("B")
-                    e.remember_grain(("unmatched_all", "B"), n)
-                    self.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
-                elif row.kind == "extra":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: extra is not pending")
-                    n = e.accept_extra(row.side, row.name)
-                    e.remember_grain(("extra", row.side, row.name), n)
+                if row.kind != "column":
+                    raise InTuiError("ERROR: column roster accepts columns only")
+                if row.pending == 0:
+                    raise InTuiError("ERROR: no pending cells in this column")
+                n = e.accept_column(row.name)
+                e.remember_grain(("column", row.name), n)
+                if e.column_draft:
+                    nxt_name = next(
+                        (
+                            r.name
+                            for r in e.visible_column_roster()
+                            if r.name in e.column_draft
+                        ),
+                        None,
+                    )
+                    self.place = Place(
+                        screen="roster",
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                        focused_name=nxt_name,
+                    )
+                else:
                     self.place = e.next_lever_place(
-                        Place(screen="extras", extra_side=row.side, extra_name=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
+                        Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
                     )
             elif p.screen == "pair_list":
                 if e.column_draft:
@@ -1345,55 +1406,30 @@ class ReconcileApp(App[int]):
                 row = self._focused_roster()
                 if not row:
                     return
-                if row.kind == "column":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending cells in this column")
-                    n = e.accept_column(row.name)
-                    e.remember_grain(("column", row.name), n)
-                    if e.column_draft:
-                        nxt_name = next(
-                            (
-                                r.name
-                                for r in e._roster_cache
-                                if r.kind == "column" and r.name in e.column_draft
-                            ),
-                            None,
-                        )
-                        self.place = Place(
-                            screen="roster",
-                            roster_filter=p.roster_filter,
-                            last_pair=p.last_pair,
-                            focused_name=nxt_name,
-                        )
-                    else:
-                        self.place = e.next_lever_place(
-                            Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
-                        )
-                elif row.kind == "A-only":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending A-only keys")
-                    n = e.accept_all_unmatched("A")
-                    e.remember_grain(("unmatched_all", "A"), n)
-                    self.place = e.next_lever_place(Place(screen="a_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
-                elif row.kind == "B-only":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: no pending B-only keys")
-                    n = e.accept_all_unmatched("B")
-                    e.remember_grain(("unmatched_all", "B"), n)
-                    self.place = e.next_lever_place(Place(screen="b_only", roster_filter=p.roster_filter, last_pair=p.last_pair))
-                elif row.kind == "extra":
-                    if row.pending == 0:
-                        raise InTuiError("ERROR: extra is not pending")
-                    n = e.accept_extra(row.side, row.name)
-                    e.remember_grain(("extra", row.side, row.name), n)
+                if row.kind != "column":
+                    raise InTuiError("ERROR: column roster accepts columns only")
+                if row.pending == 0:
+                    raise InTuiError("ERROR: no pending cells in this column")
+                n = e.accept_column(row.name)
+                e.remember_grain(("column", row.name), n)
+                if e.column_draft:
+                    nxt_name = next(
+                        (
+                            r.name
+                            for r in e.visible_column_roster()
+                            if r.name in e.column_draft
+                        ),
+                        None,
+                    )
+                    self.place = Place(
+                        screen="roster",
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                        focused_name=nxt_name,
+                    )
+                else:
                     self.place = e.next_lever_place(
-                        Place(
-                            screen="extras",
-                            extra_side=row.side,
-                            extra_name=row.name,
-                            roster_filter=p.roster_filter,
-                            last_pair=p.last_pair,
-                        )
+                        Place(column=row.name, roster_filter=p.roster_filter, last_pair=p.last_pair)
                     )
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
@@ -1466,12 +1502,6 @@ class ReconcileApp(App[int]):
                 return 0
             if row.kind == "column":
                 return e.undo_column(row.name)
-            if row.kind == "A-only":
-                return e.undo_unmatched("A")
-            if row.kind == "B-only":
-                return e.undo_unmatched("B")
-            if row.kind == "extra":
-                return e.undo_extra(row.side, row.name)
             return 0
         if p.screen == "pair_list":
             pair = self._focused_pair()
@@ -1702,6 +1732,7 @@ class ReconcileApp(App[int]):
                 return
             try:
                 self.engine.start_regex_draft(pat)
+                self.place.focused_name = sorted(self.engine.column_draft)[0]
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1727,6 +1758,7 @@ class ReconcileApp(App[int]):
             side, sentinel = result
             try:
                 self.engine.start_sentinel_draft(side, sentinel)
+                self.place.focused_name = sorted(self.engine.column_draft)[0]
                 self.set_error(None)
             except InTuiError as exc:
                 self.set_error(exc.message)
@@ -1811,7 +1843,7 @@ class ReconcileApp(App[int]):
         self.push_screen(ContextModal(names, selected), done)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if self.place.screen in {"roster", "overview", "pair_list"}:
+        if self.place.screen in {"roster", "pair_list"}:
             event.stop()
             self.action_drill()
 
