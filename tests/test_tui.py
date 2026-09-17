@@ -1579,11 +1579,11 @@ def test_e_and_o_do_not_open_zip(tmp_path: Path):
             await pilot.press("e")
             await pilot.pause()
             assert app.place.screen == "roster"
-            assert app.screen is app
+            assert app.screen.id == "_default"
             await pilot.press("o")
             await pilot.pause()
             assert app.place.screen == "roster"
-            assert app.screen is app
+            assert app.screen.id == "_default"
             assert not hasattr(app, "action_export")
             assert not hasattr(app, "action_open_zip")
 
