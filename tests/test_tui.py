@@ -4,7 +4,15 @@ from pathlib import Path
 from textual.widgets import Button
 
 from reconcile.engine import Engine, Place
-from reconcile.tui import HELP, ContextModal, HelpModal, ReconcileApp, RegexModal, SentinelModal
+from reconcile.tui import (
+    HELP,
+    ContextModal,
+    HelpModal,
+    OverviewModal,
+    ReconcileApp,
+    RegexModal,
+    SentinelModal,
+)
 from tests.xlsxutil import write_csv
 
 
@@ -33,9 +41,13 @@ def test_tui_launches_against_fixture(tmp_path: Path):
             await pilot.press("escape")
             await pilot.pause()
             assert app.place.screen == "roster"
+            await pilot.press("i")
+            await pilot.pause()
+            assert isinstance(app.screen, OverviewModal)
             await pilot.press("escape")
             await pilot.pause()
-            assert app.place.screen == "overview"
+            assert app.place.screen == "roster"
+            assert not isinstance(app.screen, OverviewModal)
             await pilot.press("question_mark")
             await pilot.pause()
             await pilot.press("escape")
@@ -134,12 +146,13 @@ def test_help_xor_and_no_digit_tab_keys():
 
 
 def test_help_power_user_grain():
-    assert "Overview Esc" in HELP
+    assert "overview modal" in HELP.lower()
     assert "pair list only" in HELP or "pair-list only" in HELP
     assert "column detail only" in HELP
-    assert "A-only / B-only undoes all unmatched" in HELP
+    assert "column roster" in HELP.lower()
     assert "refused while a pair draft" in HELP
     assert "undo last accept" in HELP
+    assert "y ACCEPT selected" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -291,12 +304,13 @@ def test_roster_A_on_extra_accepts_like_a(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.place.focused_name = "cust"
+            app.place.screen = "extras"
+            app.place.extra_name = "cust"
             app.render_all()
             await pilot.pause()
             app.query_one("#grid").focus()
-            row = app._focused_roster()
-            assert row is not None and row.kind == "extra"
+            rec = app._focused_rec()
+            assert rec is not None and rec["name"] == "cust"
             app.action_accept_all()
             await pilot.pause()
             assert app.engine.pending_extras_n() == 0
@@ -578,7 +592,7 @@ def test_u_undoes_last_accept_after_next_lever(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_overview_esc_returns_to_roster(tmp_path: Path):
+def test_overview_is_modal_not_a_screen(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")
     write_csv(pb, "id,val\n1,Yes\n")
@@ -591,10 +605,16 @@ def test_overview_esc_returns_to_roster(tmp_path: Path):
             assert app.place.screen == "roster"
             app.action_back()
             await pilot.pause()
-            assert app.place.screen == "overview"
-            app.action_back()
+            assert app.place.screen == "roster"
+            assert not isinstance(app.screen, OverviewModal)
+            app.action_overview()
+            await pilot.pause()
+            assert isinstance(app.screen, OverviewModal)
+            assert app.place.screen == "roster"
+            await pilot.press("escape")
             await pilot.pause()
             assert app.place.screen == "roster"
+            assert not isinstance(app.screen, OverviewModal)
 
     asyncio.run(_run())
 
@@ -649,7 +669,7 @@ def test_dot_refused_on_roster(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_zero_pending_roster_a_stays(tmp_path: Path):
+def test_zero_pending_column_is_hidden_on_roster(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,ok\n1,Y,same\n")
     write_csv(pb, "id,Status,ok\n1,Yes,same\n")
@@ -659,22 +679,13 @@ def test_zero_pending_roster_a_stays(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.place.focused_name = "ok"
-            app.render_all()
-            await pilot.pause()
-            app.query_one("#grid").focus()
-            row = app._focused_roster()
-            assert row is not None and row.name == "ok" and row.pending == 0
-            pending = app.engine.pending_total()
-            app.action_accept()
-            await pilot.pause()
-            assert app.place.screen == "roster"
-            assert app.engine.pending_total() == pending
-            assert app.tui_error and "pending" in app.tui_error
-            app.action_accept_all()
-            await pilot.pause()
-            assert app.place.screen == "roster"
-            assert app.engine.pending_total() == pending
+            names = [r.name for r in app.engine.visible_column_roster()]
+            assert "Status" in names
+            assert "ok" not in names
+            table = app.query_one("#grid")
+            shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
+            assert any("Status" in s for s in shown)
+            assert not any(s.strip() == "ok" for s in shown)
 
     asyncio.run(_run())
 
@@ -1324,21 +1335,26 @@ def test_overview_a_shows_error(tmp_path: Path):
         async with app.run_test() as pilot:
             await pilot.pause()
             app.query_one("#grid").focus()
-            await pilot.press("escape")
+            app.action_overview()
             await pilot.pause()
-            assert app.place.screen == "overview"
+            modal = app.screen
+            assert isinstance(modal, OverviewModal)
             pending = app.engine.pending_total()
             await pilot.press("a")
             await pilot.pause()
-            assert app.place.screen == "overview"
+            assert isinstance(app.screen, OverviewModal)
+            assert app.place.screen == "roster"
             assert app.engine.pending_total() == pending
-            assert app.tui_error and "ERROR" in app.tui_error
-            assert "Pending" not in app.tui_error
+            err = str(modal.query_one("#modal-err").render())
+            assert "ERROR" in err
+            assert "Pending" not in err
             await pilot.press("A")
             await pilot.pause()
-            assert app.place.screen == "overview"
+            assert isinstance(app.screen, OverviewModal)
+            assert app.place.screen == "roster"
             assert app.engine.pending_total() == pending
-            assert app.tui_error and "ERROR" in app.tui_error
+            err = str(modal.query_one("#modal-err").render())
+            assert "ERROR" in err
 
     asyncio.run(_run())
 
@@ -1362,12 +1378,17 @@ def test_n_on_roster_and_overview_does_not_bump_page(tmp_path: Path):
             assert app.tui_error and "ERROR" in app.tui_error
             await pilot.press("escape")
             await pilot.pause()
-            assert app.place.screen == "overview"
+            assert app.place.screen == "roster"
+            app.action_overview()
+            await pilot.pause()
+            assert isinstance(app.screen, OverviewModal)
             await pilot.press("n")
             await pilot.pause()
-            assert app.place.screen == "overview"
+            assert isinstance(app.screen, OverviewModal)
+            assert app.place.screen == "roster"
             assert app.place.page == 0
-            assert app.tui_error and "ERROR" in app.tui_error
+            err = str(app.screen.query_one("#modal-err").render())
+            assert "ERROR" in err
 
     asyncio.run(_run())
 
@@ -1493,13 +1514,12 @@ def test_enter_on_extra_from_roster_does_not_crash(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.place.focused_name = "cust"
-            app.render_all()
+            app.action_overview()
             await pilot.pause()
-            app.query_one("#grid").focus()
-            row = app._focused_roster()
-            assert row is not None and row.kind == "extra"
-            await pilot.press("enter")
+            modal = app.screen
+            assert isinstance(modal, OverviewModal)
+            modal.query_one("#ov-entries").move_cursor(row=2)
+            modal.action_pick()
             await pilot.pause()
             assert app.place.screen == "extras"
             assert app.query("#grid")
@@ -1508,9 +1528,9 @@ def test_enter_on_extra_from_roster_does_not_crash(tmp_path: Path):
             await pilot.press("escape")
             await pilot.pause()
             assert app.place.screen == "roster"
-            await pilot.press("enter")
-            await pilot.pause()
-            assert app.place.screen == "extras"
+            names = [r.name for r in app.engine.visible_column_roster()]
+            assert "cust" not in names
+            assert "A-only keys" not in names
 
     asyncio.run(_run())
 
@@ -1525,16 +1545,11 @@ def test_enter_on_zzz_extra_then_a_snaps_zzz_not_aaa(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.place.focused_name = "zzz"
+            app.place.screen = "extras"
+            app.place.extra_name = "zzz"
             app.render_all()
             await pilot.pause()
             app.query_one("#grid").focus()
-            row = app._focused_roster()
-            assert row is not None and row.kind == "extra" and row.name == "zzz"
-            await pilot.press("enter")
-            await pilot.pause()
-            assert app.place.screen == "extras"
-            assert app.place.extra_name == "zzz"
             rec = app._focused_rec()
             assert rec is not None and rec["name"] == "zzz"
             await pilot.press("a")
@@ -1672,12 +1687,11 @@ def test_a_on_accepted_unmatched_key_errors(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
+            app.place.screen = "a_only"
             app.place.focused_name = "A-only keys"
             app.render_all()
             await pilot.pause()
             app.query_one("#grid").focus()
-            await pilot.press("enter")
-            await pilot.pause()
             assert app.place.screen == "a_only"
             await pilot.press("a")
             await pilot.pause()
@@ -1727,5 +1741,143 @@ def test_context_modal_enter_confirms_selection(tmp_path: Path):
             assert app.place.screen == "cell_step"
             assert app.engine.context_columns.get("Status") == ["Flag"]
             assert app.engine.pair_draft_col == "Status"
+
+    asyncio.run(_run())
+
+
+def test_roster_hides_accepted_column_and_unmatched_rows(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,ok,cust\n1,Y,same,1\n2,onlyA,same,2\n")
+    write_csv(pb, "id,Status,ok\n1,Yes,same\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#grid")
+            shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
+            assert any("Status" in s for s in shown)
+            assert not any("ok" in s for s in shown)
+            assert not any("A-only" in s for s in shown)
+            assert not any("cust" in s for s in shown)
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            a_only_before = app.engine.pending_a_only_n()
+            extras_before = app.engine.pending_extras_n()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            vis = [r.name for r in app.engine.visible_column_roster()]
+            assert "Status" not in vis
+            assert app.engine.pending_a_only_n() == a_only_before
+            assert app.engine.pending_extras_n() == extras_before
+            if app.place.screen == "roster":
+                table = app.query_one("#grid")
+                shown = [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
+                assert not any("Status" in s and "A-only" not in s for s in shown) or "Status" not in vis
+
+    asyncio.run(_run())
+
+
+def test_roster_a_accepts_column_not_unmatched_grain(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status\n1,Y\n2,onlyA\n")
+    write_csv(pb, "id,Status\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.engine.pending_a_only_n() == 1
+            app.query_one("#grid").focus()
+            row = app._focused_roster()
+            assert row is not None and row.kind == "column" and row.name == "Status"
+            app.action_accept()
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == 0
+            assert app.engine.pending_a_only_n() == 1
+            assert app.engine.last_grain is not None
+            assert app.engine.last_grain[0] == "column"
+
+    asyncio.run(_run())
+
+
+def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,all_a,mixed\n1,——,——\n2,——,x\n")
+    write_csv(pb, "id,all_a,mixed\n1,x,y\n2,y,z\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_sentinel_draft("A", "——")
+            app.render_all()
+            await pilot.pause()
+            banner = str(app.query_one("#banner").render())
+            assert "ACCEPT" in banner
+            assert "select/deselect" in banner
+            footer = str(app.query_one("#footer").render())
+            assert "y ACCEPT selected" in footer
+            assert "a grain" not in footer
+            table = app.query_one("#grid")
+            marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+            assert any("[ON]" in m for m in marks)
+            assert any("[off]" in m for m in marks)
+            app.place.focused_name = "mixed"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_toggle()
+            await pilot.pause()
+            assert "mixed" in app.engine.column_draft
+            row = next(
+                i
+                for i, r in enumerate(app.engine.visible_column_roster())
+                if r.name == "mixed"
+            )
+            assert "[ON]" in str(table.get_row_at(row)[0])
+            app.place.focused_name = "mixed"
+            app.render_all()
+            await pilot.pause()
+            app.action_toggle()
+            await pilot.pause()
+            assert "mixed" not in app.engine.column_draft
+            footer = str(app.query_one("#footer").render())
+            assert "y ACCEPT selected" in footer
+
+    asyncio.run(_run())
+
+
+def test_overview_enter_opens_a_only(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n2,onlyA\n")
+    write_csv(pb, "id,val\n1,a\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            vis = [r.name for r in app.engine.visible_column_roster()]
+            assert vis == []
+            table = app.query_one("#grid")
+            shown = str(table.get_row_at(0)[1])
+            assert "i overview" in shown
+            app.action_overview()
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, OverviewModal)
+            body = str(modal.query_one("#overview-body").render())
+            assert "A-only keys pending 1" in body
+            modal.query_one("#ov-entries").move_cursor(row=0)
+            modal.action_pick()
+            await pilot.pause()
+            assert app.place.screen == "a_only"
+            assert app.engine.pending_a_only_n() == 1
 
     asyncio.run(_run())

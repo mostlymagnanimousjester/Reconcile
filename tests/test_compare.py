@@ -142,3 +142,37 @@ def test_id_vs_id_space_not_paired(tmp_path: Path):
     write_csv(pb, "id,val\n1,a\n")
     with pytest.raises(HardFail, match="Missing key column"):
         Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+
+
+def test_equal_shared_rows_auto_hide_column_despite_unmatched(tmp_path: Path):
+    """A-only / B-only keys must not keep an all-equal shared column on the roster."""
+    eng = _pair(
+        tmp_path,
+        "id,val,Status\n1,same,Y\n2,onlyA,Y\n",
+        "id,val,Status\n1,same,Yes\n3,onlyB,Yes\n",
+    )
+    assert eng.pending_a_only_n() == 1
+    assert eng.pending_b_only_n() == 1
+    assert eng.pending_cells_n() == 1
+    vis = eng.visible_column_roster()
+    names = [r.name for r in vis]
+    assert "val" not in names
+    assert "Status" in names
+    assert all(r.kind == "column" for r in vis)
+    assert all(r.pending > 0 for r in vis)
+    full_kinds = {r.kind for r in eng.roster()}
+    assert "A-only" in full_kinds
+    assert "B-only" in full_kinds
+
+
+def test_visible_column_roster_excludes_unmatched_and_extras(tmp_path: Path):
+    eng = _pair(
+        tmp_path,
+        "id,val,cust\n1,a,1\n2,onlyA,2\n",
+        "id,val\n1,b\n",
+    )
+    vis = eng.visible_column_roster()
+    assert [r.name for r in vis] == ["val"]
+    assert not any(r.kind in ("A-only", "B-only", "extra") for r in vis)
+    assert any(r.kind == "A-only" for r in eng.roster())
+    assert any(r.kind == "extra" and r.name == "cust" for r in eng.roster())
