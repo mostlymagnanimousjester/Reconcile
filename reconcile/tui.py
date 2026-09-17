@@ -656,13 +656,7 @@ class ReconcileApp(App[int]):
         return "? help  q quit"
 
     def _work_layout_key(self) -> str:
-        screen = self.place.screen
-        if screen != "roster":
-            return screen
-        return (
-            f"roster:draft={bool(self.engine.column_draft)}:"
-            f"accepted={self.show_accepted_columns}"
-        )
+        return self.place.screen
 
     def _render_footer(self) -> None:
         e = self.engine
@@ -830,7 +824,13 @@ class ReconcileApp(App[int]):
         return table
 
     def _fill_roster(self, table: DataTable) -> None:
-        table.clear()
+        headers = self._roster_headers()
+        current = [str(col.label) for col in table.columns.values()]
+        if current != headers:
+            table.clear(columns=True)
+            table.add_columns(*headers)
+        else:
+            table.clear()
         rows = self.engine.column_roster(
             self.place.roster_filter, include_settled=self.show_accepted_columns
         )
