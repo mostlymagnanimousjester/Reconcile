@@ -123,7 +123,7 @@ There is no “header must have ≥ 2 fields” rule (that was a CSV-detector le
 
 Excel paths are not this path. Encoding flags and delimiter flags on an Excel side are **illegal** (hard fail).
 
-There is **no in-TUI delimiter or encoding override**. After the first successful run, the chosen delimiter and encoding are frozen in job identity (stored in `.recon.zip` and reused on refresh and session open — reuse, do not re-detect).
+There is **no in-TUI delimiter or encoding override**. After the first successful run, the chosen delimiter and encoding are frozen in job identity and reused on refresh (reuse, do not re-detect).
 
 Must work on **Windows**. Default encoding is UTF-8 (ASCII ⊂ UTF-8). Non-UTF-8 files need an explicit CLI override on the next invocation after a UTF-8 hard fail.
 
@@ -141,7 +141,7 @@ Non-`.csv` delimited files (`.txt`, `.dat`, no extension, etc.) **require** `--a
 
 `--a-delim` / `--b-delim` on an Excel side: **hard fail**.
 
-The character actually used (CLI override or `.csv` comma default) is what is frozen in identity / `.recon.zip`.
+The character actually used (CLI override or `.csv` comma default) is what is frozen in in-memory job identity.
 
 ### 6.2 Encoding (default UTF-8; CLI override)
 
@@ -153,9 +153,9 @@ CLI override per side, for the next invocation after a UTF-8 hard fail: `--a-enc
 - `windows-1252`
 - `utf8-lossy` / `windows-1252-lossy` — explicit opt-in only, never default
 
-Unknown encoding token: **hard fail** with the flag name, the raw value, and the valid list. Do **not** accept `latin1` (prefer `windows-1252`; Polars does not need a latin-1 alias for cp1252). Mixing `--a-encoding` / `--b-encoding` with `--session` is a **hard fail**. Encoding flags on an Excel side: **hard fail**.
+Unknown encoding token: **hard fail** with the flag name, the raw value, and the valid list. Do **not** accept `latin1` (prefer `windows-1252`; Polars does not need a latin-1 alias for cp1252). Encoding flags on an Excel side: **hard fail**.
 
-Store the chosen encoding in identity / `.recon.zip` like the delimiter.
+Store the chosen encoding in in-memory job identity like the delimiter.
 
 ### 6.3 Delimited ingest (Polars)
 
@@ -237,7 +237,7 @@ On refresh, non-key schema drift:
 
 ## 9. Diffs, pending, accepted
 
-Remaining work is the **pending** set. The session is “done” when pending count is 0 (every difference is gone from the sources, or accepted).
+Remaining work is the **pending** set. The job is “done” when pending count is 0 (every difference is gone from the sources, or accepted).
 
 ### 9.1 Kinds of difference
 
@@ -283,7 +283,7 @@ Sources are updatable. The user **manually refreshes**. Re-read live files at th
 
 Undo is in-session.
 
-Session lives in the process. Export/reload persists it (§13).
+All reconcile state lives in memory for this process only. There is no export/reimport (§13).
 
 ### 9.4 Refresh UX
 
@@ -315,7 +315,7 @@ One in-session **column draft**: a set of comparable names (non-key A∩B). Defa
 | Confirm (`y`) | For each still-checked name, accept-entire-column (pending snapshots only). Then draft empty. Undo is **per column**, not one bundle. Then **next lever** (§15.9) |
 | Cancel (`Esc` on roster) | Draft empty; no accepts |
 | In-flight | At most one draft in the session. Confirm or Cancel before another regex/sentinel Run, and before starting a **pair** draft (§9.6) |
-| Zip / quit | Draft is **never** persisted. `.recon.zip` restores **confirmed** snapshots only. Quit discards an unconfirmed draft |
+| Quit | Draft is discarded. Unconfirmed drafts never survive quit. Confirmed snapshots live only in memory until quit |
 
 Refresh does not re-run the selector. Drop from draft: name gone, or pending count now 0. New comparable columns are not added.
 
@@ -495,7 +495,7 @@ Kernel split (facade still `reconcile.engine.Engine`; TUI imports the facade, no
 
 ## 12. CLI
 
-The TUI does not collect paths, sheets, or keys. Job identity is CLI (or a session zip).
+The TUI does not collect paths, sheets, or keys. Job identity is CLI only.
 
 Invoked from PowerShell:
 
@@ -504,12 +504,11 @@ python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim tilde --keys id
 python Reconcile.py --a .\left.dat --b .\right.txt --a-delim pipe --b-delim tilde --keys id
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding windows-1252 --keys id
-python Reconcile.py --session C:\data\job.recon.zip
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--a PATH` | Side A file. May be relative to cwd; **absolute path stored** in session |
+| `--a PATH` | Side A file. May be relative to cwd; **absolute path stored** in memory |
 | `--b PATH` | Side B file (same path rule) |
 | `--a-sheet NAME` | Required if A is `.xlsx`/`.xlsm` |
 | `--b-sheet NAME` | Required if B is `.xlsx`/`.xlsm` |
@@ -518,16 +517,13 @@ python Reconcile.py --session C:\data\job.recon.zip
 | `--a-encoding VALUE` | Encoding for side A delimited file (§6.2). Default `utf8`. |
 | `--b-encoding VALUE` | Encoding for side B delimited file. Default `utf8`. |
 | `--keys NAMES` | Comma-separated key column names, in order. Exclusive form; not repeatable `--key`. |
-| `--session PATH` | Load `*.recon.zip` and live-reread sources (path may be relative; resolved immediately) |
 
 Rules:
 
-- `--session` alone is valid (zip contains paths, sheets, keys, frozen delimiter/encoding, snapshots, context sets).
-- Without `--session`: `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per non-`.csv` delimited side (§6.1); optional on `.csv` (default comma). Encoding flags optional (default `utf8`).
-- Mixing `--session` with `--a` / `--b` / `--a-sheet` / `--b-sheet` / `--keys` / `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding` is a **hard fail**. The zip is the identity. Refuse; do not override or merge.
+- `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per non-`.csv` delimited side (§6.1); optional on `.csv` (default comma). Encoding flags optional (default `utf8`).
 - Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
-- Paths on `--a`, `--b`, `--session`, and TUI export/open zip **may be relative to the invocation cwd**. Immediately resolve with the equivalent of `Path(p).expanduser().resolve()` (absolute, normalized) and **store only absolute paths** in in-memory job identity, TUI Overview, and the `.recon.zip` manifest. Zip import/open always re-opens those stored absolute source paths. Relative paths are never written into the zip. If a relative path does not exist, hard fail with the **resolved absolute path** in the error text.
+- Paths on `--a` and `--b` **may be relative to the invocation cwd**. Immediately resolve with the equivalent of `Path(p).expanduser().resolve()` (absolute, normalized) and **store only absolute paths** in in-memory job identity and TUI Overview. If a relative path does not exist, hard fail with the **resolved absolute path** in the error text.
 
 Initial load/parse/schema/dup-key/unknown-delimiter/unknown-encoding/missing-delim/missing-path failures **before the TUI is up**: message on **stderr** including **raw identifiers** (§16), process **exit**.
 
@@ -537,26 +533,9 @@ Quit and relaunch to compare a different pair of sources or different keys.
 
 ---
 
-## 13. Session package
+## 13. No persistence
 
-Extension: **`.recon.zip`**
-
-Contents:
-
-- `manifest.json` with a **schema version**
-- Absolute paths for A and B (never relative; CLI may accept relative and must resolve before write)
-- Sheet names when Excel
-- Key column names (ordered)
-- Chosen encoding and delimiter per delimited side (frozen; reused, not re-detected)
-- Per-column context-column sets (§15.3)
-- Acceptance snapshots: type, key tuple, column, `valA`, `valB`, side, row snapshot as needed
-- **Place:** last screen (roster, Overview, pair list / cell step, A-only, B-only, Schema extras), last comparable column (if any), last extra `(side, name)` if on extras, detail step (pair list vs cell step / view tab), roster name-filter string, last pair `(column, valA, valB)` for `.` repeat
-
-No copied row payload. No in-flight **draft** (column or pair). Reload always live-rereads files and restores **confirmed** snapshots, then restores **place** if those objects still exist (else the **roster**). Context columns already persist per column.
-
-Missing path on load: hard fail (stderr+exit if before TUI; in-TUI error if already running and this was an Open).
-
-Export and open from the TUI. Also `--session` on CLI.
+There is **no** `--session` flag, `.recon.zip`, or TUI export/open of reconcile state. Identity, confirmed snapshots, place, drafts, and context columns live **in memory** for the current process only. Quit discards everything. Relaunch with CLI identity flags. Refresh re-reads the live sources at the frozen in-memory paths (and frozen delimiter/encoding).
 
 ---
 
@@ -578,7 +557,7 @@ Do not use the word “summary” for two different screens. Names below are can
 
 A footer/status line is **always visible** (§15.6).
 
-**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `--session` restore: prefer the saved `place.screen` if it is still valid (A-only stays A-only when those keys still exist). Cell-step maps to pair_list (drafts are never persisted). Use `last_pair` to focus the pair only when restoring **pair_list / cell-step** for that column, or when the saved screen is gone. Else roster. `last_pair` is always kept for `.` repeat when it still exists.
+**Home is the work.** After a successful initial load, land on the **roster**, not Overview. `last_pair` is kept in memory for `.` repeat when it still exists.
 
 ### 15.1 Overview (counts, not home)
 
@@ -665,7 +644,7 @@ Grid (cell step or non-Pending tabs), 100-row pages:
 - speculative labels when a mismatch
 - **context columns** (cell step and non-Pending grids)
 
-**Context columns:** both-sides intersection, excluding keys and the column under examination; A|B raw; per-column, in `.recon.zip`; display-only. Picker `c` on the cell step.
+**Context columns:** both-sides intersection, excluding keys and the column under examination; A|B raw; per-column, in memory; display-only. Picker `c` on the cell step.
 
 **First-difference caret:** on the cell step footer pane and focused `A`/`B` cells, mark the first differing Python `str` index (after null→`""`). Reverse/standout on both sides. Prefix/length-only differences count. Exact, not speculative. Red-lens safe (§15.8).
 
@@ -721,8 +700,6 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
 | `c` | Context-column picker (cell step). ERROR off cell step |
 | `n` / `p` | Next/prev page on paged screens. Roster / Overview: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
-| `e` | Export `.recon.zip` |
-| `o` | Open zip (refused if a draft is in flight) |
 | `q` | Quit; discard unconfirmed draft |
 | `?` | Help |
 
@@ -763,7 +740,7 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
 
 Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid (cursor and page follow `focused_key`). If that pair is exhausted, go back to **this column’s pair list**, not next lever. Single-key `a` on an unmatched-key grid does not jump the roster; it advances to the next pending key in that grid.
 
-**Repeat last pair** `.` — §9.6. In-session and in `.recon.zip`. Never auto-accepts.
+**Repeat last pair** `.` — §9.6. In memory only. Never auto-accepts.
 
 Refresh: stay put; footer delta; mark returned-to-pending in place. No jump list.
 
@@ -789,8 +766,8 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Situation | Behavior |
 |---|---|
 | Textual cannot start | stderr + exit `2` |
-| Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, Excel fastexcel/calamine error, missing sheet, mixed `--session` + identity flags) | stderr + identifiers + exit `2` |
-| After TUI is up: refresh fail, open-session fail, invalid regex/sentinel, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
+| Initial CLI load fails (missing file, unknown delimiter, unknown encoding, missing delim, Polars parse error, Excel dup columns, dup keys, missing key column, Excel fastexcel/calamine error, missing sheet) | stderr + identifiers + exit `2` |
+| After TUI is up: refresh fail, invalid regex/sentinel, second selector or pair-draft start while a draft is in flight | Stay in TUI, last good state (draft unchanged unless the rule says drop/cancel), show error with identifiers |
 | User quit, pending = 0 | exit `0` |
 | User quit, pending > 0 | exit `1` |
 
@@ -823,20 +800,20 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Compare | Exact raw text; null → `""` only |
 | Keys | Required, composite OK via `--keys a,b`; A-only/B-only reviewed; dups hard fail |
 | Column pair | Exact name; extras surfaced |
-| Product | Investigation TUI; session acceptances; shrink or accept |
+| Product | Investigation TUI; in-memory acceptances; shrink or accept |
 | Excel | fastexcel → Polars only; `dtypes="string"`; stored/cached values as-is; no formula evaluation; silent merges; password/OLE and missing sheet via fastexcel → HardFail |
 | Headers | Required |
 | Platform | Windows PowerShell; Python 3.13; default UTF-8 for delimited (override `--*-encoding`) |
-| Detect | No sniff, no BOM→UTF-8→cp1252 ladder, no `.txt`→tilde default. `.csv` (case-insensitive) defaults to comma when `--*-delim` is omitted; CLI `--a-delim` / `--b-delim` still overrides. Other delimited extensions require `--*-delim`; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh / `.recon.zip` (reuse, do not re-detect; store the resolved character, including the comma default). Ingest is `pl.read_csv`. |
+| Detect | No sniff, no BOM→UTF-8→cp1252 ladder, no `.txt`→tilde default. `.csv` (case-insensitive) defaults to comma when `--*-delim` is omitted; CLI `--a-delim` / `--b-delim` still overrides. Other delimited extensions require `--*-delim`; missing flag is hard fail with flag name + path. Encoding default `utf8`; CLI `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`, plus `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). Frozen in identity / refresh (reuse, do not re-detect; store the resolved character, including the comma default). Ingest is `pl.read_csv`. |
 | Refresh | Manual; sources updatable; snapshots reapplied |
 | Undo | Yes, in session |
-| Persist | `.recon.zip`: confirmed snapshots + **place** (screen, column, pair vs cell step, filter string, last pair). No drafts, no sort mode |
+| Persist | None. Confirmed snapshots, place, drafts, and context columns live in memory until quit |
 | Visual | Red-lens safe (§15.8): luminance/underline/reverse; no blue/green as sole signal |
 | Fluency | Work is home (roster of all remaining-work kinds); one sort (pending then concentration then name); pair-first detail; unified `Enter`/`Esc`/`a`/`y`; no jump list / `f` / `s` / `j` |
 | Deadline nav | Next lever walks the same roster sort (columns, unmatched keys, extras); `.` repeat pair; returned-to-pending marked in place (§15.9) |
 | Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is a roster `cat` statistic only (pair list is always paged); no fuzzy keys; no accept-by-insight |
-| Context columns | Both-sides intersection only; per column; persisted |
+| Context columns | Both-sides intersection only; per column; in memory |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
@@ -844,7 +821,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Roster | Home screen of remaining work (comparable columns, A-only, B-only, extras). Sort: pending then concentration then name. Concentration is a visible top-pair % only. Persistent filter box. Immediate `a`; `/` `=` behind glass |
 | Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` is exact-value `.all()` on one side. Draft all-checked; Space toggle; `y` confirm / `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
-| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--session` alone OK; refuse mix with identity flags (including encoding); CLI paths may be relative, stored absolute |
+| Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--a`/`--b`/`--keys` required; CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs only (no `1`–`4`); `a` grain / `A` column |
 | Keybindings | One map (§15.7). `Esc` always back. No `f`/`s`/`j` |
 | Paging | 100 rows from Polars; order raw key tuple |

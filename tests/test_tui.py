@@ -127,6 +127,10 @@ def test_help_xor_and_no_digit_tab_keys():
     assert "2 accepted" not in lower
     assert "3 equal" not in lower
     assert "4 all" not in lower
+    assert "--session" not in HELP
+    assert "recon.zip" not in HELP.lower()
+    assert "export .recon" not in HELP.lower()
+    assert "open zip" not in HELP.lower()
 
 
 def test_help_power_user_grain():
@@ -705,18 +709,19 @@ def test_y_all_unchecked_does_not_next_lever(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_zip_restores_last_pair_focus(tmp_path: Path):
+def test_pair_list_place_focuses_pair(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n2,Y\n3,N\n")
     write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,No\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    z = tmp_path / "job.recon.zip"
-    eng.export_zip(
-        str(z),
-        Place(screen="pair_list", column="val", last_pair=("val", "N", "No")),
+    place = Place(
+        screen="pair_list",
+        column="val",
+        last_pair=("val", "N", "No"),
+        pair_val_a="N",
+        pair_val_b="No",
     )
-    loaded, place = Engine.from_session(str(z))
-    app = ReconcileApp(loaded, place)
+    app = ReconcileApp(eng, place)
 
     async def _run() -> None:
         async with app.run_test() as pilot:
@@ -733,16 +738,15 @@ def test_zip_restores_last_pair_focus(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_zip_from_a_only_restores_a_only_even_if_last_pair_exists(tmp_path: Path):
+def test_a_only_place_kept_even_if_last_pair_exists(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n9,onlyA\n")
     write_csv(pb, "id,val\n1,Yes\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    z = tmp_path / "job.recon.zip"
     last = ("val", "Y", "Yes")
-    eng.export_zip(str(z), Place(screen="a_only", last_pair=last, focused_key=("9",)))
-    loaded, place = Engine.from_session(str(z))
-    app = ReconcileApp(loaded, place)
+    app = ReconcileApp(
+        eng, Place(screen="a_only", last_pair=last, focused_key=("9",))
+    )
 
     async def _run() -> None:
         async with app.run_test() as pilot:
@@ -1541,18 +1545,14 @@ def test_enter_on_zzz_extra_then_a_snaps_zzz_not_aaa(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_zip_restore_extras_focus(tmp_path: Path):
+def test_extras_place_focus(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val,aaa,zzz\n1,a,1,2\n")
     write_csv(pb, "id,val\n1,a\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    z = tmp_path / "job.recon.zip"
-    eng.export_zip(
-        str(z),
-        Place(screen="extras", extra_side="A", extra_name="zzz"),
+    app = ReconcileApp(
+        eng, Place(screen="extras", extra_side="A", extra_name="zzz")
     )
-    loaded, place = Engine.from_session(str(z))
-    app = ReconcileApp(loaded, place)
 
     async def _run() -> None:
         async with app.run_test() as pilot:
@@ -1561,6 +1561,31 @@ def test_zip_restore_extras_focus(tmp_path: Path):
             assert app.place.extra_name == "zzz"
             rec = app._focused_rec()
             assert rec is not None and rec["name"] == "zzz" and rec["side"] == "A"
+
+    asyncio.run(_run())
+
+
+def test_e_and_o_do_not_open_zip(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            await pilot.press("e")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.screen.id == "_default"
+            await pilot.press("o")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.screen.id == "_default"
+            assert not hasattr(app, "action_export")
+            assert not hasattr(app, "action_open_zip")
 
     asyncio.run(_run())
 

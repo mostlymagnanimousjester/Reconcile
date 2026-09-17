@@ -1,10 +1,9 @@
-from argparse import Namespace
 from pathlib import Path
 
 import polars as pl
 import pytest
 
-from reconcile.cli import engine_from_args, parse_keys
+from reconcile.cli import parse_keys
 from reconcile.delimited import load_delimited, parse_delimiter, parse_encoding
 from reconcile.errors import HardFail
 from reconcile.excel import load_excel
@@ -22,40 +21,6 @@ def test_parse_keys_rejects_empty_and_dup():
         parse_keys("id,,year")
     with pytest.raises(HardFail, match="Duplicate"):
         parse_keys("id,id")
-
-
-def test_mix_session_and_identity_hard_fails():
-    ns = Namespace(
-        session="x.recon.zip",
-        a="a.csv",
-        b=None,
-        a_sheet=None,
-        b_sheet=None,
-        keys=None,
-        a_delim=None,
-        b_delim=None,
-        a_encoding=None,
-        b_encoding=None,
-    )
-    with pytest.raises(HardFail, match="Mixing --session"):
-        engine_from_args(ns)
-
-
-def test_mix_session_and_encoding_hard_fails():
-    ns = Namespace(
-        session="x.recon.zip",
-        a=None,
-        b=None,
-        a_sheet=None,
-        b_sheet=None,
-        keys=None,
-        a_delim=None,
-        b_delim=None,
-        a_encoding="windows-1252",
-        b_encoding=None,
-    )
-    with pytest.raises(HardFail, match="Mixing --session"):
-        engine_from_args(ns)
 
 
 def test_quoted_newline_and_doubled_quote(tmp_path: Path):
@@ -286,12 +251,9 @@ def test_missing_relative_path_error_is_absolute(
     assert str((tmp_path / "nope.csv").resolve()) in ei.value.message
 
 
-def test_zip_stores_delim_encoding_and_absolute_paths(
+def test_relative_paths_stored_absolute_and_refresh_reuses_detection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    import json
-    import zipfile
-
     from reconcile.engine import Engine
 
     (tmp_path / "a.csv").write_text("id,val\n1,Y\n", encoding="utf-8")
@@ -307,27 +269,23 @@ def test_zip_stores_delim_encoding_and_absolute_paths(
     abs_a = (tmp_path / "a.csv").resolve()
     abs_b = (tmp_path / "b.csv").resolve()
     assert Path(eng.a.path) == abs_a
-    eng.export_zip("job.recon.zip")
-    zpath = tmp_path / "job.recon.zip"
-    with zipfile.ZipFile(zpath) as zf:
-        man = json.loads(zf.read("manifest.json"))
-    assert Path(man["a_path"]).is_absolute()
-    assert Path(man["b_path"]).is_absolute()
-    assert man["a_path"] == str(abs_a)
-    assert man["b_path"] == str(abs_b)
-    assert not man["a_path"].startswith(".")
-    assert man["a_detection"]["delimiter"] == ","
-    assert man["a_detection"]["delimiter_name"] == "comma"
-    assert man["a_detection"]["encoding"] == "utf8"
-    assert man["b_detection"]["delimiter"] == ","
-    assert man["b_detection"]["encoding"] == "utf8"
-    loaded, _place = Engine.from_session("job.recon.zip")
-    assert loaded.a.path == str(abs_a)
-    assert loaded.b.path == str(abs_b)
-    assert loaded.keys == ["id"]
-    assert loaded.a.detection.encoding == "utf8"
-    assert loaded.a.detection.delimiter == ","
-    assert loaded.b.detection.encoding == "utf8"
+    assert Path(eng.b.path) == abs_b
+    assert not eng.a.path.startswith(".")
+    assert eng.a.detection.delimiter == ","
+    assert eng.a.detection.delimiter_name == "comma"
+    assert eng.a.detection.encoding == "utf8"
+    assert eng.b.detection.delimiter == ","
+    assert eng.b.detection.encoding == "utf8"
+    (tmp_path / "a.csv").write_text("id,val\n1,Y2\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text("id,val\n1,Yes2\n", encoding="utf-8")
+    delta = eng.refresh()
+    assert Path(eng.a.path) == abs_a
+    assert Path(eng.b.path) == abs_b
+    assert eng.a.detection.encoding == "utf8"
+    assert eng.a.detection.delimiter == ","
+    assert eng.b.detection.encoding == "utf8"
+    assert eng.pending_cells_n() == 1
+    assert delta.pending_after == 1
 
 
 def test_excel_stays_polars_without_list_dump(tmp_path: Path):

@@ -1,5 +1,3 @@
-import json
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -12,8 +10,28 @@ def test_cli_help_exit_zero():
     assert main(["--help"]) == 0
 
 
-def test_cli_missing_identity_exit_2():
+def test_cli_missing_identity_exit_2(capsys):
     assert main([]) == 2
+    err = capsys.readouterr().err
+    assert "--a" in err
+    assert "--b" in err
+    assert "--keys" in err
+    assert "--session" not in err
+
+
+def test_cli_help_has_no_session(capsys):
+    assert main(["--help"]) == 0
+    out = capsys.readouterr().out
+    assert "--session" not in out
+    assert "recon.zip" not in out.lower()
+
+
+def test_cli_session_flag_unrecognized(capsys):
+    code = main(["--session", "job.recon.zip"])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" in err
+    assert "--session" in err
 
 
 def test_cli_load_and_hard_fail_missing(tmp_path: Path, capsys):
@@ -104,42 +122,6 @@ def test_cli_missing_delim_exit_2(tmp_path: Path, capsys):
     err = capsys.readouterr().err
     assert "--a-delim" in err
     assert str(a.resolve()) in err
-
-
-def test_cli_session_keys_only_manifest_hard_fail(tmp_path: Path, capsys):
-    z = tmp_path / "keys-only.recon.zip"
-    with zipfile.ZipFile(z, "w") as zf:
-        zf.writestr("manifest.json", json.dumps({"keys": ["id"]}))
-    code = main(["--session", str(z)])
-    captured = capsys.readouterr()
-    err = captured.err
-    assert code == 2
-    assert err.strip()
-    assert "Traceback" not in err
-    assert "Traceback" not in captured.out
-    assert str(z.resolve()) in err or str(z) in err
-    lower = err.lower()
-    assert "schema_version" in lower or "a_path" in lower or "missing" in lower
-
-
-def test_cli_mix_session_exit_2(tmp_path: Path, capsys):
-    code = main(["--session", str(tmp_path / "x.recon.zip"), "--a", "a.csv"])
-    assert code == 2
-    assert "Mixing --session" in capsys.readouterr().err
-
-
-def test_cli_mix_session_with_delim_exit_2(tmp_path: Path, capsys):
-    code = main(["--session", str(tmp_path / "x.recon.zip"), "--a-delim", "comma"])
-    assert code == 2
-    assert "Mixing --session" in capsys.readouterr().err
-
-
-def test_cli_mix_session_with_encoding_exit_2(tmp_path: Path, capsys):
-    code = main(
-        ["--session", str(tmp_path / "x.recon.zip"), "--a-encoding", "windows-1252"]
-    )
-    assert code == 2
-    assert "Mixing --session" in capsys.readouterr().err
 
 
 def test_parser_has_sheet_flags():

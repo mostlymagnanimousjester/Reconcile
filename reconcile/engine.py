@@ -1,25 +1,19 @@
-"""Engine facade: session zip, refresh, load wiring, and re-exports."""
+"""Engine facade: refresh, load wiring, and re-exports."""
 
 from __future__ import annotations
 
-import json
 import re
-import zipfile
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Literal
 
 import polars as pl
 
-from reconcile.delimited import abs_path
 from reconcile.errors import HardFail
 from reconcile.insights import (
     cell_insights,
     first_diff,
 )
 from reconcile.load import SideTable, load_side
-
-SCHEMA_VERSION = 1
 
 ScreenName = Literal[
     "roster",
@@ -108,11 +102,7 @@ from reconcile import pages as pages_mod  # noqa: E402
 from reconcile import roster as roster_mod  # noqa: E402
 from reconcile import snaps as snaps_mod  # noqa: E402
 from reconcile.compare import _empty_df  # noqa: E402
-from reconcile.snaps import (  # noqa: E402
-    _cell_snaps_from_json,
-    _empty_cell_snaps,
-    _unmatched_snaps_from_json,
-)
+from reconcile.snaps import _empty_cell_snaps  # noqa: E402
 
 PAGE_SIZE = pages_mod.PAGE_SIZE
 _page = pages_mod._page
@@ -120,7 +110,7 @@ _page_dicts = pages_mod._page_dicts
 
 
 class Engine:
-    """In-memory session. Polars owns the frames; TUI asks for pages."""
+    """In-memory reconcile state. Polars owns the frames; TUI asks for pages."""
 
     def __init__(self, side_a: SideTable, side_b: SideTable, keys: list[str]) -> None:
         self.a = side_a
@@ -708,189 +698,6 @@ class Engine:
             if not self.extras_a and not self.extras_b:
                 return Place(screen="roster", roster_filter=p.roster_filter, last_pair=p.last_pair)
         return p
-
-    # --- session zip ---
-
-    def _snapshots_to_manifest(self) -> dict[str, Any]:
-        cells: list[dict[str, Any]] = []
-        if not self.cell_snaps.is_empty():
-            for rec in self.cell_snaps.to_dicts():
-                cells.append(
-                    {
-                        "key": [rec[k] for k in self.keys],
-                        "column": rec["column"],
-                        "val_a": rec["val_a"],
-                        "val_b": rec["val_b"],
-                    }
-                )
-        unmatched: list[dict[str, Any]] = []
-        for side, snaps in (("A", self.unmatched_snaps_a), ("B", self.unmatched_snaps_b)):
-            if snaps is None or snaps.is_empty():
-                continue
-            for rec in snaps.to_dicts():
-                unmatched.append(
-                    {
-                        "side": side,
-                        "key": [rec[k] for k in self.keys],
-                        "row": {c: str(rec[c]) for c in rec},
-                    }
-                )
-        return {"cells": cells, "unmatched": unmatched}
-
-    def to_manifest(self, place: Place | None = None) -> dict[str, Any]:
-        p = place or Place()
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "a_path": abs_path(self.a.path),
-            "b_path": abs_path(self.b.path),
-            "a_sheet": self.a.sheet,
-            "b_sheet": self.b.sheet,
-            "keys": list(self.keys),
-            "a_detection": None
-            if self.a.detection is None
-            else {
-                "encoding": self.a.detection.encoding,
-                "delimiter": self.a.detection.delimiter,
-                "delimiter_name": self.a.detection.delimiter_name,
-            },
-            "b_detection": None
-            if self.b.detection is None
-            else {
-                "encoding": self.b.detection.encoding,
-                "delimiter": self.b.detection.delimiter,
-                "delimiter_name": self.b.detection.delimiter_name,
-            },
-            "context_columns": self.context_columns,
-            "snapshots": {
-                **self._snapshots_to_manifest(),
-                "extras": [{"side": s.side, "name": s.name} for s in self.extra_snaps],
-            },
-            "place": {
-                "screen": p.screen,
-                "column": p.column,
-                "extra_side": p.extra_side,
-                "extra_name": p.extra_name,
-                "view_tab": p.view_tab,
-                "roster_filter": p.roster_filter,
-                "last_pair": list(p.last_pair) if p.last_pair else None,
-                "detail_step": "cell_step" if p.screen == "cell_step" else "pair_list",
-            },
-        }
-
-    def export_zip(self, path: str, place: Place | None = None) -> None:
-        path = abs_path(path)
-        if not path.endswith(".recon.zip"):
-            if path.endswith(".zip"):
-                path = path[: -4] + ".recon.zip"
-            else:
-                path = path + ".recon.zip"
-            path = abs_path(path)
-        manifest = json.dumps(self.to_manifest(place), indent=2)
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", manifest)
-
-    @classmethod
-    def from_session(cls, path: str) -> tuple[Engine, Place]:
-        path = abs_path(path)
-        if not Path(path).is_file():
-            raise HardFail(f"Missing path: {path}")
-        try:
-            with zipfile.ZipFile(path) as zf:
-                raw = zf.read("manifest.json")
-        except KeyError as exc:
-            raise HardFail(f"Session zip {path} has no manifest.json") from exc
-        except zipfile.BadZipFile as exc:
-            raise HardFail(f"Not a valid .recon.zip: {path}") from exc
-        try:
-            man = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise HardFail(f"Invalid manifest.json in {path}") from exc
-        if not isinstance(man, dict):
-            raise HardFail(f"Invalid manifest.json in {path}")
-        schema_ver = man.get("schema_version")
-        if schema_ver is None:
-            raise HardFail(f"Session {path} missing schema_version")
-        if schema_ver != SCHEMA_VERSION:
-            raise HardFail(
-                f"Session {path} has unsupported schema_version {schema_ver!r} "
-                f"(expected {SCHEMA_VERSION})"
-            )
-        raw_keys = man.get("keys")
-        if not isinstance(raw_keys, list) or not raw_keys:
-            raise HardFail(f"Session {path} has no keys")
-        keys = [str(k) for k in raw_keys]
-        if any(k == "" for k in keys):
-            raise HardFail(f"Session {path} has no keys")
-        a_path = man.get("a_path")
-        b_path = man.get("b_path")
-        if not isinstance(a_path, str) or not a_path:
-            raise HardFail(f"Session {path} missing a_path")
-        if not isinstance(b_path, str) or not b_path:
-            raise HardFail(f"Session {path} missing b_path")
-        a_det = man.get("a_detection") or {}
-        b_det = man.get("b_detection") or {}
-        a_delim = a_det.get("delimiter") if a_det else None
-        b_delim = b_det.get("delimiter") if b_det else None
-        a_encoding = a_det.get("encoding") if a_det else None
-        b_encoding = b_det.get("encoding") if b_det else None
-        eng = cls.from_paths(
-            a_path,
-            b_path,
-            keys,
-            man.get("a_sheet"),
-            man.get("b_sheet"),
-            a_delim=a_delim,
-            b_delim=b_delim,
-            a_encoding=a_encoding,
-            b_encoding=b_encoding,
-        )
-        snaps = man.get("snapshots") or {}
-        eng.cell_snaps = _cell_snaps_from_json(keys, snaps.get("cells") or [])
-        um = snaps.get("unmatched") or []
-        eng.unmatched_snaps_a = _unmatched_snaps_from_json(keys, um, "A", eng.a_only)
-        eng.unmatched_snaps_b = _unmatched_snaps_from_json(keys, um, "B", eng.b_only)
-        eng.extra_snaps = [
-            ExtraSnap(e["side"], e["name"]) for e in snaps.get("extras") or []
-        ]
-        eng.context_columns = {
-            k: list(v) for k, v in (man.get("context_columns") or {}).items()
-        }
-        eng._rebuild()
-        place_man = man.get("place") or {}
-        last = place_man.get("last_pair")
-        last_t: tuple[str, str, str] | None = None
-        if last and len(last) == 3:
-            last_t = (str(last[0]), str(last[1]), str(last[2]))
-        saved_screen = place_man.get("screen") or "roster"
-        screen = saved_screen
-        if place_man.get("detail_step") == "cell_step" or screen == "cell_step":
-            screen = "pair_list"  # drafts are not persisted
-        place = Place(
-            screen=screen if screen != "cell_step" else "pair_list",
-            column=place_man.get("column"),
-            extra_side=place_man.get("extra_side"),
-            extra_name=place_man.get("extra_name"),
-            view_tab=place_man.get("view_tab") or "pending",
-            roster_filter=place_man.get("roster_filter") or "",
-            last_pair=last_t,
-        )
-        place = eng.prune_place(place, pair_draft_active=False)
-        # last_pair focuses pair_list/cell_step for that column, or lands
-        # pair list only when the saved screen is gone. Do not override a
-        # still-valid roster / Overview / unmatched / extras place.
-        if place.screen in {"pair_list", "accepted", "equal", "all_matched"} and last_t:
-            if place.column is None or last_t[0] == place.column:
-                landed = eng.place_from_last_pair(last_t, roster_filter=place.roster_filter)
-                if landed is not None:
-                    if place.screen != "pair_list":
-                        landed = replace(landed, screen=place.screen, view_tab=place.view_tab)
-                    place = landed
-        elif place.screen == "roster" and saved_screen not in {"roster", "overview"} and last_t:
-            landed = eng.place_from_last_pair(last_t, roster_filter=place.roster_filter)
-            if landed is not None:
-                place = landed
-        return eng, place
 
     def identity_lines(self) -> list[str]:
         a_det = (

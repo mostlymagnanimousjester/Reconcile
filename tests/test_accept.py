@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from reconcile.engine import Engine, InTuiError, Place
-from reconcile.errors import HardFail
 from tests.xlsxutil import write_csv
 
 
@@ -338,69 +337,6 @@ def test_page_index_for_key_polars(tmp_path: Path):
     assert (page, row) == (0, 0)
 
 
-def test_session_place_restored(tmp_path: Path):
-    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,val\n1,Y\n")
-    write_csv(pb, "id,val\n1,Yes\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    place = Place(screen="pair_list", column="val", roster_filter="val")
-    z = tmp_path / "job.recon.zip"
-    eng.export_zip(str(z), place)
-    loaded, restored = Engine.from_session(str(z))
-    assert restored.column == "val"
-    assert restored.roster_filter == "val"
-
-
-def test_session_keys_only_manifest_hard_fail(tmp_path: Path):
-    import json
-    import zipfile
-
-    z = tmp_path / "keys-only.recon.zip"
-    with zipfile.ZipFile(z, "w") as zf:
-        zf.writestr("manifest.json", json.dumps({"keys": ["id"]}))
-    with pytest.raises(HardFail) as ei:
-        Engine.from_session(str(z))
-    msg = ei.value.message
-    assert str(z.resolve()) in msg or str(z) in msg
-    assert "a_path" in msg or "schema_version" in msg or "missing" in msg.lower()
-
-
-def test_session_zip_roundtrip(tmp_path: Path):
-    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,val\n1,Y\n")
-    write_csv(pb, "id,val\n1,Yes\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    eng.accept_column("val")
-    z = tmp_path / "job.recon.zip"
-    eng.export_zip(str(z))
-    loaded, _place = Engine.from_session(str(z))
-    assert loaded.pending_total() == 0
-    assert loaded.keys == ["id"]
-    assert loaded.a.path == eng.a.path
-    assert Path(loaded.a.path).is_absolute()
-    assert Path(loaded.b.path).is_absolute()
-
-
-def test_session_zip_from_relative_paths_is_absolute(tmp_path: Path, monkeypatch):
-    import json
-    import zipfile
-
-    write_csv(tmp_path / "a.csv", "id,val\n1,Y\n")
-    write_csv(tmp_path / "b.csv", "id,val\n1,Yes\n")
-    monkeypatch.chdir(tmp_path)
-    eng = Engine.from_paths("a.csv", "b.csv", ["id"], a_delim=",", b_delim=",")
-    z = Path("job.recon.zip")
-    eng.export_zip(str(z))
-    with zipfile.ZipFile(z) as zf:
-        man = json.loads(zf.read("manifest.json"))
-    assert Path(man["a_path"]).is_absolute()
-    assert Path(man["b_path"]).is_absolute()
-    assert man["a_path"] == str((tmp_path / "a.csv").resolve())
-    loaded, _place = Engine.from_session("job.recon.zip")
-    assert loaded.a.path == man["a_path"]
-    assert loaded.b.path == man["b_path"]
-
-
 def test_context_columns_attached_after_slice(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(
@@ -478,37 +414,6 @@ def test_undo_last_grain_after_pair_accept(tmp_path: Path):
     assert undone == 1
     assert eng.last_grain is None
     assert next(r for r in eng.roster() if r.name == "Status").pending == 1
-
-
-def test_session_zip_restores_last_pair_focus(tmp_path: Path):
-    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,val\n1,Y\n2,Y\n3,N\n")
-    write_csv(pb, "id,val\n1,Yes\n2,Yes\n3,No\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    last = ("val", "N", "No")
-    place = Place(screen="roster", last_pair=last)
-    z = tmp_path / "job.recon.zip"
-    eng.export_zip(str(z), place)
-    loaded, restored = Engine.from_session(str(z))
-    assert restored.screen == "roster"
-    assert restored.last_pair == last
-    # pair_list + last_pair for that column focuses the pair
-    place_pl = Place(screen="pair_list", column="val", last_pair=last)
-    eng.export_zip(str(z), place_pl)
-    _loaded, restored_pl = Engine.from_session(str(z))
-    assert restored_pl.screen == "pair_list"
-    assert restored_pl.column == "val"
-    assert restored_pl.pair_val_a == "N"
-    assert restored_pl.pair_val_b == "No"
-    assert restored_pl.last_pair == last
-    # cell-step in the zip maps to pair_list; drafts are not restored
-    place2 = Place(screen="cell_step", column="val", last_pair=("val", "Y", "Yes"))
-    eng.export_zip(str(z), place2)
-    _loaded, restored2 = Engine.from_session(str(z))
-    assert restored2.screen == "pair_list"
-    assert restored2.pair_val_a == "Y"
-    assert restored2.pair_val_b == "Yes"
-    assert restored2.column == "val"
 
 
 def test_refresh_clears_stale_last_grain(tmp_path: Path):
