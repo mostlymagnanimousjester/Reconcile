@@ -946,8 +946,9 @@ class ReconcileApp(App[int]):
                 except Exception:
                     pass
 
-        if self.is_running:
-            self.call_after_refresh(_go)
+        later = getattr(self, "call_later", None)
+        if self.is_running and callable(later):
+            later(_go)
         else:
             _go()
 
