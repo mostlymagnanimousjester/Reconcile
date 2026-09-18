@@ -28,11 +28,11 @@ def test_format_top_uniques_keeps_five_and_marks_truncation():
         + ["yellow"]
     )
     text = format_top_uniques(values)
-    assert text == f"red · blue · green · orange · pink{CONTEXT_TRUNCATION_MARK}"
+    assert text == f"red 5 | blue 4 | green 3 | orange 2 | pink 2{CONTEXT_TRUNCATION_MARK}"
     assert "purple" not in text
     assert "yellow" not in text
-    assert format_top_uniques(["a", "a", "b"]) == "a · b"
-    assert format_top_uniques(["", "x", ""]) == "(empty) · x"
+    assert format_top_uniques(["a", "a", "b"]) == "a 2 | b 1"
+    assert format_top_uniques(["", "x", ""]) == "(empty) 2 | x 1"
 
 
 def test_format_sentinel_insight_shows_side_and_value():

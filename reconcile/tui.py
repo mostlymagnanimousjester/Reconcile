@@ -13,50 +13,82 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
+from reconcile.insights import context_header
 
 HELP = """\
-KEYS (same everywhere; type in a field when focused)
+KEYS  (? this help · Esc closes)
 
+EVERYWHERE
 Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
 Esc    back (close modal → cancel roster/cell-step draft → parent screen)
-Space  toggle focused column/cell in the current draft (ON / off)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
 A      accept all on this screen (entire column from pair list; all unmatched keys on this side)
-y      confirm the live draft (column XOR pair cells; all-unchecked pair draft stays)
-u      undo last accept, then focused grain.
-U      undo entire column (pair list only; refused while a pair draft is in flight)
+u      undo last accept, then focused grain
 r      refresh (re-read live files; last good state on failure)
-.      last pair: cell-step if already on that column's pair list; else that pair on its pair list (column detail only)
-/      regex column draft (roster)     =  exact sentinel (side A|B, comparable-row constant)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
-v      roster: show/hide accepted and equal columns (default hidden)
-m      same exact pair on columns (roster / pair list; after / or = uses ON columns)
-c      context-column picker (pair list / cell step)
-n / p  next / previous page
-q      quit (discards unconfirmed draft)
 ?      this help
+q      quit (discards unconfirmed draft)
 
-At most one draft: column (roster / regex, = sentinel) XOR pair cells (cell step).
+ROSTER (column roster, table A import order)
+a      accept this column in place (selection moves below; does not drill)
+A      same as a (one column)
+v      show/hide accepted and equal columns (default hidden)
+m      same exact pair on columns
+/      regex column draft (comparable names; not a view filter)
+=      exact sentinel (side A|B, comparable-row constant)
+Space  toggle focused column in the live column draft (ON / off)
+y      confirm the live column draft; land on roster (next-below / first pending)
+n / p  ERROR (no pages)
+
+PAIR LIST (Pending tab)
+Enter  cell step (pair draft of those exact strings)
+a      accept this pair (selection moves below)
+A      accept entire column
+m      same exact pair on columns
+c      context-column picker
+U      undo entire column (pair list only; refused while a pair draft is in flight)
+n / p  next / previous page
+.      last pair: cell-step if already on that column's pair list; else that pair (column detail only)
+Esc    roster
+
+CELL STEP
+a      accept this cell (selection moves below)
+Space  toggle focused cell in the pair draft (ON / off)
+y      confirm still-checked cells, then next lever
+c      context-column picker
+n / p  page
+Esc    back to pair list (cancels the pair draft)
+
+UNMATCHED KEYS / MISMATCHED COLUMNS  (open from i)
+a      accept this key / extra (selection moves below)
+A      accept all unmatched on this side, then next lever
+n / p  page (keys)
+Esc    roster
+
+DRAFTS
+At most one draft: column XOR pair cells (column: roster / regex, = sentinel; pair: cell step).
 After / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
 After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
+After / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
+m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
+
+TABS / PLACE
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
 U is pair-list only. . is column detail only.
 The column roster lists pending comparable columns in table A import order.
 v shows accepted/equal columns dim (pending section, then settled), not as remaining work.
-Roster a accepts the focused column in place (does not drill). Enter inspects.
-After a, selection moves to the item that was below (last remaining if you accepted the last).
-m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
-After / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
 A-only / B-only keys and mismatched columns (headers on one side only) are not columns:
 open them from i overview (or next lever).
-Long strings wrap in the footer pane (the grid is a one-line navigator).
 
+NOTES
+Long strings wrap in the footer pane (the grid is a one-line navigator).
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
 The speculative column shows insight text only (no speculative: prefix). Insights never change remaining counts.
 Sentinel means that side is one constant on all comparable (shared-key) rows: sentinel A=0, sentinel B="", sentinel both A=x B=y.
+Context columns (c) are dedicated labeled columns (ctx:Name). Pair list: top-5 unique values with pair-row counts (foo 12 | bar 4 …).
 """
 
 CSS = """
@@ -78,15 +110,6 @@ Screen {
     background: #7a3c08;
     color: #ffe27a;
     text-style: bold;
-}
-#filter-row {
-    height: 3;
-    padding: 0 1;
-}
-#filter-row Input {
-    background: #3a2214;
-    color: #fff3e0;
-    border: tall #e08a38;
 }
 #work {
     height: 1fr;
@@ -137,6 +160,7 @@ Button.-primary, Button.primary {
 }
 DataTable {
     height: 1fr;
+    padding: 0 1;
 }
 DataTable > .datatable--cursor {
     background: #d45a24;
@@ -178,7 +202,8 @@ DataTable > .datatable--cursor {
 }
 #help {
     height: auto;
-    max-height: 32;
+    max-height: 36;
+    overflow-y: auto;
     padding: 1;
 }
 .dim {
@@ -266,7 +291,7 @@ class HelpModal(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
             yield Static(HELP, id="help")
-            yield Static("Esc to close", classes="dim")
+            yield Static("Esc closes", classes="dim")
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -740,9 +765,6 @@ class ReconcileApp(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="banner", classes="hidden")
-        with Horizontal(id="filter-row"):
-            yield Static("filter ", classes="dim")
-            yield Input(placeholder="substring on name (always on; / is regex draft)", id="filter")
         yield Vertical(id="work")
         yield Static("", id="pane")
         yield Static("", id="footer")
@@ -750,18 +772,11 @@ class ReconcileApp(App[int]):
     def on_mount(self) -> None:
         if self.place.screen in {"roster", "overview"} or not self.place.screen:
             self.place.screen = "roster"
-        filt = self.query_one("#filter", Input)
-        filt.value = self.place.roster_filter
         self.render_all()
         self.call_after_refresh(self.set_focus_work)
 
     def _in_input(self) -> bool:
-        focused = self.focused
-        if not isinstance(focused, Input):
-            return False
-        if focused.id == "filter" and self.place.screen != "roster":
-            return False
-        return True
+        return isinstance(self.focused, Input)
 
     def _modal_active(self) -> bool:
         return isinstance(self.screen, ModalScreen)
@@ -821,11 +836,8 @@ class ReconcileApp(App[int]):
                 "all_matched",
             }:
                 self._move_cursor_to_focused_key(grid)
-        elif self.query("#filter-row"):
-            pass
 
     def render_all(self) -> None:
-        self._sync_filter_visibility()
         layout = self._work_layout_key()
         if layout != self._mounted_screen:
             self._remount_work()
@@ -836,47 +848,6 @@ class ReconcileApp(App[int]):
         self._render_footer()
         self._paint_banner()
         self.call_after_refresh(self.set_focus_work)
-
-    def _sync_filter_visibility(self) -> None:
-        row = self.query_one("#filter-row")
-        row.display = self.place.screen == "roster"
-        if self.place.screen != "roster":
-            return
-        filt = self.query_one("#filter", Input)
-        focused = self.focused
-        typing = isinstance(focused, Input) and focused.id == "filter"
-        if not typing and filt.value != self.place.roster_filter:
-            filt.value = self.place.roster_filter
-
-    def _now_keys(self) -> str:
-        p = self.place
-        e = self.engine
-        if p.screen == "cell_step" and e.pair_draft_col is not None:
-            return "Space toggle  y confirm  Esc cancel  a cell  c context  ? help  q quit"
-        if e.column_draft and p.screen == "roster":
-            return "y ACCEPT selected  m same pair  Space select/deselect  a this column  Esc cancel  ? help  q quit"
-        if e.column_draft:
-            return "y ACCEPT on roster  m same pair  Esc back (draft stays)  ? help  q quit"
-        if p.screen == "roster":
-            vis = "v hide accepted" if self.show_accepted_columns else "v show accepted"
-            return (
-                f"Enter drill  a column  {vis}  m same pair  / regex  = sentinel  "
-                "i overview  ? help  q quit"
-            )
-        if p.screen == "pair_list":
-            return (
-                "Enter cells  a pair  A column  m same pair  c context  U column  "
-                "n/p page  Esc roster  ? help  q quit"
-            )
-        if p.screen == "cell_step":
-            return "a cell  c context  Esc pairs  ? help  q quit"
-        if p.screen in ("accepted", "equal", "all_matched"):
-            return "n/p page  Esc roster  ? help  q quit"
-        if p.screen in ("a_only", "b_only"):
-            return "a key  A all  n/p page  Esc roster  ? help  q quit"
-        if p.screen == "extras":
-            return "a extra  Esc roster  ? help  q quit"
-        return "? help  q quit"
 
     def _work_layout_key(self) -> str:
         return self.place.screen
@@ -935,8 +906,8 @@ class ReconcileApp(App[int]):
             tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
             if tags:
                 spec = "  " + ", ".join(tags)
-        hint = "  " + self._now_keys()
-        footer.update(" · ".join(bits) + spec + hint)
+        bits.append("? help")
+        footer.update(" · ".join(bits) + spec)
 
     def _run_busy(self, work) -> None:
         """Paint 'working…' for a real wait, then run work after the next refresh.
@@ -998,8 +969,8 @@ class ReconcileApp(App[int]):
                         summary = ""
                         if rec:
                             summary = str(rec.get(f"{name}__ctx") or "")
-                        if summary:
-                            t.append(f"\n{name}  {summary}")
+                        t.append(f"\n\n{name}\n")
+                        t.append(summary if summary else "(none)")
             pane.update(t)
         elif p.screen in ("a_only", "b_only"):
             rec = self._focused_rec()
@@ -1092,9 +1063,20 @@ class ReconcileApp(App[int]):
             return "accepted"
         return "equal"
 
+    def _add_columns(self, table: DataTable, headers: list[str]) -> None:
+        for h in headers:
+            if h == "pending":
+                table.add_column(h, width=8)
+            elif h == "status":
+                table.add_column(h, width=10)
+            elif h.startswith("ctx:"):
+                table.add_column(h, width=max(18, min(36, len(h) + 16)))
+            else:
+                table.add_column(h)
+
     def _roster_table(self) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
-        table.add_columns(*self._roster_headers())
+        self._add_columns(table, self._roster_headers())
         self._fill_roster(table)
         return table
 
@@ -1103,7 +1085,7 @@ class ReconcileApp(App[int]):
         current = [str(col.label) for col in table.columns.values()]
         if current != headers:
             table.clear(columns=True)
-            table.add_columns(*headers)
+            self._add_columns(table, headers)
         else:
             table.clear()
         rows = self.engine.column_roster(
@@ -1165,7 +1147,7 @@ class ReconcileApp(App[int]):
                 else:
                     cells.append(Text(status, style="dim #e8b898"))
             cells.extend(
-                [str(r.pending), r.top_pair_pct, r.equal, r.categorical, r.speculative]
+                [str(int(r.pending)), r.top_pair_pct, r.equal, r.categorical, r.speculative]
             )
             key = (r.kind, r.name, r.side)
             table.add_row(*cells, key=str(key))
@@ -1178,9 +1160,10 @@ class ReconcileApp(App[int]):
                 break
         table.move_cursor(row=idx)
 
-    def _tab_bar(self, current: str) -> Horizontal:
+    def _tab_bar(self, current: str, pending_n: int | None = None) -> Horizontal:
+        pending_label = f"Pending {pending_n}" if pending_n is not None else "Pending"
         labels = [
-            ("pending", "Pending"),
+            ("pending", pending_label),
             ("accepted", "Accepted"),
             ("equal", "Equal"),
             ("all_matched", "All matched"),
@@ -1191,16 +1174,29 @@ class ReconcileApp(App[int]):
         ]
         return Horizontal(*buttons, id="tabs")
 
+    def _column_pending_n(self, col: str) -> int:
+        row = next(
+            (r for r in self.engine.roster() if r.kind == "column" and r.name == col),
+            None,
+        )
+        return int(row.pending) if row else 0
+
     def _pair_view(self) -> Vertical:
         col = self.place.column or ""
         if not col:
             return Vertical(Static("No column."))
-        return Vertical(Static(f"COLUMN {col}"), self._tab_bar("pending"), self._pair_list(col))
+        pending_n = self._column_pending_n(col)
+        return Vertical(
+            Static(f"COLUMN {col}   pending {pending_n}"),
+            self._tab_bar("pending", pending_n),
+            self._pair_list(col),
+        )
 
     def _pair_list(self, col: str) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid")
         ctx_names = self._context_names(col)
-        table.add_columns("A", "B", "pending", *ctx_names, "speculative")
+        ctx_headers = [context_header(n) for n in ctx_names]
+        self._add_columns(table, ["A", "B", "pending", *ctx_headers, "speculative"])
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
         self._page_count = pages
@@ -1219,7 +1215,7 @@ class ReconcileApp(App[int]):
             label_a = Text(_display_text(va), style=style)
             label_b = Text(_display_text(vb), style=style)
             ctx_cells = [str(rec.get(f"{n}__ctx") or "") for n in ctx_names]
-            table.add_row(label_a, label_b, str(rec["n"]), *ctx_cells, tags)
+            table.add_row(label_a, label_b, str(int(rec["n"])), *ctx_cells, tags)
             self._table_keys.append(rec)
             if want_a is not None and va == want_a and vb == want_b:
                 focus = i
@@ -1261,8 +1257,9 @@ class ReconcileApp(App[int]):
         }.get(tab, tab)
         table: DataTable = DataTable(cursor_type="row", id="grid")
         ctx_names = self._context_names(col)
-        headers = [*self.engine.keys, "A", "B", *ctx_names, "speculative"]
-        table.add_columns(*headers)
+        ctx_headers = [context_header(n) for n in ctx_names]
+        headers = [*self.engine.keys, "A", "B", *ctx_headers, "speculative"]
+        self._add_columns(table, headers)
         self._table_keys = []
         if self.place.screen == "cell_step":
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
@@ -1342,7 +1339,12 @@ class ReconcileApp(App[int]):
                     self._table_keys.append(rec)
                 self._move_cursor_to_focused_key(table)
         tab_current = tab if self.place.screen != "cell_step" else "pending"
-        return Vertical(Static(f"COLUMN {col}   {title}"), self._tab_bar(tab_current), table)
+        pending_n = self._column_pending_n(col)
+        return Vertical(
+            Static(f"COLUMN {col}   {title}   pending {pending_n}"),
+            self._tab_bar(tab_current, pending_n),
+            table,
+        )
 
     def _unmatched(self, side: str) -> Vertical:
         self._follow_focused_key_page(
@@ -1376,14 +1378,19 @@ class ReconcileApp(App[int]):
                 table.add_row(st, *vals)
                 self._table_keys.append(rec)
             self._move_cursor_to_focused_key(table)
+        pending_n = (
+            self.engine.pending_a_only_n() if side == "A" else self.engine.pending_b_only_n()
+        )
         return Vertical(
-            Static(f"{side}-only keys  (raw columns on this side, including extras)"),
+            Static(
+                f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)"
+            ),
             table,
         )
 
     def _extras(self) -> Vertical:
         table: DataTable = DataTable(cursor_type="row", id="grid")
-        table.add_columns("side", "name", "pending", "speculative")
+        self._add_columns(table, ["side", "name", "pending", "speculative"])
         rows = self.engine.extras_rows()
         self._table_keys = []
         if not rows:
@@ -1395,7 +1402,7 @@ class ReconcileApp(App[int]):
                 table.add_row(
                     rec["side"],
                     Text(rec["name"], style=style),
-                    str(rec["pending"]),
+                    str(int(rec["pending"])),
                     ", ".join(rec["speculative"]),
                 )
                 self._table_keys.append(rec)
@@ -1411,7 +1418,7 @@ class ReconcileApp(App[int]):
                     break
             table.move_cursor(row=idx)
         return Vertical(
-            Static("Mismatched columns  (header on one side only)"),
+            Static(f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)"),
             table,
         )
 
@@ -1476,10 +1483,6 @@ class ReconcileApp(App[int]):
         self.exit(code)
 
     def action_back(self) -> None:
-        if self._in_input():
-            self.set_focus_work()
-            self.query_one("#grid").focus() if self.query("#grid") else None
-            return
         e = self.engine
         p = self.place
         if p.screen == "cell_step":
@@ -1513,13 +1516,6 @@ class ReconcileApp(App[int]):
         self.set_focus_work()
 
     def action_drill(self) -> None:
-        if self._in_input():
-            # Enter in filter: keep filter, return to list
-            self.place.roster_filter = self.query_one("#filter", Input).value
-            self.set_focus_work()
-            self.render_all()
-            self.set_focus_work()
-            return
         e = self.engine
         p = self.place
         try:
@@ -2415,15 +2411,3 @@ class ReconcileApp(App[int]):
         event.stop()
         self.render_all()
         self.set_focus_work()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "filter":
-            self.place.roster_filter = event.value
-            # re-render roster list only when on roster; keep typing focus
-            if self.place.screen == "roster":
-                focused = self.focused
-                if self.query("#grid"):
-                    self._fill_roster(self.query_one("#grid", DataTable))
-                self._render_footer()
-                if isinstance(focused, Input):
-                    event.input.focus()
