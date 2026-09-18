@@ -18,6 +18,35 @@ DATE_FORMATS = (
 
 _WS_RE = re.compile(r"[\u00a0\t\r\n]")
 
+# Exact strings the `=` draft already treats as sentinels. Empty, 0, NA-family,
+# and dash placeholders — not a learned model.
+SENTINEL_VALUES = frozenset(
+    {
+        "",
+        "0",
+        "NA",
+        "N/A",
+        "n/a",
+        "NULL",
+        "null",
+        "None",
+        "none",
+        "NaN",
+        "nan",
+        "#N/A",
+        "#NA",
+        "-",
+        "–",
+        "—",
+        "——",
+        ".",
+    }
+)
+
+CONTEXT_TOP_N = 5
+CONTEXT_VALUE_SEP = " · "
+CONTEXT_TRUNCATION_MARK = "…"
+
 
 def first_diff(a: str, b: str) -> int:
     n = min(len(a), len(b))
@@ -66,10 +95,41 @@ def parse_unambiguous_date(s: str):
     return None
 
 
+def is_sentinel_value(value: str) -> bool:
+    return value in SENTINEL_VALUES
+
+
+def sentinel_side_tag(has_a: bool, has_b: bool) -> str | None:
+    """A only, B only, or both — labeled speculative for the `=` workflow."""
+    if has_a and has_b:
+        return "speculative: sentinel both"
+    if has_a:
+        return "speculative: sentinel A"
+    if has_b:
+        return "speculative: sentinel B"
+    return None
+
+
+def format_top_uniques(values: list[str], limit: int = CONTEXT_TOP_N) -> str:
+    """Most-occurring unique values as a delimited list; mark truncation."""
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    shown = [value if value else "(empty)" for value, _ in ranked[:limit]]
+    text = CONTEXT_VALUE_SEP.join(shown)
+    if len(ranked) > limit:
+        text += CONTEXT_TRUNCATION_MARK
+    return text
+
+
 def cell_insights(val_a: str, val_b: str) -> list[str]:
     if val_a == val_b:
         return []
     tags: list[str] = []
+    sent = sentinel_side_tag(is_sentinel_value(val_a), is_sentinel_value(val_b))
+    if sent:
+        tags.append(sent.removeprefix("speculative: "))
     trim_eq = val_a.strip() == val_b.strip()
     case_eq = val_a.lower() == val_b.lower()
     both_eq = val_a.strip().lower() == val_b.strip().lower()

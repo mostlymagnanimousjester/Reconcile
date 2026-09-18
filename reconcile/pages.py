@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.compare import _empty_df, _empty_mismatch_schema
-from reconcile.insights import extra_insights
+from reconcile.insights import CONTEXT_TOP_N, CONTEXT_TRUNCATION_MARK, CONTEXT_VALUE_SEP, extra_insights
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -96,8 +96,98 @@ def page_index_for_pair(
     return i // page_size, i % page_size
 
 
+def _context_names(eng: Engine, column: str) -> list[str]:
+    return [
+        n
+        for n in eng.context_columns.get(column, [])
+        if n in eng.context_pool and n != column
+    ]
+
+
+def _attach_pair_context_summaries(
+    eng: Engine, column: str, pair_chunk: pl.DataFrame
+) -> pl.DataFrame:
+    """Top-N unique context values per pair. Call after the pair-list slice."""
+    names = _context_names(eng, column)
+    if not names:
+        return pair_chunk
+    empty_cols = [pl.lit("").alias(f"{n}__ctx") for n in names]
+    if pair_chunk.is_empty() or eng.matched_a.is_empty() or eng.pending_cells.is_empty():
+        return pair_chunk.with_columns(empty_cols)
+    scoped = eng.pending_cells.filter(pl.col("column") == column).join(
+        pair_chunk.select("val_a", "val_b").unique(),
+        on=["val_a", "val_b"],
+        how="inner",
+    )
+    if scoped.is_empty():
+        return pair_chunk.with_columns(empty_cols)
+    scoped = _attach_context(eng, scoped, column)
+    parts: list[pl.DataFrame] = []
+    for name in names:
+        for side in ("a", "b"):
+            col = f"{name}__ctx_{side}"
+            if col not in scoped.columns:
+                continue
+            parts.append(
+                scoped.select(
+                    "val_a",
+                    "val_b",
+                    pl.lit(name).alias("_ctx"),
+                    pl.col(col).fill_null("").cast(pl.Utf8).alias("_val"),
+                )
+            )
+    if not parts:
+        return pair_chunk.with_columns(empty_cols)
+    long = pl.concat(parts)
+    ranked = (
+        long.group_by(["val_a", "val_b", "_ctx", "_val"])
+        .len()
+        .sort(["val_a", "val_b", "_ctx", "len", "_val"], descending=[False, False, False, True, False])
+        .with_columns(pl.col("_val").cum_count().over(["val_a", "val_b", "_ctx"]).alias("_rank"))
+    )
+    nuniq = long.group_by(["val_a", "val_b", "_ctx"]).agg(
+        pl.col("_val").n_unique().alias("_nuniq")
+    )
+    top = (
+        ranked.filter(pl.col("_rank") <= CONTEXT_TOP_N)
+        .sort(["val_a", "val_b", "_ctx", "_rank"])
+        .with_columns(
+            pl.when(pl.col("_val") == "")
+            .then(pl.lit("(empty)"))
+            .otherwise(pl.col("_val"))
+            .alias("_shown")
+        )
+    )
+    summarized = (
+        top.group_by(["val_a", "val_b", "_ctx"], maintain_order=True)
+        .agg(pl.col("_shown").alias("_vals"))
+        .join(nuniq, on=["val_a", "val_b", "_ctx"])
+        .with_columns(
+            pl.when(pl.col("_nuniq") > CONTEXT_TOP_N)
+            .then(pl.col("_vals").list.join(CONTEXT_VALUE_SEP) + pl.lit(CONTEXT_TRUNCATION_MARK))
+            .otherwise(pl.col("_vals").list.join(CONTEXT_VALUE_SEP))
+            .alias("_summary")
+        )
+    )
+    out = pair_chunk
+    for name in names:
+        one = summarized.filter(pl.col("_ctx") == name).select(
+            "val_a", "val_b", pl.col("_summary").alias(f"{name}__ctx")
+        )
+        out = out.join(one, on=["val_a", "val_b"], how="left").with_columns(
+            pl.col(f"{name}__ctx").fill_null("")
+        )
+    return out
+
+
 def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
-    return _page(eng.pair_groups(column), page)
+    groups = eng.pair_groups(column)
+    total = groups.height
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    chunk = groups.slice(page * PAGE_SIZE, PAGE_SIZE)
+    chunk = _attach_pair_context_summaries(eng, column, chunk)
+    return _page_dicts(chunk), page, pages
 
 
 def pair_cells_page(
