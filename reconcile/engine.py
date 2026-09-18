@@ -242,6 +242,14 @@ class Engine:
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
         return pages_mod.pair_page(self, column, page)
 
+    def next_pair_below(
+        self, column: str, val_a: str, val_b: str
+    ) -> tuple[str, str] | None:
+        return pages_mod.next_pair_below(self, column, val_a, val_b)
+
+    def union_pairs(self, columns: list[str]) -> list[dict[str, Any]]:
+        return pages_mod.union_pairs(self, columns)
+
     def page_index_for_pair(self, column: str, val_a: str, val_b: str) -> tuple[int, int]:
         return pages_mod.page_index_for_pair(self, column, val_a, val_b)
 
@@ -422,6 +430,11 @@ class Engine:
     def accept_pair(self, column: str, val_a: str, val_b: str) -> int:
         return snaps_mod.accept_pair(self, column, val_a, val_b)
 
+    def accept_pair_across_columns(
+        self, columns: list[str], val_a: str, val_b: str
+    ) -> int:
+        return snaps_mod.accept_pair_across_columns(self, columns, val_a, val_b)
+
     def accept_cell(self, key: tuple[str, ...], column: str, val_a: str, val_b: str) -> int:
         return snaps_mod.accept_cell(self, key, column, val_a, val_b)
 
@@ -472,6 +485,12 @@ class Engine:
             return total
         if kind == "pair":
             return self.undo_pair(str(grain[1]), str(grain[2]), str(grain[3]))
+        if kind == "pairs":
+            va, vb = str(grain[1]), str(grain[2])
+            total = 0
+            for name in grain[3:]:
+                total += self.undo_pair(str(name), va, vb)
+            return total
         if kind == "cell":
             key = grain[1]
             if not isinstance(key, tuple):
@@ -523,6 +542,20 @@ class Engine:
                     (pl.col("column") == str(grain[1]))
                     & (pl.col("val_a") == str(grain[2]))
                     & (pl.col("val_b") == str(grain[3]))
+                ).height
+                > 0
+            )
+        if kind == "pairs":
+            if self.accepted_cells.is_empty():
+                return False
+            names = [str(n) for n in grain[3:]]
+            if not names:
+                return False
+            return (
+                self.accepted_cells.filter(
+                    pl.col("column").is_in(names)
+                    & (pl.col("val_a") == str(grain[1]))
+                    & (pl.col("val_b") == str(grain[2]))
                 ).height
                 > 0
             )

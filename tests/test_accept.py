@@ -452,6 +452,39 @@ def test_accepted_column_hidden_from_visible_roster(tmp_path: Path):
     assert status.accepted > 0
 
 
+def test_accept_pair_across_columns_empty_to_zero(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,qty,amt,note\n1,,,x\n2,,,y\n")
+    write_csv(pb, "id,qty,amt,note\n1,0,0,x\n2,0,0,z\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    union = eng.union_pairs(["qty", "amt", "note"])
+    empty_pair = next(r for r in union if r["val_a"] == "" and r["val_b"] == "0")
+    assert empty_pair["n"] == 4
+    assert empty_pair["n_cols"] == 2
+    n = eng.accept_pair_across_columns(["qty", "amt", "note"], "", "0")
+    assert n == 4
+    assert next(r for r in eng.roster() if r.name == "qty").pending == 0
+    assert next(r for r in eng.roster() if r.name == "amt").pending == 0
+    note = next(r for r in eng.roster() if r.name == "note")
+    assert note.pending == 1
+    leftover = [r for r in eng.pending_cells.to_dicts() if r["column"] == "note"]
+    assert leftover[0]["val_a"] == "y"
+    assert leftover[0]["val_b"] == "z"
+
+
+def test_next_pair_below_then_last_remaining(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n3,Z\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n3,Zed\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    groups = eng.pair_groups("val").to_dicts()
+    first = (groups[0]["val_a"], groups[0]["val_b"])
+    second = (groups[1]["val_a"], groups[1]["val_b"])
+    last = (groups[2]["val_a"], groups[2]["val_b"])
+    assert eng.next_pair_below("val", first[0], first[1]) == second
+    assert eng.next_pair_below("val", last[0], last[1]) == second
+
+
 def test_prune_place_maps_overview_screen_to_roster(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")

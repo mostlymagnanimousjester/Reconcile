@@ -248,7 +248,8 @@ def next_pending_key_in_grid(
         acc = acc & (pl.col(k) == current[i])
     nxt = pending.filter(pl.any_horizontal(parts)).head(1)
     if nxt.is_empty():
-        nxt = pending.head(1)
+        # Accepted the last pending key: stay on the new last remaining.
+        nxt = pending.tail(1)
     rec = nxt.row(0, named=True)
     return tuple(str(rec[k]) for k in eng.keys)
 
@@ -273,6 +274,51 @@ def next_pending_cell_in_pair(
         acc = acc & (pl.col(k) == after[i])
     nxt = frame.filter(pl.any_horizontal(parts)).head(1)
     if nxt.is_empty():
-        nxt = frame.head(1)
+        # Accepted the last pending cell: stay on the new last remaining.
+        nxt = frame.tail(1)
     rec = nxt.row(0, named=True)
     return tuple(str(rec[k]) for k in eng.keys)
+
+
+def next_pair_below(
+    eng: Engine, column: str, val_a: str, val_b: str
+) -> tuple[str, str] | None:
+    """Pair that was below ``(val_a, val_b)``, or the new last remaining.
+
+    Call **before** accepting the current pair. Does not materialize the
+    full pair list — only the chosen neighbor row.
+    """
+    groups = eng.pair_groups(column)
+    if groups.is_empty():
+        return None
+    hit = (
+        groups.with_row_index("_idx")
+        .filter((pl.col("val_a") == val_a) & (pl.col("val_b") == val_b))
+        .select("_idx")
+    )
+    if hit.is_empty():
+        return None
+    i = int(hit.item(0, 0))
+    below = groups.slice(i + 1, 1)
+    if below.height:
+        rec = below.row(0, named=True)
+        return str(rec["val_a"]), str(rec["val_b"])
+    if i > 0:
+        rec = groups.slice(i - 1, 1).row(0, named=True)
+        return str(rec["val_a"]), str(rec["val_b"])
+    return None
+
+
+def union_pairs(eng: Engine, columns: list[str]) -> list[dict[str, Any]]:
+    """Grouped exact ``(val_a, val_b)`` union across pending cells of ``columns``."""
+    if not columns or eng.pending_cells.is_empty():
+        return []
+    frame = eng.pending_cells.filter(pl.col("column").is_in(list(columns)))
+    if frame.is_empty():
+        return []
+    grouped = (
+        frame.group_by(["val_a", "val_b"])
+        .agg(pl.len().alias("n"), pl.col("column").n_unique().alias("n_cols"))
+        .sort(["n", "val_a", "val_b"], descending=[True, False, False])
+    )
+    return grouped.to_dicts()

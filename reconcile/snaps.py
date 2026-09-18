@@ -131,6 +131,20 @@ def accept_pair(eng: Engine, column: str, val_a: str, val_b: str) -> int:
     return _vstack_cell_snaps(eng, frame)
 
 
+def accept_pair_across_columns(
+    eng: Engine, columns: list[str], val_a: str, val_b: str
+) -> int:
+    """Accept the exact grain pair on every selected column that still has it."""
+    if not columns:
+        return 0
+    frame = eng.pending_cells.filter(
+        pl.col("column").is_in(list(columns))
+        & (pl.col("val_a") == val_a)
+        & (pl.col("val_b") == val_b)
+    )
+    return _vstack_cell_snaps(eng, frame)
+
+
 def accept_cell(
     eng: Engine, key: tuple[str, ...], column: str, val_a: str, val_b: str
 ) -> int:
