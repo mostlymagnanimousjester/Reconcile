@@ -172,6 +172,18 @@ def test_sentinel_drafts_columns_where_all_pending_b_equal(tmp_path: Path):
     assert not eng.draft_in_flight()
 
 
+def test_sentinel_requires_comparable_row_constant_not_pending_only(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,col\n1,1\n2,0\n3,0\n")
+    write_csv(pb, "id,col\n1,1\n2,x\n3,y\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    pending_a = eng.pending_cells.get_column("val_a").to_list()
+    assert set(pending_a) == {"0"}
+    with pytest.raises(InTuiError, match="0 pending"):
+        eng.start_sentinel_draft("A", "0")
+    assert not eng.draft_in_flight()
+
+
 def test_sentinel_excludes_mixed_pending_values(tmp_path: Path):
     eng = _sentinel_fixture(tmp_path)
     n = eng.start_sentinel_draft("A", "——")

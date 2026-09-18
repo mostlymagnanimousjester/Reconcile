@@ -379,29 +379,35 @@ class Engine:
         self.column_draft = set(hits)
         return len(hits)
 
+    def sentinel_hits(self, side: str, sentinel: str) -> list[str]:
+        """Pending comparable columns whose chosen side is that comparable-row constant."""
+        val_col = "sent_a" if side == "A" else "sent_b"
+        sent = self.column_sentinels
+        if sent.is_empty() or self.pending_cells.is_empty():
+            return []
+        pending_cols = self.pending_cells.group_by("column").len().select("column")
+        if self.comparable:
+            pending_cols = pending_cols.filter(
+                pl.col("column").is_in(list(self.comparable))
+            )
+        else:
+            return []
+        hits_df = sent.filter(pl.col(val_col) == pl.lit(sentinel)).join(
+            pending_cols, on="column", how="inner"
+        )
+        if hits_df.is_empty():
+            return []
+        return hits_df.get_column("column").to_list()
+
     def start_sentinel_draft(self, side: str, sentinel: str) -> int:
         if self.draft_in_flight():
             raise InTuiError("ERROR: confirm or cancel the current draft first")
         if side not in ("A", "B"):
             raise InTuiError("ERROR: sentinel scan requires Side A or Side B")
-        val_col = "val_a" if side == "A" else "val_b"
-        pending = self.pending_cells
-        if self.comparable:
-            pending = pending.filter(pl.col("column").is_in(list(self.comparable)))
-        else:
-            pending = pending.head(0)
-        # group_by omits zero-pending columns, so empty-series .all() cannot draft them
-        if pending.is_empty():
-            raise InTuiError("ERROR: sentinel matched 0 pending columns")
         try:
-            hits_df = (
-                pending.group_by("column")
-                .agg((pl.col(val_col) == pl.lit(sentinel)).all().alias("hit"))
-                .filter(pl.col("hit"))
-            )
+            hits = self.sentinel_hits(side, sentinel)
         except Exception as exc:
             raise InTuiError(f"ERROR: sentinel scan error: {exc}") from exc
-        hits = hits_df.get_column("column").to_list()
         if not hits:
             raise InTuiError("ERROR: sentinel matched 0 pending columns")
         self.column_draft = set(hits)

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from reconcile.engine import Place, RosterRow
-from reconcile.insights import SENTINEL_VALUES, extra_insights, same_date_expr, sentinel_side_tag
+from reconcile.insights import extra_insights, format_sentinel_insight, same_date_expr
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -90,15 +90,12 @@ def _roster_agg_maps(
                 | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
             ).any().alias("ws"),
             same_date_expr().any().alias("same_date"),
-            pl.col("val_a").is_in(list(SENTINEL_VALUES)).any().alias("sent_a"),
-            pl.col("val_b").is_in(list(SENTINEL_VALUES)).any().alias("sent_b"),
             pl.col("val_a").n_unique().alias("n_a"),
             pl.col("val_b").n_unique().alias("n_b"),
             pl.col("val_a").unique().sort().alias("ua"),
             pl.col("val_b").unique().sort().alias("ub"),
         ).with_columns(
             pl.col("ua").list.concat(pl.col("ub")).list.unique().list.len().alias("n_ab"),
-            (pl.col("ua") != pl.col("ub")).alias("pattern"),
         ).drop("ua", "ub")
         for rec in stats.to_dicts():
             col_stats[rec["column"]] = rec
@@ -115,18 +112,29 @@ def _unmatched_side_tags(eng: Engine, side: str) -> str:
         return ""
     trim_cols = [pl.col(k).str.strip_chars().alias(k) for k in eng.keys]
     if not pending.select(trim_cols).join(other.select(trim_cols), on=eng.keys, how="inner").is_empty():
-        return "speculative: would match if trim"
+        return "would match if trim"
     case_cols = [pl.col(k).str.to_lowercase().alias(k) for k in eng.keys]
     if not pending.select(case_cols).join(other.select(case_cols), on=eng.keys, how="inner").is_empty():
-        return "speculative: would match if case-fold"
+        return "would match if case-fold"
     fold_cols = [pl.col(k).str.strip_chars().str.to_lowercase().alias(k) for k in eng.keys]
     if not pending.select(fold_cols).join(other.select(fold_cols), on=eng.keys, how="inner").is_empty():
-        return "speculative: would match if trim/case"
+        return "would match if trim/case"
     return ""
+
+
+def _sentinel_map(eng: Engine) -> dict[str, tuple[str | None, str | None]]:
+    out: dict[str, tuple[str | None, str | None]] = {}
+    frame = getattr(eng, "column_sentinels", None)
+    if frame is None or frame.is_empty():
+        return out
+    for rec in frame.to_dicts():
+        out[str(rec["column"])] = (rec.get("sent_a"), rec.get("sent_b"))
+    return out
 
 
 def _build_roster_cache(eng: Engine) -> list[RosterRow]:
     pending_by_col, accepted_by_col, top_pair, col_stats = _roster_agg_maps(eng)
+    sentinels = _sentinel_map(eng)
     rows: list[RosterRow] = []
     matched_n = eng.matched_a.height
     mismatch_n: dict[str, int] = {}
@@ -146,23 +154,22 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
             n_a, n_b, n_ab = int(st["n_a"]), int(st["n_b"]), int(st["n_ab"])
             cat = "yes" if n_a <= 30 and n_b <= 30 and n_ab <= 50 else "no"
             tag_bits: list[str] = []
-            sent = sentinel_side_tag(bool(st["sent_a"]), bool(st["sent_b"]))
+            sent_a, sent_b = sentinels.get(col, (None, None))
+            sent = format_sentinel_insight(sent_a, sent_b)
             if sent:
                 tag_bits.append(sent)
             if st["trim"]:
-                tag_bits.append("speculative: equal if trim")
+                tag_bits.append("equal if trim")
             if st["case"]:
-                tag_bits.append("speculative: equal if case-fold")
+                tag_bits.append("equal if case-fold")
             if st["both"] and not st["trim"] and not st["case"]:
-                tag_bits.append("speculative: equal if trim+case")
+                tag_bits.append("equal if trim+case")
             if st["numeric"]:
-                tag_bits.append("speculative: equal as numbers")
+                tag_bits.append("equal as numbers")
             if st["ws"]:
-                tag_bits.append("speculative: invisible/odd whitespace")
+                tag_bits.append("invisible/odd whitespace")
             if st["same_date"]:
-                tag_bits.append("speculative: same date")
-            if st["pattern"] and n_a <= 6 and n_b <= 6:
-                tag_bits.append("speculative: shared value pattern")
+                tag_bits.append("same date")
             tags = ", ".join(tag_bits[:3])
         equal = str(matched_n - mismatch_n.get(col, 0))
         rows.append(

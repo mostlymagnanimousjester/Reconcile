@@ -27,10 +27,10 @@ u      undo last accept, then focused grain.
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 r      refresh (re-read live files; last good state on failure)
 .      last pair: cell-step if already on that column's pair list; else that pair on its pair list (column detail only)
-/      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
+/      regex column draft (roster)     =  exact sentinel (side A|B, comparable-row constant)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 v      roster: show/hide accepted and equal columns (default hidden)
-m      accept the same exact pair on selected columns (roster / pair list)
+m      same exact pair on columns (roster / pair list; after / or = uses ON columns)
 c      context-column picker (pair list / cell step)
 n / p  next / previous page
 q      quit (discards unconfirmed draft)
@@ -48,13 +48,15 @@ v shows accepted/equal columns dim (pending section, then settled), not as remai
 Roster a accepts the focused column in place (does not drill). Enter inspects.
 After a, selection moves to the item that was below (last remaining if you accepted the last).
 m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
+After / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
 A-only / B-only keys and mismatched columns (headers on one side only) are not columns:
 open them from i overview (or next lever).
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
-Insights are labeled speculative and never change remaining counts.
+The speculative column shows insight text only (no speculative: prefix). Insights never change remaining counts.
+Sentinel means that side is one constant on all comparable (shared-key) rows: sentinel A=0, sentinel B="", sentinel both A=x B=y.
 """
 
 CSS = """
@@ -186,12 +188,8 @@ DataTable > .datatable--cursor {
 
 
 def _speculative_line(spec: str) -> str:
-    s = spec.strip()
-    if not s:
-        return ""
-    if "speculative" in s.lower():
-        return s
-    return f"speculative: {s}"
+    """Insight text only. The column is already named speculative."""
+    return spec.strip()
 
 
 def _grain_involves_column(grain: tuple[Any, ...], column: str) -> bool:
@@ -390,7 +388,9 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield Static("Exact sentinel on pending values on one side. Choose exactly one side.")
+            yield Static(
+                "Sentinel = that side is one constant on all comparable (shared-key) rows. Choose exactly one side."
+            )
             with Horizontal():
                 yield Button("A", id="side-a")
                 yield Button("B", id="side-b")
@@ -551,12 +551,19 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
         ],
     ]
 
-    def __init__(self, engine: Engine, columns: list[str]) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        columns: list[str],
+        *,
+        skip_column_pick: bool = False,
+    ) -> None:
         super().__init__()
         self.engine = engine
         self.columns = list(columns)
         self.selected = set(columns)
-        self.phase = "columns"
+        self.skip_column_pick = skip_column_pick
+        self.phase = "pairs" if skip_column_pick else "columns"
         self._pairs: list[dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
@@ -569,7 +576,10 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
             yield Static("", id="modal-err", classes="error")
 
     def on_mount(self) -> None:
-        self._fill_columns()
+        if self.skip_column_pick:
+            self._fill_pairs()
+        else:
+            self._fill_columns()
         self.query_one("#multi", DataTable).focus()
 
     def _set_err(self, msg: str = "") -> None:
@@ -598,7 +608,8 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
             f"Pick one exact pair ({len(names)} column(s)). Enter applies."
         )
         self.query_one("#multi-hint", Static).update(
-            "Enter/y apply · Esc back to columns"
+            "Enter/y apply · Esc "
+            + ("cancel" if self.skip_column_pick else "back to columns")
         )
         table = self.query_one("#multi", DataTable)
         table.clear(columns=True)
@@ -646,7 +657,7 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
         return
 
     def action_cancel(self) -> None:
-        if self.phase == "pairs":
+        if self.phase == "pairs" and not self.skip_column_pick:
             self._set_err("")
             self._fill_columns()
             self.query_one("#multi", DataTable).focus()
@@ -786,7 +797,7 @@ class ReconcileApp(App[int]):
             n = self.engine.column_draft_n()
             banner.update(
                 f"{n} column(s) selected for accept. "
-                "y ACCEPT selected · Space select/deselect · a this column · Esc cancel"
+                "y ACCEPT selected · m same pair · Space select/deselect · a this column · Esc cancel"
             )
             banner.set_class(False, "hidden")
             banner.remove_class("error")
@@ -843,9 +854,9 @@ class ReconcileApp(App[int]):
         if p.screen == "cell_step" and e.pair_draft_col is not None:
             return "Space toggle  y confirm  Esc cancel  a cell  c context  ? help  q quit"
         if e.column_draft and p.screen == "roster":
-            return "y ACCEPT selected  Space select/deselect  a this column  Esc cancel  ? help  q quit"
+            return "y ACCEPT selected  m same pair  Space select/deselect  a this column  Esc cancel  ? help  q quit"
         if e.column_draft:
-            return "y ACCEPT on roster  Esc back (draft stays)  ? help  q quit"
+            return "y ACCEPT on roster  m same pair  Esc back (draft stays)  ? help  q quit"
         if p.screen == "roster":
             vis = "v hide accepted" if self.show_accepted_columns else "v show accepted"
             return (
@@ -892,10 +903,12 @@ class ReconcileApp(App[int]):
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
         elif e.column_draft and p.screen == "roster":
             bits.append(
-                f"draft {e.column_draft_n()}  y ACCEPT selected  Space select/deselect"
+                f"draft {e.column_draft_n()}  y ACCEPT selected  m same pair  Space select/deselect"
             )
         elif e.column_draft:
-            bits.append(f"draft {e.column_draft_n()}  y ACCEPT on roster  Esc back (draft stays)")
+            bits.append(
+                f"draft {e.column_draft_n()}  y ACCEPT on roster  m same pair  Esc back (draft stays)"
+            )
         elif e.pair_draft_col is not None:
             n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
@@ -2259,14 +2272,33 @@ class ReconcileApp(App[int]):
         if p.screen not in ("roster", "pair_list"):
             self.set_error("ERROR: same-pair accept is only on the roster or pair list")
             return
-        if self.draft_in_flight():
+        if self.engine.pair_draft_col is not None:
             self.set_error("ERROR: confirm or cancel the current draft first")
             self.render_all()
             return
-        columns = [r.name for r in self.engine.visible_column_roster(p.roster_filter)]
-        if not columns:
-            self.set_error("ERROR: no pending columns for same-pair accept")
-            return
+        skip_column_pick = bool(self.engine.column_draft)
+        if skip_column_pick:
+            on_names = set(self.engine.column_draft)
+            columns = [
+                r.name
+                for r in self.engine.visible_column_roster(p.roster_filter)
+                if r.name in on_names
+            ]
+            if not columns:
+                self.set_error("ERROR: no ON columns in the current draft for same-pair accept")
+                self.render_all()
+                return
+        else:
+            columns = [r.name for r in self.engine.visible_column_roster(p.roster_filter)]
+            if not columns:
+                self.set_error("ERROR: no pending columns for same-pair accept")
+                return
+        if skip_column_pick:
+            pairs, _, _ = self.engine.union_pairs(columns)
+            if not pairs:
+                self.set_error("ERROR: no pending pairs in the selected columns")
+                self.render_all()
+                return
 
         def done(result: tuple[tuple[str, ...], str, str] | None) -> None:
             if result is None:
@@ -2281,7 +2313,12 @@ class ReconcileApp(App[int]):
             self.render_all()
             self.set_focus_work()
 
-        self.push_screen(MultiPairModal(self.engine, columns), done)
+        self.push_screen(
+            MultiPairModal(
+                self.engine, columns, skip_column_pick=skip_column_pick
+            ),
+            done,
+        )
 
     def _apply_multi_pair(self, columns: list[str], val_a: str, val_b: str) -> None:
         e = self.engine
@@ -2298,6 +2335,11 @@ class ReconcileApp(App[int]):
         n = e.accept_pair_across_columns(columns, val_a, val_b)
         if n == 0:
             raise InTuiError("ERROR: that pair is not pending on the selected columns")
+        if e.column_draft:
+            still_pending = {
+                r.name for r in e.visible_column_roster(p.roster_filter)
+            }
+            e.column_draft = {name for name in e.column_draft if name in still_pending}
         e.remember_grain(("pairs", val_a, val_b, *columns), n)
         if p.screen == "pair_list" and p.column:
             if p.pair_val_a == val_a and (p.pair_val_b or "") == val_b:

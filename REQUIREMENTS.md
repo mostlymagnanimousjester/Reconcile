@@ -49,7 +49,7 @@ Compare is **exact raw text**.
 
 **Speculative insights** (§10) may *describe* why two unequal strings look related. They must never change the contract, remaining-diff counts, or pairing.
 
-Every insight shown in the UI must be labeled **`speculative`**.
+Insights appear in a column named **`speculative`**. Show the insight text only; do not prefix every tag with `speculative:`.
 
 ---
 
@@ -216,7 +216,7 @@ Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses up
 | Selected cell footer | Lines prefixed `A:` and `B:` then the full raw string | Same strings as the grid |
 | Extra (in A not B, or B not A) | **Exact header** plus a **Side** field `A` or `B`. Do **not** rename to `A.cust_id` | Snapshot `(side, name)` with `name` = exact header, `side` = `A` or `B` |
 | A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
-| Exact-value sentinel scan | **One side** (`A` or `B`) plus one exact raw string. Drafts comparable columns where every pending value on that side equals the sentinel. Not a name prefix. `.all()` cannot target both sides (those rows would not be pending) |
+| Exact-value sentinel scan | **One side** (`A` or `B`) plus one exact raw string. Drafts pending comparable columns where that side is a **sentinel**: a single unique value on all comparable (shared-key) rows, equal to the typed string. A-only / B-only keys are not comparable and do not participate. Not a name prefix. Not a hardcoded token list. Both sides may be sentinels with different constants; `.all()` on pending cells is not the definition |
 
 The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two roster rows (`kind` `extra`) and two rows on **Schema extras**, each with its `Side`.
 
@@ -335,25 +335,27 @@ Regex and sentinel do **not** stack, union, or intersect. Each Run starts from a
 
 **Exact-value sentinel** (roster `=`):
 
-The pending universe is `A ≠ B`. An `.all()` predicate on the **same** constant therefore cannot be true on **both** sides: if every pending `A` and every pending `B` were `——`, those cells would be equal and not pending. So the scan is **single-side**.
+A **sentinel** is not a hardcoded token list (`""`, `0`, `NA`, dashes, …). It means that side has **exactly one unique value on all comparable (shared-key) rows** of the column. Equal matched cells count; A-only / B-only keys do not. If both sides are constant (possibly different constants), report both. If a side is not constant on comparable rows, it is not a sentinel on that side.
+
+The scan is still **single-side** (user picks A or B plus one exact string) because `=` drafts columns, it does not accept a pair.
 
 - User must choose **Side `A` or Side `B`** (modal tabs, same denotation as §8.1). Required; no default that means “both.” Run is refused until a side is selected.
-- One exact string (raw text; no trim, no regex, no expression). Empty sentinel `""` is **legal** (every pending value on that side is the empty string).
-- Per comparable column: that side’s values on **pending mismatches only** (raw strings, nulls already `""`). Draft the column iff it has **at least one pending** mismatch **and** every pending value on the chosen side is **exactly** that string (Python/Polars string equality).
-- Implemented in **Polars**: pending cells grouped by column, `(side == sentinel).all()`. Zero-pending columns are never grouped and are **never** drafted (do not treat empty-series `.all()` as true).
+- One exact string (raw text; no trim, no regex, no expression). Empty sentinel `""` is **legal**.
+- Per comparable column: draft iff it has **at least one pending** mismatch **and** that side’s unique value on **all comparable rows** is **exactly** the typed string (Python/Polars string equality). Pending-only `.all()` is not enough: a non-pending comparable row with a different value means that side is not a sentinel.
+- Implemented in **Polars** from the comparable-cell frame already built for mismatches (matched-key unpivot). Schema-sized `column_sentinels` (`sent_a` / `sent_b` or null). Zero-pending columns are **never** drafted.
 - Invalid side or other engine error: in-TUI, draft unchanged.
 - **Zero hits**: in-TUI ERROR, no draft started, stay. Sentinel Enter with no side selected: ERROR on the modal.
 
 Choosing Side `B` does not look at A, and vice versa.
 
-While a draft is in flight, `/` and `=` are disabled (or error: confirm or cancel first).
+While a **pair** draft is in flight, `/` and `=` error: confirm or cancel first. A live **column** draft (`/` or `=`) may run `m` on the ON columns (see `m` below). A second `/` or `=` while a column draft is live still errors: confirm or cancel first.
 
 #### UX (roster)
 
 - Full roster stays visible (not a drafted-only list). Drafted rows show a check.
 - Opening `/` opens a regex modal. Opening `=` opens a sentinel modal with **Side tabs `A` | `B`** plus one exact-string field; `Enter` Runs; `Esc` closes the modal without changing the draft. Run is refused until a side is selected.
-- After Run, footer shows `draft N` plus Confirm / Cancel / toggle.
-- Column **detail** has no regex/sentinel. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight.
+- After Run, footer shows `draft N` plus Confirm / Cancel / toggle. `m` uses the live ON columns (skips the column picker).
+- Column **detail** has no regex/sentinel. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight. `m` on a live column draft is the exception: it applies the same-pair flow to the ON columns.
 
 ### 9.6 Exact pending-pair accept
 
@@ -408,9 +410,9 @@ Pending view shows the **pair list only** (always the paged list). No cell grid 
 
 ## 10. Speculative insights (view/filter only)
 
-Computed in Polars from already-established exact diffs (or from extra/unmatched sets as noted). Labeled **`speculative`**. Never change remaining counts.
+Computed in Polars from already-established exact diffs (or from extra/unmatched sets as noted). Shown in a column named **`speculative`** without a `speculative:` prefix on each tag. Never change remaining counts.
 
-They may be used as **filters/explanations**, not as accept actions.
+They may be used as **filters/explanations**, not as accept actions. A tag is only worth showing when it names something the user can act on with `a`, `=`, or `m`.
 
 ### 10.1 On matched-key cell mismatches
 
@@ -419,9 +421,9 @@ They may be used as **filters/explanations**, not as accept actions.
 - Equal if trim+case
 - Both numeric-looking and equal as numbers (`1` vs `1.0`)
 - Invisible/odd whitespace (NBSP, tabs, trailing space)
-- Shared value pattern (e.g. A always `Y`/`N`, B always `Yes`/`No`)
 - **Same calendar date** (see §10.4)
-- **Sentinel-like value** on A only, B only, or both (empty, `0`, `NA` / `N/A` / `NULL` / `None`, dash placeholders). Labeled `speculative: sentinel A` / `sentinel B` / `sentinel both`. Hint for the `=` draft; never an accept path.
+- **Sentinel** on A only, B only, or both: that side is one constant on **all comparable (shared-key) rows** of the column. Display the side and the value, e.g. `sentinel A=0`, `sentinel B=""`, `sentinel both A=x B=y`. Not a token list. Hint for the `=` draft (and for `m` when both sides are a pair). Never an accept path by itself.
+- Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top-pair %` column; a specific pair is accepted with `a` / `m`.
 
 ### 10.2 On extras
 
@@ -442,7 +444,7 @@ Try a fixed list:
 - `D/M/YYYY`
 - `YYYYMMDD`
 
-Emit `speculative: same date` only when each side parses **unambiguously** to the same calendar date. If both US and EU parses are possible, emit **nothing**.
+Emit `same date` only when each side parses **unambiguously** to the same calendar date. If both US and EU parses are possible, emit **nothing**.
 
 ### 10.5 Categorical statistic (not an accept path, not a layout switch)
 
@@ -488,7 +490,7 @@ Python may hold **only**:
 
 Anything else that `to_dicts()`s a full frame on a hot path is a defect. The TUI must **not** convert full frames to Python objects.
 
-- Batch sentinel scan (§9.5) runs **in Polars**: pending cells grouped by column, all values on the chosen side == the exact sentinel (`.all()` per column; do not use a Polars `=` selector). Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates.
+- Batch sentinel scan (§9.5) runs **in Polars** from comparable (shared-key) cells: per column, a side is a sentinel iff `n_unique == 1` on that side. `=` drafts pending columns whose `sent_a` / `sent_b` equals the typed string. Do not use a Polars `=` selector. Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates.
 - Cell/key lists are paged at **100**. Roster is schema-sized (one row per comparable column plus unmatched/extra remaining-work rows) and may be materialized **once per snapshot apply**.
 
 Kernel split (facade still `reconcile.engine.Engine`; TUI imports the facade, not compare internals): `compare.py` (join / unpivot), `snaps.py` (accept/undo tables), `pages.py` (slice then materialize), `roster.py` (cache / next lever). Do not split load / delimited / excel / cli. Keep `insights.py`.
@@ -570,7 +572,7 @@ Shows:
 - Frozen job identity (absolute paths, sheets, keys, encoding/delimiter)
 - Exact remaining counts (pending vs accepted): pending columns, A-only keys, B-only keys, mismatched columns (headers on one side only), mismatched cells, **remaining work items** (the grain sum used for exit `0`)
 - Entry points: **A-only keys**, **B-only keys**, **Mismatched columns** (`Enter` opens that list)
-- Speculative chips only as secondary, labeled `speculative`
+- Speculative chips only as secondary, in the `speculative` column (insight text, no `speculative:` prefix)
 
 `a` / `A` on Overview: in-TUI ERROR (not remaining work), not a silent no-op. `n` / `p` ERROR (no pages).
 
@@ -664,7 +666,7 @@ Each row: key columns + all other columns on that side, raw — comparable **and
 
 Reachable from the overview modal (`i` then Enter), or next lever. Same list either way.
 
-Headers that exist on one side only. Exact header + **Side** `A` or `B`; speculative near-misses labeled `speculative`. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
+Headers that exist on one side only. Exact header + **Side** `A` or `B`; speculative near-misses as insight text. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
 
 ### 15.6 Footer (always on)
 
@@ -680,7 +682,7 @@ Each number is one noun. Do **not** sum cells + unmatched rows + header names in
 - Page `n/m` when paged
 - Pair list vs cell step when on detail
 - `draft N` + `y` / `Esc` / `Space` when a draft is in flight
-- Speculative fragments labeled `speculative`
+- Speculative fragments in the `speculative` column (insight text only)
 - `working…` in the footer while compare / refresh / sentinel / regex / roster-rebuild is in flight. Indeterminate only; hide when done. Do not show on instant `a` / toggle.
 
 ### 15.7 Commands / keys
@@ -704,7 +706,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
 | `i` | Overview modal (counts + unmatched rows / mismatched columns). Esc closes. ERROR is not a screen change |
 | `v` | Roster: toggle showing accepted / equal columns (default hidden). Footer hint. ERROR off roster |
-| `m` | Roster / pair list: same exact pair on selected columns (column picker, then grouped-union pair picker). Footer hint. Refused while a draft is in flight. ERROR off roster / pair list |
+| `m` | Roster / pair list: same exact pair on selected columns. No live column draft: column picker, then grouped-union pair picker. Live `/` or `=` draft: skip the column picker; ON columns are the `m` targets. Footer hint. Refused while a **pair** draft is in flight. ERROR off roster / pair list |
 | `c` | Context-column picker (column detail: pair list / cell step / non-Pending grids). ERROR off column detail |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
@@ -725,7 +727,7 @@ The TUI is used with **maximally blue-blocking glasses (red lenses)**. Blue, cya
 | Equal / not a diff | Dimmer than accepted | — |
 | Drafted / checked | **Reverse video** (fg/bg swap) and/or underline | Orange/amber underline |
 | Focused row | Reverse or a `>` glyph in the gutter, not a blue bar | — |
-| Speculative chips | Dim + the word `speculative`; optional italic | No blue |
+| Speculative chips | Dim; column named `speculative`; insight text only (no `speculative:` prefix); optional italic | No blue |
 | Top roster row (the lever) | Bold + underline | Yellow |
 | Returned-to-pending | Reverse/standout in the existing list; not a new screen | Orange/amber or yellow |
 | First-difference | Reverse/standout on the disagreeing characters | Yellow/white, not blue |
@@ -832,7 +834,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
 | Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. Persistent filter box. Immediate `a` column **in place**; `/` `=` behind glass; `m` same pair on columns |
-| Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` is exact-value `.all()` on one side. Draft all `[ON]`; banner/footer `y ACCEPT selected`; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
+| Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` drafts pending columns whose chosen side is that comparable-row constant. Draft all `[ON]`; banner/footer `y ACCEPT selected`; `m` uses ON columns; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--a`/`--b`/`--keys` required; CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs only (no `1`–`4`); `a` accepts the current selection on every screen |

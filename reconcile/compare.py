@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from reconcile.errors import HardFail, format_key_tuple
+from reconcile.insights import column_sentinel_frame, empty_sentinel_frame
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -98,6 +99,7 @@ def rebuild_frames(eng: Engine) -> None:
     schema = _empty_mismatch_schema(eng.keys)
     if eng.matched_a.is_empty() or not eng.comparable:
         eng.mismatches = _empty_df(schema)
+        eng.column_sentinels = empty_sentinel_frame()
     else:
         a_long = eng.matched_a.select(eng.keys + eng.comparable).unpivot(
             index=eng.keys, on=eng.comparable, variable_name="column", value_name="val_a"
@@ -105,9 +107,9 @@ def rebuild_frames(eng: Engine) -> None:
         b_long = eng.matched_b.select(eng.keys + eng.comparable).unpivot(
             index=eng.keys, on=eng.comparable, variable_name="column", value_name="val_b"
         )
-        eng.mismatches = a_long.join(b_long, on=[*eng.keys, "column"], how="inner").filter(
-            pl.col("val_a") != pl.col("val_b")
-        )
+        comparable_cells = a_long.join(b_long, on=[*eng.keys, "column"], how="inner")
+        eng.mismatches = comparable_cells.filter(pl.col("val_a") != pl.col("val_b"))
+        eng.column_sentinels = column_sentinel_frame(comparable_cells)
 
 
 def sort_unmatched(eng: Engine) -> None:

@@ -2366,3 +2366,104 @@ def test_busy_indicator_shows_for_wait_not_instant_accept(tmp_path: Path):
             assert "working…" not in footer
 
     asyncio.run(_run())
+
+
+def test_roster_speculative_column_has_no_prefix(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,only_a\n1,0\n2,0\n")
+    write_csv(pb, "id,only_a\n1,x\n2,y\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            spec_i = labels.index("speculative")
+            shown = str(table.get_row_at(0)[spec_i])
+            assert "sentinel A=0" in shown
+            assert "speculative:" not in shown
+            assert "shared value pattern" not in shown
+
+    asyncio.run(_run())
+
+
+def test_regex_draft_m_uses_on_columns_not_all_pending(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s1,s2,mixed\n1,0,0,0\n2,0,0,0\n3,0,0,z\n")
+    write_csv(pb, "id,s1,s2,mixed\n1,x,x,x\n2,x,x,x\n3,x,x,y\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("s1|s2")
+            app.render_all()
+            await pilot.pause()
+            assert app.engine.column_draft == {"s1", "s2"}
+            app.query_one("#grid").focus()
+            app.action_multi_pair()
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, MultiPairModal)
+            assert modal.skip_column_pick is True
+            assert modal.phase == "pairs"
+            assert set(modal.columns) == {"s1", "s2"}
+            idx = next(
+                i
+                for i, rec in enumerate(modal._pairs)
+                if rec["val_a"] == "0" and rec["val_b"] == "x"
+            )
+            modal.query_one("#multi").move_cursor(row=idx)
+            modal.action_ok()
+            await pilot.pause()
+            assert not isinstance(app.screen, MultiPairModal)
+            assert next(r for r in app.engine.roster() if r.name == "s1").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "s2").pending == 0
+            mixed = [r for r in app.engine.pending_cells.to_dicts() if r["column"] == "mixed"]
+            assert any(r["val_a"] == "0" and r["val_b"] == "x" for r in mixed)
+            leftover = [r.name for r in app.engine.visible_column_roster()]
+            assert leftover == ["mixed"]
+
+    asyncio.run(_run())
+
+
+def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s1,s2,mixed\n1,0,0,0\n2,0,0,0\n3,0,0,z\n")
+    write_csv(pb, "id,s1,s2,mixed\n1,x,x,x\n2,x,x,x\n3,x,x,y\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_sentinel_draft("A", "0")
+            app.render_all()
+            await pilot.pause()
+            assert app.engine.column_draft == {"s1", "s2"}
+            footer = str(app.query_one("#footer").render())
+            assert "m same pair" in footer
+            app.query_one("#grid").focus()
+            app.action_multi_pair()
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, MultiPairModal)
+            assert modal.skip_column_pick is True
+            assert set(modal.columns) == {"s1", "s2"}
+            idx = next(
+                i
+                for i, rec in enumerate(modal._pairs)
+                if rec["val_a"] == "0" and rec["val_b"] == "x"
+            )
+            modal.query_one("#multi").move_cursor(row=idx)
+            modal.action_ok()
+            await pilot.pause()
+            mixed = [r for r in app.engine.pending_cells.to_dicts() if r["column"] == "mixed"]
+            assert any(r["val_a"] == "0" and r["val_b"] == "x" for r in mixed)
+            leftover = [r.name for r in app.engine.visible_column_roster()]
+            assert leftover == ["mixed"]
+
+    asyncio.run(_run())
