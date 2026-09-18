@@ -35,9 +35,13 @@ def column_roster(
     work, not columns.
     """
     rows = [r for r in roster(eng, name_filter) if r.kind == "column"]
-    if include_settled:
-        return rows
-    return [r for r in rows if r.pending > 0]
+    pending = [r for r in rows if r.pending > 0]
+    if not include_settled:
+        return pending
+    # Visual sections when v is on: pending first, then accepted/equal.
+    # Each section stays in table A import order (eng.comparable).
+    settled = [r for r in rows if r.pending <= 0]
+    return pending + settled
 
 
 def visible_column_roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
@@ -226,7 +230,8 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 returned=(side, name) in eng.returned_extras,
             )
         )
-    rows.sort(key=lambda r: (-r.pending, -r.concentration, r.name))
+    # Comparable columns stay in table A import order (eng.comparable).
+    # A-only / B-only / extras follow as remaining-work leftovers, not resorted.
     return rows
 
 

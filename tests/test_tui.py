@@ -8,10 +8,12 @@ from reconcile.tui import (
     HELP,
     ContextModal,
     HelpModal,
+    MultiPairModal,
     OverviewModal,
     ReconcileApp,
     RegexModal,
     SentinelModal,
+    select_after_accept,
 )
 from tests.xlsxutil import write_csv
 
@@ -156,6 +158,7 @@ def test_help_power_user_grain():
     assert "current selection" in HELP.lower()
     assert "v      roster" in HELP or "v shows" in HELP.lower() or "show/hide accepted" in HELP.lower()
     assert "in place" in HELP.lower()
+    assert "same exact pair" in HELP.lower() or "m      accept" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -586,7 +589,8 @@ def test_u_undoes_last_accept_after_next_lever(tmp_path: Path):
             assert app.place.column == "Status"
             app.action_accept()
             await pilot.pause()
-            assert app.place.column == "Flag"
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 0
             app.action_undo()
             await pilot.pause()
@@ -822,7 +826,8 @@ def test_u_after_next_lever_prefers_last_grain_even_if_new_pair_has_snaps(tmp_pa
             assert app.place.column == "Status"
             app.action_accept()
             await pilot.pause()
-            assert app.place.column == "Flag"
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 0
             assert next(r for r in app.engine.roster() if r.name == "Flag").accepted == 1
             app.action_undo()
@@ -2059,6 +2064,7 @@ def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
             assert "cells " not in footer
             assert "extras " not in footer
             assert "v show accepted" in footer
+            assert "m same pair" in footer
             app.action_overview()
             await pilot.pause()
             body = str(app.screen.query_one("#overview-body").render())
@@ -2068,5 +2074,172 @@ def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
             labels = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
             assert "Mismatched columns" in labels
             assert "Schema extras" not in labels
+
+    asyncio.run(_run())
+
+
+def test_select_after_accept_below_then_last():
+    assert select_after_accept(["a", "b", "c"], "a", ["b", "c"]) == "b"
+    assert select_after_accept(["a", "b", "c"], "c", ["a", "b"]) == "b"
+    assert select_after_accept(["a"], "a", []) is None
+
+
+def test_roster_a_selects_former_next_below(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag,Note\n1,Y,1,a\n")
+    write_csv(pb, "id,Status,Flag,Note\n1,Yes,2,b\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert [r.name for r in app.engine.visible_column_roster()] == [
+                "Status",
+                "Flag",
+                "Note",
+            ]
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert shown == ["Flag", "Note"]
+            app.place.focused_name = "Note"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
+            leftover = [r.name for r in app.engine.visible_column_roster()]
+            assert leftover == ["Flag"]
+
+    asyncio.run(_run())
+
+
+def test_pair_list_a_selects_former_next_below(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,N\n3,Z\n")
+    write_csv(pb, "id,val\n1,Yes\n2,No\n3,Zed\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    groups = eng.pair_groups("val").to_dicts()
+    first = (groups[0]["val_a"], groups[0]["val_b"])
+    second = (groups[1]["val_a"], groups[1]["val_b"])
+    last = (groups[2]["val_a"], groups[2]["val_b"])
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.place.pair_val_a, app.place.pair_val_b = first
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "val"
+            assert (app.place.pair_val_a, app.place.pair_val_b) == second
+            assert next(r for r in app.engine.roster() if r.name == "val").pending == 2
+            app.place.pair_val_a, app.place.pair_val_b = last
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "val"
+            assert (app.place.pair_val_a, app.place.pair_val_b) == second
+            assert next(r for r in app.engine.roster() if r.name == "val").pending == 1
+
+    asyncio.run(_run())
+
+
+def test_roster_v_and_a_stay_still_work_with_a_order(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,ok\n1,Y,same\n")
+    write_csv(pb, "id,Status,ok\n1,Yes,same\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert [r.name for r in app._table_keys if r is not None] == ["Status"]
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert "Status" not in [r.name for r in app._table_keys if r is not None]
+            app.action_toggle_accepted()
+            await pilot.pause()
+            names = [r.name for r in app._table_keys if r is not None]
+            assert names == ["Status", "ok"] or names[0] == "Status"
+            statuses = []
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            status_i = labels.index("status")
+            for i, r in enumerate(app._table_keys):
+                if r is not None:
+                    statuses.append((r.name, str(table.get_row_at(i)[status_i])))
+            by_name = dict(statuses)
+            assert by_name["Status"] == "accepted"
+            assert by_name["ok"] == "equal"
+
+    asyncio.run(_run())
+
+
+def test_multi_column_pair_accept_empty_to_zero(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,qty,amt,note\n1,,,x\n2,,,y\n")
+    write_csv(pb, "id,qty,amt,note\n1,0,0,x\n2,0,0,z\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert [r.name for r in app.engine.visible_column_roster()] == [
+                "qty",
+                "amt",
+                "note",
+            ]
+            footer = str(app.query_one("#footer").render())
+            assert "m same pair" in footer
+            app.query_one("#grid").focus()
+            await pilot.press("m")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, MultiPairModal)
+            modal.action_ok()
+            await pilot.pause()
+            assert modal.phase == "pairs"
+            pairs = modal._pairs
+            idx = next(
+                i
+                for i, rec in enumerate(pairs)
+                if rec["val_a"] == "" and rec["val_b"] == "0"
+            )
+            modal.query_one("#multi").move_cursor(row=idx)
+            modal.action_ok()
+            await pilot.pause()
+            assert not isinstance(app.screen, MultiPairModal)
+            assert app.place.screen == "roster"
+            assert next(r for r in app.engine.roster() if r.name == "qty").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "amt").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "note").pending == 1
+            leftover = [r for r in app.engine.pending_cells.to_dicts() if r["column"] == "note"]
+            assert leftover[0]["val_a"] == "y"
+            assert leftover[0]["val_b"] == "z"
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert shown == ["note"]
 
     asyncio.run(_run())

@@ -123,16 +123,20 @@ def test_all_empty_row_dropped_before_dup_key(tmp_path: Path):
     assert eng.pending_total() == 0
 
 
-def test_roster_sort_pending_then_concentration_then_name(tmp_path: Path):
+def test_roster_shared_columns_follow_table_a_import_order(tmp_path: Path):
+    """A import order wins even when a later column has more pending."""
     eng = _pair(
         tmp_path,
-        "id,Status,Flag\n1,Y,1\n2,Y,1\n3,Y,1\n4,N,x\n",
-        "id,Status,Flag\n1,Yes,1\n2,Yes,1\n3,Yes,1\n4,No,y\n",
+        "id,Status,Flag\n1,Y,1\n2,Y,2\n3,Y,3\n4,N,4\n",
+        "id,Status,Flag\n1,Yes,9\n2,Y,8\n3,Y,7\n4,N,6\n",
     )
+    # Status: 1 pending; Flag: 4 pending. Old pending-desc sort would put Flag first.
     rows = eng.roster()
     names = [r.name for r in rows if r.kind == "column"]
-    assert names[0] == "Status"
-    assert names[1] == "Flag"
+    assert names == ["Status", "Flag"]
+    vis = eng.visible_column_roster()
+    assert [r.name for r in vis] == ["Status", "Flag"]
+    assert eng.comparable == ["Status", "Flag"]
 
 
 def test_id_vs_id_space_not_paired(tmp_path: Path):

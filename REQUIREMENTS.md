@@ -257,11 +257,12 @@ Remaining work is the **pending** set. The job is “done” when pending count 
 | Accept one cell | Snapshot this `(key, column, valA, valB)` |
 | Accept entire column | Bulk-accept **all current pending** cell mismatches in that column, each as its own snapshot. Does **not** mean “never compare this column again.” Immediate from roster or detail on a **single** column |
 | Confirm drafted columns | Same snapshot rule as accept entire column, applied to every **still-checked** column in the in-flight **column** draft (§9.5). Then the draft is empty |
-| Accept entire pair | Snapshot every current pending cell in this column with exact `valA`, `valB`. Immediate from the pair list (`a`). Then **next lever** |
+| Accept entire pair | Snapshot every current pending cell in this column with exact `valA`, `valB`. Immediate from the pair list (`a`). Stay on that pair list; selection moves to the pair that was **below** (or the new last remaining pair / empty). Does **not** next-lever |
 | Confirm drafted pair | Snapshot every **still-checked** pending cell in the in-flight **pair** draft (§9.6). Then the draft is empty; then **next lever** |
+| Accept same pair on columns | Modal (`m` on roster / pair list): pick target columns, pick one exact `(valA, valB)` from the grouped union, snapshot that pair on every selected column that still has it. Same grain identity as pair accept (exact strings, not fuzzy). Stay on the current screen; selection follows the below/last-remaining rule when the focused row vanishes |
 | Accept one unmatched key | Snapshot `(side, key, row snapshot)`. On the unmatched-key grid, then the next pending key in that grid (not next lever) |
 | Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys. Immediate from the roster row or `A` on that grid. Then **next lever** |
-| Accept one extra column | Snapshot `(side, column name)`. Immediate from the roster extra row or Schema extras. Then **next lever** |
+| Accept one extra column | Snapshot `(side, column name)`. Immediate from Schema extras. Stay on that list; selection moves to the extra that was **below** (or the new last remaining / empty). Does **not** next-lever |
 | Undo | That snapshot returns to pending (same session) |
 
 Accept entire column is available immediately from the **roster** (on a comparable-column row) and from **column detail** (one column, no draft).
@@ -553,7 +554,7 @@ There is **no** `--session` flag, `.recon.zip`, or TUI export/open of reconcile 
 
 Do not use the word “summary” for two different screens. Names below are canonical.
 
-**Happy path (the product):** launch → **column roster** (row 1 is the largest remaining pending *column*) → `a` accepts that column **in place**, or `Enter` inspects the pile then `a` on the selected grain → remaining unmatched rows / mismatched columns from the **overview modal** (`i`) or next lever → `r` after the user saves the workbook in another tool. Regex `/`, sentinel `=`, Equal/All-matched tabs: real, behind glass. A-only keys, B-only keys, and mismatched columns (headers on one side only) are remaining work opened from the overview or via next lever — they are not column-roster rows.
+**Happy path (the product):** launch → **column roster** (shared comparable columns in table A import order) → `a` accepts that column **in place**, or `Enter` inspects the pile then `a` on the selected grain → remaining unmatched rows / mismatched columns from the **overview modal** (`i`) or next lever → `r` after the user saves the workbook in another tool. Regex `/`, sentinel `=`, Equal/All-matched tabs: real, behind glass. A-only keys, B-only keys, and mismatched columns (headers on one side only) are remaining work opened from the overview or via next lever — they are not column-roster rows.
 
 A footer/status line is **always visible** (§15.6).
 
@@ -572,11 +573,11 @@ Shows:
 
 `a` / `A` on Overview: in-TUI ERROR (not remaining work), not a silent no-op. `n` / `p` ERROR (no pages).
 
-No separate biggest-lever widget. The roster’s first **pending column** is that lever.
+No separate biggest-lever widget. The roster’s first **pending column** (A import order) is that lever.
 
 ### 15.2 Column roster (home)
 
-The roster is **pending comparable columns**. A column whose *shared* (matched-key) rows are all equal has nothing to review and is **auto-accepted / hidden**, even when A-only or B-only keys exist (unmatched keys are not cell diffs). After the user accepts a column, pending 0 → hidden **and the cursor stays on the roster**, focused on the next pending column. `v` toggles accepted / equal columns back onto the list (default: hidden). When shown they are dim, with a compact **status** (`pending` / `accepted` / `equal`), so they do not look like remaining work. Enter still drills for inspection.
+The roster is **pending comparable columns**. A column whose *shared* (matched-key) rows are all equal has nothing to review and is **auto-accepted / hidden**, even when A-only or B-only keys exist (unmatched keys are not cell diffs). After the user accepts a column, pending 0 → hidden **and the cursor stays on the roster**, focused on the column that was **below** the accepted row (or the new last remaining column / empty). `v` toggles accepted / equal columns back onto the list (default: hidden). When shown they are dim, with a compact **status** (`pending` / `accepted` / `equal`), so they do not look like remaining work: pending section first, then settled. Enter still drills for inspection.
 
 A-only keys, B-only keys, and mismatched columns **must not** appear on this table looking like comparable columns. Open them from `i` overview or next lever.
 
@@ -584,9 +585,9 @@ One row per pending comparable column (`kind` `column`, pending > 0), plus settl
 
 **Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**.
 
-**One sort (not a key):** pending descending, then concentration descending, then exact `name`. No sort-cycle.
+**One order (not a key):** table A import order (`eng.comparable` / original A headers, keys excluded). No pending/concentration sort and no sort-cycle. When `v` is on, keep two visual sections (pending, then accepted/equal); each section is still A import order.
 
-Row 1 of **pending** work is the biggest remaining *column* lever (settled rows never take the lever chrome). Clearing comparable columns is not “done” while unmatched rows or mismatched columns remain (footer counts + overview / next lever).
+Row 1 of **pending** work is the first remaining *column* in A import order (settled rows never take the lever chrome). Clearing comparable columns is not “done” while unmatched rows or mismatched columns remain (footer counts + overview / next lever).
 
 **Filter box (always visible):** case-insensitive substring on column `name`. View only; does not change pairing or drafts. Focus the box to type; `Esc` returns focus to the list (does not have to clear the text). Empty box = all pending columns (and settled, if `v` is on). `/` is **not** this filter; `/` opens regex → column **draft**.
 
@@ -603,7 +604,7 @@ Columns on the roster:
 
 There is no separate **accepted-count** column next to a draft/accept checkbox. Pending columns show because they are pending; accepted columns are hidden unless `v`.
 
-Row 1 of pending work is the biggest lever (bold + underline, §15.8). Rows that contain **returned-to-pending** items after the last refresh: standout/reverse on the row until the next successful refresh. Drafted columns are bold `[ON]`; unselected potential targets are dim `[off]`. Settled rows are dim.
+Row 1 of pending work is the first remaining column in A import order (bold + underline, §15.8). Rows that contain **returned-to-pending** items after the last refresh: standout/reverse on the row until the next successful refresh. Drafted columns are bold `[ON]`; unselected potential targets are dim `[off]`. Settled rows are dim.
 
 **Immediate** on the focused column row:
 
@@ -627,7 +628,7 @@ One comparable column. **One thing at a time.**
 - `Enter` → **cell step** (pair draft of those exact strings). Grid, first-difference, context columns.
 - `Esc` from cell step → pair list (draft cancelled if not confirmed).
 - `Esc` from pair list → roster.
-- `a` on a pair → immediate accept that pair.
+- `a` on a pair → immediate accept that pair; stay on the pair list, cursor on the pair that was below (or the new last remaining / empty).
 - `A` → immediate accept entire column.
 - Named tabs **Pending / Accepted / Equal / All matched** switch views. There are no `1`–`4` keys. Tab switch is refused (error, draft kept) while a pair draft is in flight.
 
@@ -656,13 +657,13 @@ Reachable from the overview modal (`i` then Enter), or next lever. Same grid eit
 
 Each row: key columns + all other columns on that side, raw — comparable **and** extras only on that side.
 
-`a` accept one key (then the next pending key in this grid; do not jump the roster); `A` accept all unmatched on this side then **next lever**; `u` undo; `Esc` roster.
+`a` accept one key (then the next pending key **below** in this grid, or the new last remaining pending key; do not jump to the top or the roster); `A` accept all unmatched on this side then **next lever**; `u` undo; `Esc` roster.
 
 ### 15.5 Mismatched columns
 
 Reachable from the overview modal (`i` then Enter), or next lever. Same list either way.
 
-Headers that exist on one side only. Exact header + **Side** `A` or `B`; speculative near-misses labeled `speculative`. Order: exact name. `a` / `u` that column; `a` then **next lever**. `Esc` roster.
+Headers that exist on one side only. Exact header + **Side** `A` or `B`; speculative near-misses labeled `speculative`. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
 
 ### 15.6 Footer (always on)
 
@@ -673,7 +674,7 @@ Each number is one noun. Do **not** sum cells + unmatched rows + header names in
 - **pending columns** (comparable columns with pending cell mismatches)
 - **unmatched rows** (A-only keys + B-only keys)
 - **mismatched columns** (headers on one side only)
-- On the roster: `v show accepted` / `v hide accepted`
+- On the roster: `v show accepted` / `v hide accepted`; `m same pair`
 - Refresh delta after `r` (including returned-to-pending count)
 - Page `n/m` when paged
 - Pair list vs cell step when on detail
@@ -691,7 +692,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `Enter` | Drill: roster column → pair list; pair → cell step (draft); overview-modal entry → that list; modal → Run |
 | `Esc` | Back: close modal → cancel roster/cell-step draft → parent screen (pair list / A-only / B-only / extras → roster). Roster `Esc` stays (overview is `i`, not a screen). On pair list / detail, a **column** draft stays live (`Esc` is back, not cancel) |
 | `Space` | Toggle focused **column** row in the current column draft (`[ON]` / `[off]`); ERROR if no column draft (cheap) |
-| `a` | Accept the **current selection**: roster column (stay on roster), pair (pair list), cell (cell step), one unmatched key, one mismatched column. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, ERROR, do not next-lever |
+| `a` | Accept the **current selection**: roster column (stay on roster), pair (stay on pair list), cell (cell step), one unmatched key, one mismatched column. After the current row is removed/hidden, focus the item that was **below** it (or the new last remaining / empty). Do not jump to the top. Do not drill. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, ERROR, do not next-lever |
 | `A` | Accept **all** on this screen: entire column from the pair list / cell step with **no** pair draft, or **all unmatched on this side** (A-only/B-only **grid**). Same as `a` on the roster (selection is one column). Refused while a pair draft is in flight. Refused on Accepted / Equal / All matched (switch to Pending). 0-pending roster column: stay |
 | `y` | Confirm current draft; no-op if none; then next lever. All-unchecked pair draft: ERROR, stay, draft live. After `/` or `=` the obvious next action is `y ACCEPT selected` |
 | `u` | Undo focused grain. After next lever, `u` undoes the last accepted grain (one last action). ERROR if nothing snapshotted for that grain (and no last grain). `U` undo entire column on the **pair list** only (ERROR elsewhere, including cell step where a pair draft is always in flight) |
@@ -701,6 +702,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
 | `i` | Overview modal (counts + unmatched rows / mismatched columns). Esc closes. ERROR is not a screen change |
 | `v` | Roster: toggle showing accepted / equal columns (default hidden). Footer hint. ERROR off roster |
+| `m` | Roster / pair list: same exact pair on selected columns (column picker, then grouped-union pair picker). Footer hint. Refused while a draft is in flight. ERROR off roster / pair list |
 | `c` | Context-column picker (cell step). ERROR off cell step |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
@@ -732,18 +734,20 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
 
 ### 15.9 Deadline navigation
 
-**Next lever** after a bulk accept (pair `y` or pair-list `a`, column-draft `y`, immediate whole-column `A` from the pair list, `A` on an unmatched-key grid, mismatched-column list `a`):
+**Next lever** after a bulk accept (pair `y`, column-draft `y`, immediate whole-column `A` from the pair list, `A` on an unmatched-key grid):
 
 1. If the current column still has pending pairs, focus the next-highest-count pair on that column’s pair list.
-        2. Else the next roster cache row with pending > 0 from the **unfiltered** cache (fixed sort: pending, then concentration, then name). **Clear `roster_filter`** on this jump:
+        2. Else the next roster cache row with pending > 0 from the **unfiltered** cache (A import order for comparable columns). **Clear `roster_filter`** on this jump:
    - `column` → that pair list, top pair focused
    - `A-only` / `B-only` → that grid, first pending key focused
    - `extra` → mismatched-column list, that header focused (ready for `a`)
 3. Else the roster (including pending total 0).
 
-**Roster `a` / roster `A` does not next-lever.** It accepts the focused column, hides it (unless `v`), and stays on the roster with the next pending column focused.
+**Roster `a` / roster `A` does not next-lever.** It accepts the focused column, hides it (unless `v`), and stays on the roster with the column that was **below** focused (or the new last remaining / empty).
 
-Single-cell `a` on the cell step does not jump columns; it advances to the next pending row in that grid (cursor and page follow `focused_key`). If that pair is exhausted, go back to **this column’s pair list**, not next lever. Single-key `a` on an unmatched-key grid does not jump the roster; it advances to the next pending key in that grid.
+**Pair-list `a` and extras `a` do not next-lever.** They stay on that screen and move selection to the item that was below (or the new last remaining / empty).
+
+Single-cell `a` on the cell step does not jump columns; it advances to the next pending row **below** in that grid (cursor and page follow `focused_key`). If that was the last cell, stay on the new last remaining cell. If that pair is exhausted, go back to **this column’s pair list**, not next lever. Single-key `a` on an unmatched-key grid does not jump the roster or wrap to the top; it advances to the next pending key below, or the new last remaining pending key.
 
 **Repeat last pair** `.` — §9.6. In memory only. Never auto-accepts.
 
@@ -814,8 +818,8 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Undo | Yes, in session |
 | Persist | None. Confirmed snapshots, place, drafts, and context columns live in memory until quit |
 | Visual | Red-lens safe (§15.8): luminance/underline/reverse; no blue/green as sole signal |
-| Fluency | Work is home (column roster of pending comparable columns); one sort (pending then concentration then name); pair-first detail; unified `Enter`/`Esc`/`a`/`y`; overview is `i` modal; no jump list / `f` / `s` / `j` |
-| Deadline nav | Next lever walks the same cache sort (pending columns, unmatched keys, extras); `.` repeat pair; returned-to-pending marked in place (§15.9) |
+| Fluency | Work is home (column roster of pending comparable columns); A import order; pair-first detail; unified `Enter`/`Esc`/`a`/`y`; overview is `i` modal; no jump list / `f` / `s` / `j` |
+| Deadline nav | After `a`, cursor goes to the former next-below item (or last remaining / empty), not the top and not a drill. Next lever still used after bulk `y` / pair-list `A` / unmatched `A`. `.` repeat pair; returned-to-pending marked in place (§15.9) |
 | Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
 | Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is a roster `cat` statistic only (pair list is always paged); no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; in memory |
@@ -823,12 +827,12 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
-| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status). A-only / B-only / mismatched columns are not column rows (`i` overview). Sort: pending then concentration then name. Persistent filter box. Immediate `a` column **in place**; `/` `=` behind glass |
+| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. Persistent filter box. Immediate `a` column **in place**; `/` `=` behind glass; `m` same pair on columns |
 | Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` is exact-value `.all()` on one side. Draft all `[ON]`; banner/footer `y ACCEPT selected`; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--a`/`--b`/`--keys` required; CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs only (no `1`–`4`); `a` accepts the current selection on every screen |
-| Keybindings | One map (§15.7). `Esc` always back. `a` = accept selection. `v` = show/hide accepted columns. No `f`/`s`/`j` |
+| Keybindings | One map (§15.7). `Esc` always back. `a` = accept selection. `v` = show/hide accepted columns. `m` = same pair on selected columns. No `f`/`s`/`j` |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
 | Extra columns | Exact header + Side `A` or `B`; name is never prefixed |

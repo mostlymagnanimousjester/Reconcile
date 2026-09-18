@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 import polars as pl
 from rich.text import Text
@@ -30,6 +30,7 @@ r      refresh (re-read live files; last good state on failure)
 /      regex column draft (roster)     =  exact sentinel (side A|B, pending values)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 v      roster: show/hide accepted and equal columns (default hidden)
+m      accept the same exact pair on selected columns (roster / pair list)
 c      context-column picker (cell step)
 n / p  next / previous page
 q      quit (discards unconfirmed draft)
@@ -41,8 +42,11 @@ A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
 U is pair-list only. . is column detail only.
-The column roster lists pending comparable columns. v shows accepted/equal columns dim, not as remaining work.
+The column roster lists pending comparable columns in table A import order.
+v shows accepted/equal columns dim (pending section, then settled), not as remaining work.
 Roster a accepts the focused column in place (does not drill). Enter inspects.
+After a, selection moves to the item that was below (last remaining if you accepted the last).
+m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
 A-only / B-only keys and mismatched columns (headers on one side only) are not columns:
 open them from i overview (or next lever).
 Long strings wrap in the footer pane (the grid is a one-line navigator).
@@ -191,9 +195,35 @@ def _grain_involves_column(grain: tuple[Any, ...], column: str) -> bool:
         return column in {str(n) for n in grain[1:]}
     if kind == "pair":
         return str(grain[1]) == column
+    if kind == "pairs":
+        return column in {str(n) for n in grain[3:]}
     if kind == "cell":
         return str(grain[2]) == column
     return False
+
+
+_Id = TypeVar("_Id")
+
+
+def select_after_accept(
+    old_ids: list[_Id], accepted: _Id, new_ids: list[_Id]
+) -> _Id | None:
+    """Keep the cursor on the former next-below row after accept hides it.
+
+    If that item is gone too, land on the new last remaining identity.
+    Empty ``new_ids`` is the empty state.
+    """
+    if not new_ids:
+        return None
+    remaining = set(new_ids)
+    try:
+        i = old_ids.index(accepted)
+    except ValueError:
+        return new_ids[0]
+    for item in old_ids[i + 1 :]:
+        if item in remaining:
+            return item
+    return new_ids[-1]
 
 
 def _display_text(value: str) -> str:
@@ -411,6 +441,7 @@ class ContextModal(ModalScreen[list[str] | None]):
                 "o",
                 "c",
                 "i",
+                "m",
                 "slash",
                 "equals",
                 "full_stop",
@@ -477,6 +508,170 @@ class ContextModal(ModalScreen[list[str] | None]):
         self.dismiss(sorted(self.selected))
 
 
+class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
+    """Pick columns, then one exact pair; apply that pair to selected columns."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("enter", "ok", "Next", priority=True),
+        Binding("space", "toggle", "Toggle"),
+        Binding("y", "ok", "OK"),
+        *[
+            Binding(k, "noop", show=False, priority=True)
+            for k in (
+                "a",
+                "q",
+                "u",
+                "U",
+                "A",
+                "n",
+                "p",
+                "r",
+                "c",
+                "i",
+                "m",
+                "v",
+                "slash",
+                "equals",
+                "full_stop",
+                "question_mark",
+                "question",
+                ".",
+                "/",
+                "=",
+                "?",
+            )
+        ],
+    ]
+
+    def __init__(self, engine: Engine, columns: list[str]) -> None:
+        super().__init__()
+        self.engine = engine
+        self.columns = list(columns)
+        self.selected = set(columns)
+        self.phase = "columns"
+        self._pairs: list[dict[str, Any]] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal"):
+            yield Static("", id="multi-title")
+            table: DataTable = DataTable(cursor_type="row", id="multi")
+            table.add_columns("on", "name")
+            yield table
+            yield Static("", id="multi-hint", classes="dim")
+            yield Static("", id="modal-err", classes="error")
+
+    def on_mount(self) -> None:
+        self._fill_columns()
+        self.query_one("#multi", DataTable).focus()
+
+    def _set_err(self, msg: str = "") -> None:
+        self.query_one("#modal-err", Static).update(msg)
+
+    def _fill_columns(self) -> None:
+        self.phase = "columns"
+        self.query_one("#multi-title", Static).update(
+            "Same pair on columns. Space toggle. Enter to pick the pair."
+        )
+        self.query_one("#multi-hint", Static).update(
+            "Enter next · Space select/deselect · Esc cancel"
+        )
+        table = self.query_one("#multi", DataTable)
+        table.clear(columns=True)
+        table.add_columns("on", "name")
+        for name in self.columns:
+            mark = "[ON]" if name in self.selected else "[off]"
+            table.add_row(mark, name, key=name)
+
+    def _fill_pairs(self) -> None:
+        names = [n for n in self.columns if n in self.selected]
+        self._pairs, _, _ = self.engine.union_pairs(names)
+        self.phase = "pairs"
+        self.query_one("#multi-title", Static).update(
+            f"Pick one exact pair ({len(names)} column(s)). Enter applies."
+        )
+        self.query_one("#multi-hint", Static).update(
+            "Enter/y apply · Esc back to columns"
+        )
+        table = self.query_one("#multi", DataTable)
+        table.clear(columns=True)
+        table.add_columns("A", "B", "cells", "columns")
+        for rec in self._pairs:
+            table.add_row(
+                _display_text(str(rec["val_a"])),
+                _display_text(str(rec["val_b"])),
+                str(rec["n"]),
+                str(rec["n_cols"]),
+            )
+
+    def _focused_column(self) -> str | None:
+        table = self.query_one("#multi", DataTable)
+        if not self.columns or table.row_count <= 0:
+            return None
+        row = table.get_row_at(table.cursor_row)
+        return str(row[1])
+
+    def _focused_pair(self) -> tuple[str, str] | None:
+        if not self._pairs:
+            return None
+        table = self.query_one("#multi", DataTable)
+        i = table.cursor_row
+        if i < 0 or i >= len(self._pairs):
+            return None
+        rec = self._pairs[i]
+        return str(rec["val_a"]), str(rec["val_b"])
+
+    def action_toggle(self) -> None:
+        if self.phase != "columns":
+            return
+        name = self._focused_column()
+        if not name:
+            return
+        if name in self.selected:
+            self.selected.discard(name)
+        else:
+            self.selected.add(name)
+        row = self.query_one("#multi", DataTable).cursor_row
+        self._fill_columns()
+        self.query_one("#multi", DataTable).move_cursor(row=row)
+
+    def action_noop(self) -> None:
+        return
+
+    def action_cancel(self) -> None:
+        if self.phase == "pairs":
+            self._set_err("")
+            self._fill_columns()
+            self.query_one("#multi", DataTable).focus()
+            return
+        self.dismiss(None)
+
+    def action_ok(self) -> None:
+        if self.phase == "columns":
+            names = [n for n in self.columns if n in self.selected]
+            if not names:
+                self._set_err("ERROR: select at least one column")
+                return
+            pairs, _, _ = self.engine.union_pairs(names)
+            if not pairs:
+                self._set_err("ERROR: no pending pairs in the selected columns")
+                return
+            self._set_err("")
+            self._fill_pairs()
+            self.query_one("#multi", DataTable).focus()
+            return
+        pair = self._focused_pair()
+        names = tuple(n for n in self.columns if n in self.selected)
+        if not pair or not names:
+            self._set_err("ERROR: pick a pair")
+            return
+        self.dismiss((names, pair[0], pair[1]))
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.action_ok()
+
+
 class ReconcileApp(App[int]):
     CSS = CSS
     TITLE = "Reconcile"
@@ -502,6 +697,7 @@ class ReconcileApp(App[int]):
         Binding("question", "help", "Help", show=False),
         Binding("i", "overview", "Overview", show=False),
         Binding("v", "toggle_accepted", "Show accepted", show=False),
+        Binding("m", "multi_pair", "Same pair", show=False),
         Binding(".", "repeat_pair", "Repeat", show=False),
         Binding("/", "regex", "Regex", show=False),
         Binding("=", "sentinel", "Sentinel", show=False),
@@ -557,6 +753,8 @@ class ReconcileApp(App[int]):
         if action in {"drill", "back"} and self._modal_active():
             return False
         if action == "overview" and self._modal_active():
+            return False
+        if action == "multi_pair" and self._modal_active():
             return False
         if self._in_input() and action not in {"back", "drill"}:
             return False
@@ -642,9 +840,15 @@ class ReconcileApp(App[int]):
             return "y ACCEPT on roster  Esc back (draft stays)  ? help  q quit"
         if p.screen == "roster":
             vis = "v hide accepted" if self.show_accepted_columns else "v show accepted"
-            return f"Enter drill  a column  {vis}  / regex  = sentinel  i overview  ? help  q quit"
+            return (
+                f"Enter drill  a column  {vis}  m same pair  / regex  = sentinel  "
+                "i overview  ? help  q quit"
+            )
         if p.screen == "pair_list":
-            return "Enter cells  a pair  A column  U column  n/p page  Esc roster  ? help  q quit"
+            return (
+                "Enter cells  a pair  A column  m same pair  U column  "
+                "n/p page  Esc roster  ? help  q quit"
+            )
         if p.screen == "cell_step":
             return "a cell  c context  Esc pairs  ? help  q quit"
         if p.screen in ("accepted", "equal", "all_matched"):
@@ -1352,37 +1556,41 @@ class ReconcileApp(App[int]):
                     raise InTuiError("ERROR: column roster accepts columns only")
                 if row.pending == 0:
                     raise InTuiError("ERROR: no pending cells in this column")
+                old_names = [
+                    r.name
+                    for r in e.column_roster(
+                        p.roster_filter, include_settled=self.show_accepted_columns
+                    )
+                ]
                 n = e.accept_column(row.name)
                 e.remember_grain(("column", row.name), n)
-                if e.column_draft:
-                    nxt_name = next(
-                        (
-                            r.name
-                            for r in e.visible_column_roster()
-                            if r.name in e.column_draft
-                        ),
-                        None,
-                    )
-                    self.place = Place(
-                        screen="roster",
-                        roster_filter=p.roster_filter,
-                        last_pair=p.last_pair,
-                        focused_name=nxt_name,
-                    )
-                else:
-                    self._stay_on_roster_after_column(row.name)
+                self._stay_on_roster_after_column(row.name, old_names)
             elif p.screen == "pair_list":
                 if e.column_draft:
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
                 pair = self._focused_pair()
                 if not pair or not p.column:
                     raise InTuiError("ERROR: no pending pairs")
+                nxt = e.next_pair_below(p.column, pair[0], pair[1])
                 n = e.accept_pair(p.column, pair[0], pair[1])
                 if n == 0:
                     raise InTuiError("ERROR: no pending pairs")
                 last = (p.column, pair[0], pair[1])
                 e.remember_grain(("pair", p.column, pair[0], pair[1]), n)
-                self.place = e.next_lever_place(Place(column=p.column, roster_filter=p.roster_filter, last_pair=last))
+                page = 0
+                if nxt:
+                    page, _ = e.page_index_for_pair(p.column, nxt[0], nxt[1])
+                self.place = Place(
+                    screen="pair_list",
+                    column=p.column,
+                    pair_val_a=nxt[0] if nxt else None,
+                    pair_val_b=nxt[1] if nxt else None,
+                    page=page,
+                    roster_filter=p.roster_filter,
+                    last_pair=last,
+                    view_tab="pending",
+                    focused_name=p.column,
+                )
             elif p.screen == "cell_step":
                 rec = self._focused_rec()
                 if rec and p.column:
@@ -1435,11 +1643,22 @@ class ReconcileApp(App[int]):
             elif p.screen == "extras":
                 rec = self._focused_rec()
                 if rec:
+                    old_ids = [(r["side"], r["name"]) for r in e.extras_rows()]
+                    accepted = (rec["side"], rec["name"])
                     n = e.accept_extra(rec["side"], rec["name"])
                     if n == 0:
                         raise InTuiError("ERROR: extra is not pending")
                     e.remember_grain(("extra", rec["side"], rec["name"]), n)
-                    self.place = e.next_lever_place(p)
+                    new_ids = [(r["side"], r["name"]) for r in e.extras_rows()]
+                    nxt = select_after_accept(old_ids, accepted, new_ids)
+                    self.place = Place(
+                        screen="extras",
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                        extra_side=nxt[0] if nxt else None,
+                        extra_name=nxt[1] if nxt else None,
+                        focused_name=nxt[1] if nxt else None,
+                    )
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1465,25 +1684,15 @@ class ReconcileApp(App[int]):
                     raise InTuiError("ERROR: column roster accepts columns only")
                 if row.pending == 0:
                     raise InTuiError("ERROR: no pending cells in this column")
+                old_names = [
+                    r.name
+                    for r in e.column_roster(
+                        p.roster_filter, include_settled=self.show_accepted_columns
+                    )
+                ]
                 n = e.accept_column(row.name)
                 e.remember_grain(("column", row.name), n)
-                if e.column_draft:
-                    nxt_name = next(
-                        (
-                            r.name
-                            for r in e.visible_column_roster()
-                            if r.name in e.column_draft
-                        ),
-                        None,
-                    )
-                    self.place = Place(
-                        screen="roster",
-                        roster_filter=p.roster_filter,
-                        last_pair=p.last_pair,
-                        focused_name=nxt_name,
-                    )
-                else:
-                    self._stay_on_roster_after_column(row.name)
+                self._stay_on_roster_after_column(row.name, old_names)
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
                     n_pend = e.pending_cells.filter(pl.col("column") == p.column).height
@@ -1507,11 +1716,22 @@ class ReconcileApp(App[int]):
             elif p.screen == "extras":
                 rec = self._focused_rec()
                 if rec:
+                    old_ids = [(r["side"], r["name"]) for r in e.extras_rows()]
+                    accepted = (rec["side"], rec["name"])
                     n = e.accept_extra(rec["side"], rec["name"])
                     if n == 0:
                         raise InTuiError("ERROR: extra is not pending")
                     e.remember_grain(("extra", rec["side"], rec["name"]), n)
-                    self.place = e.next_lever_place(p)
+                    new_ids = [(r["side"], r["name"]) for r in e.extras_rows()]
+                    nxt = select_after_accept(old_ids, accepted, new_ids)
+                    self.place = Place(
+                        screen="extras",
+                        roster_filter=p.roster_filter,
+                        last_pair=p.last_pair,
+                        extra_side=nxt[0] if nxt else None,
+                        extra_name=nxt[1] if nxt else None,
+                        focused_name=nxt[1] if nxt else None,
+                    )
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1519,29 +1739,16 @@ class ReconcileApp(App[int]):
         self.render_all()
         self.set_focus_work()
 
-    def _stay_on_roster_after_column(self, accepted_name: str) -> None:
+    def _stay_on_roster_after_column(
+        self, accepted_name: str, old_names: list[str] | None = None
+    ) -> None:
         """Roster `a` accepts in place: hide the column (unless v) and stay home."""
         p = self.place
         rows = self.engine.column_roster(
             p.roster_filter, include_settled=self.show_accepted_columns
         )
-        pending = [r.name for r in rows if r.pending > 0]
-        nxt = None
-        if pending:
-            names = [r.name for r in rows]
-            nxt = pending[0]
-            if accepted_name in names:
-                after = [
-                    n for n in names[names.index(accepted_name) + 1 :] if n in set(pending)
-                ]
-                if after:
-                    nxt = after[0]
-        elif rows:
-            nxt = (
-                accepted_name
-                if any(r.name == accepted_name for r in rows)
-                else rows[0].name
-            )
+        new_names = [r.name for r in rows]
+        nxt = select_after_accept(old_names or new_names, accepted_name, new_names)
         self.place = Place(
             screen="roster",
             roster_filter=p.roster_filter,
@@ -1683,6 +1890,18 @@ class ReconcileApp(App[int]):
             )
         elif kind == "columns":
             self.place = Place(screen="roster", roster_filter=rf, last_pair=lp)
+        elif kind == "pairs":
+            va, vb = str(grain[1]), str(grain[2])
+            col = str(grain[3]) if len(grain) > 3 else (p.column or "")
+            self.place = Place(
+                screen="pair_list",
+                column=col or p.column,
+                pair_val_a=va,
+                pair_val_b=vb,
+                roster_filter=rf,
+                last_pair=lp,
+                focused_name=col or p.column,
+            )
         elif kind == "unmatched":
             side, key = str(grain[1]), grain[2]
             self.place = Place(
@@ -1935,6 +2154,89 @@ class ReconcileApp(App[int]):
             self.set_focus_work()
 
         self.push_screen(ContextModal(names, selected), done)
+
+    def action_multi_pair(self) -> None:
+        if self._in_input() or self._modal_active():
+            return
+        p = self.place
+        if p.screen not in ("roster", "pair_list"):
+            self.set_error("ERROR: same-pair accept is only on the roster or pair list")
+            return
+        if self.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+        columns = [r.name for r in self.engine.visible_column_roster(p.roster_filter)]
+        if not columns:
+            self.set_error("ERROR: no pending columns for same-pair accept")
+            return
+
+        def done(result: tuple[tuple[str, ...], str, str] | None) -> None:
+            if result is None:
+                self.set_focus_work()
+                return
+            names, va, vb = result
+            try:
+                self._apply_multi_pair(list(names), va, vb)
+                self.set_error(None)
+            except InTuiError as exc:
+                self.set_error(exc.message)
+            self.render_all()
+            self.set_focus_work()
+
+        self.push_screen(MultiPairModal(self.engine, columns), done)
+
+    def _apply_multi_pair(self, columns: list[str], val_a: str, val_b: str) -> None:
+        e = self.engine
+        p = self.place
+        old_names = [
+            r.name
+            for r in e.column_roster(
+                p.roster_filter, include_settled=self.show_accepted_columns
+            )
+        ]
+        nxt_pair = None
+        if p.screen == "pair_list" and p.column and p.pair_val_a is not None:
+            nxt_pair = e.next_pair_below(p.column, p.pair_val_a, p.pair_val_b or "")
+        n = e.accept_pair_across_columns(columns, val_a, val_b)
+        if n == 0:
+            raise InTuiError("ERROR: that pair is not pending on the selected columns")
+        e.remember_grain(("pairs", val_a, val_b, *columns), n)
+        if p.screen == "pair_list" and p.column:
+            if p.pair_val_a == val_a and (p.pair_val_b or "") == val_b:
+                page = 0
+                if nxt_pair:
+                    page, _ = e.page_index_for_pair(p.column, nxt_pair[0], nxt_pair[1])
+                self.place = Place(
+                    screen="pair_list",
+                    column=p.column,
+                    pair_val_a=nxt_pair[0] if nxt_pair else None,
+                    pair_val_b=nxt_pair[1] if nxt_pair else None,
+                    page=page,
+                    roster_filter=p.roster_filter,
+                    last_pair=(p.column, val_a, val_b),
+                    view_tab="pending",
+                    focused_name=p.column,
+                )
+            else:
+                self.place.last_pair = (p.column, val_a, val_b)
+            return
+        new_names = [
+            r.name
+            for r in e.column_roster(
+                p.roster_filter, include_settled=self.show_accepted_columns
+            )
+        ]
+        if p.focused_name and p.focused_name in new_names:
+            self.place = Place(
+                screen="roster",
+                roster_filter=p.roster_filter,
+                last_pair=p.last_pair,
+                focused_name=p.focused_name,
+            )
+            return
+        gone = next((n for n in old_names if n not in new_names), None)
+        self._stay_on_roster_after_column(gone or (p.focused_name or ""), old_names)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if self.place.screen in {"roster", "pair_list"}:
