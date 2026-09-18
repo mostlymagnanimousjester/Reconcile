@@ -18,34 +18,14 @@ DATE_FORMATS = (
 
 _WS_RE = re.compile(r"[\u00a0\t\r\n]")
 
-# Exact strings the `=` draft already treats as sentinels. Empty, 0, NA-family,
-# and dash placeholders — not a learned model.
-SENTINEL_VALUES = frozenset(
-    {
-        "",
-        "0",
-        "NA",
-        "N/A",
-        "n/a",
-        "NULL",
-        "null",
-        "None",
-        "none",
-        "NaN",
-        "nan",
-        "#N/A",
-        "#NA",
-        "-",
-        "–",
-        "—",
-        "——",
-        ".",
-    }
-)
-
 CONTEXT_TOP_N = 5
 CONTEXT_VALUE_SEP = " · "
 CONTEXT_TRUNCATION_MARK = "…"
+
+_EMPTY_SENTINELS = pl.DataFrame(
+    {"column": [], "sent_a": [], "sent_b": []},
+    schema={"column": pl.Utf8, "sent_a": pl.Utf8, "sent_b": pl.Utf8},
+)
 
 
 def first_diff(a: str, b: str) -> int:
@@ -95,19 +75,61 @@ def parse_unambiguous_date(s: str):
     return None
 
 
-def is_sentinel_value(value: str) -> bool:
-    return value in SENTINEL_VALUES
+def format_sentinel_value(value: str) -> str:
+    """Compact display: empty as `""`; quote when spaces or delimiters would hide the value."""
+    if value == "":
+        return '""'
+    if value.strip() != value or any(ch in value for ch in ' ="\''):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return value
 
 
-def sentinel_side_tag(has_a: bool, has_b: bool) -> str | None:
-    """A only, B only, or both — labeled speculative for the `=` workflow."""
-    if has_a and has_b:
-        return "speculative: sentinel both"
-    if has_a:
-        return "speculative: sentinel A"
-    if has_b:
-        return "speculative: sentinel B"
+def format_sentinel_insight(value_a: str | None, value_b: str | None) -> str | None:
+    """Side + constant value. A side is a sentinel only when it is constant."""
+    if value_a is not None and value_b is not None:
+        return (
+            f"sentinel both A={format_sentinel_value(value_a)} "
+            f"B={format_sentinel_value(value_b)}"
+        )
+    if value_a is not None:
+        return f"sentinel A={format_sentinel_value(value_a)}"
+    if value_b is not None:
+        return f"sentinel B={format_sentinel_value(value_b)}"
     return None
+
+
+def empty_sentinel_frame() -> pl.DataFrame:
+    return _EMPTY_SENTINELS.head(0)
+
+
+def column_sentinel_frame(cells: pl.DataFrame) -> pl.DataFrame:
+    """Per-column constants on comparable (shared-key) rows.
+
+    A side is a sentinel iff it has exactly one unique value on those rows.
+    A-only / B-only keys are not comparable and must not be in ``cells``.
+    """
+    if cells.is_empty():
+        return empty_sentinel_frame()
+    return (
+        cells.group_by("column")
+        .agg(
+            pl.col("val_a").n_unique().alias("n_a"),
+            pl.col("val_b").n_unique().alias("n_b"),
+            pl.col("val_a").first().alias("const_a"),
+            pl.col("val_b").first().alias("const_b"),
+        )
+        .select(
+            "column",
+            pl.when(pl.col("n_a") == 1)
+            .then(pl.col("const_a"))
+            .otherwise(pl.lit(None))
+            .alias("sent_a"),
+            pl.when(pl.col("n_b") == 1)
+            .then(pl.col("const_b"))
+            .otherwise(pl.lit(None))
+            .alias("sent_b"),
+        )
+    )
 
 
 def format_top_uniques(values: list[str], limit: int = CONTEXT_TOP_N) -> str:
@@ -127,9 +149,6 @@ def cell_insights(val_a: str, val_b: str) -> list[str]:
     if val_a == val_b:
         return []
     tags: list[str] = []
-    sent = sentinel_side_tag(is_sentinel_value(val_a), is_sentinel_value(val_b))
-    if sent:
-        tags.append(sent.removeprefix("speculative: "))
     trim_eq = val_a.strip() == val_b.strip()
     case_eq = val_a.lower() == val_b.lower()
     both_eq = val_a.strip().lower() == val_b.strip().lower()
@@ -152,7 +171,7 @@ def cell_insights(val_a: str, val_b: str) -> list[str]:
     db = parse_unambiguous_date(val_b)
     if da is not None and db is not None and da == db:
         tags.append("same date")
-    return [f"speculative: {t}" for t in tags]
+    return tags
 
 
 def _numeric_equal(a: str, b: str) -> bool:
@@ -172,15 +191,15 @@ def extra_insights(name: str, other_names: list[str]) -> list[str]:
         if name == other:
             continue
         if name.strip() == other.strip() and name != other:
-            tags.append("speculative: name would pair if trim")
+            tags.append("name would pair if trim")
         elif name.lower() == other.lower() and name != other:
-            tags.append("speculative: name would pair if case")
+            tags.append("name would pair if case")
         elif name.strip().lower() == other.strip().lower():
-            tags.append("speculative: name would pair if trim/case")
+            tags.append("name would pair if trim/case")
         else:
             ratio = SequenceMatcher(None, name.lower(), other.lower()).ratio()
             if ratio >= 0.72 or name.lower() in other.lower() or other.lower() in name.lower():
-                tags.append(f"speculative: near-miss {other!r}")
+                tags.append(f"near-miss {other!r}")
     # unique, keep order
     seen: set[str] = set()
     out: list[str] = []
@@ -199,27 +218,13 @@ def unmatched_key_insights(
     for other in other_keys:
         if tuple(p.strip().lower() for p in other) == folded and other != key:
             if tuple(p.strip() for p in key) == tuple(p.strip() for p in other):
-                tags.append("speculative: would match if trim")
+                tags.append("would match if trim")
             elif tuple(p.lower() for p in key) == tuple(p.lower() for p in other):
-                tags.append("speculative: would match if case-fold")
+                tags.append("would match if case-fold")
             else:
-                tags.append("speculative: would match if trim/case")
+                tags.append("would match if trim/case")
             break
     return tags
-
-
-def column_pattern_insight(pending: pl.DataFrame) -> str | None:
-    """Shared value pattern on pending cells (column-level)."""
-    if pending.is_empty():
-        return None
-    a_vals = pending["val_a"].unique()
-    b_vals = pending["val_b"].unique()
-    if a_vals.len() <= 6 and b_vals.len() <= 6:
-        a_set = set(a_vals.to_list())
-        b_set = set(b_vals.to_list())
-        if a_set != b_set:
-            return "speculative: shared value pattern"
-    return None
 
 
 def is_categorical_pending(pending_a: list[str], pending_b: list[str]) -> bool:

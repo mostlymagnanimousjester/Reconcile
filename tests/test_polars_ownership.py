@@ -46,6 +46,7 @@ ALLOWLIST_FUNCS = frozenset(
         # sentinel column names (schema-sized)
         "start_sentinel_draft",
         "sentinel_hits",
+        "_sentinel_map",
         # page helper: callers must slice first; helper itself may to_dicts
         "_page_dicts",
         "_page",
