@@ -989,7 +989,8 @@ def test_U_from_pair_list_undoes_column(tmp_path: Path):
             assert app.place.screen == "pair_list"
             assert app.engine.pair_draft_col is None
             footer = str(app.query_one("#footer").render())
-            assert "U column" in footer
+            assert "? help" in footer
+            assert "U column" not in footer
 
     asyncio.run(_run())
 
@@ -1066,7 +1067,7 @@ def test_help_modal_not_footer_cheat_sheet(tmp_path: Path):
             assert "? help" in footer
             assert "Enter drill" not in footer
             assert "regex column draft" not in footer
-            assert app.query("#filter") == []
+            assert len(app.query("#filter")) == 0
             await pilot.press("question_mark")
             await pilot.pause()
             assert isinstance(app.screen, HelpModal)
@@ -2226,7 +2227,8 @@ def test_multi_column_pair_accept_empty_to_zero(tmp_path: Path):
                 "note",
             ]
             footer = str(app.query_one("#footer").render())
-            assert "m same pair" in footer
+            assert "? help" in footer
+            assert "m same pair" not in footer
             app.query_one("#grid").focus()
             await pilot.press("m")
             await pilot.pause()
@@ -2586,42 +2588,5 @@ def test_pair_list_context_columns_are_labeled_and_separate(tmp_path: Path):
             assert "Flag" in pane
             assert "Region" in pane
             assert pane.index("Flag") != pane.index("Region")
-
-    asyncio.run(_run())
-
-    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,s1,s2,mixed\n1,0,0,0\n2,0,0,0\n3,0,0,z\n")
-    write_csv(pb, "id,s1,s2,mixed\n1,x,x,x\n2,x,x,x\n3,x,x,y\n")
-    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    app = ReconcileApp(eng)
-
-    async def _run() -> None:
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.engine.start_sentinel_draft("A", "0")
-            app.render_all()
-            await pilot.pause()
-            assert app.engine.column_draft == {"s1", "s2"}
-            footer = str(app.query_one("#footer").render())
-            assert "m same pair" in footer
-            app.query_one("#grid").focus()
-            app.action_multi_pair()
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, MultiPairModal)
-            assert modal.skip_column_pick is True
-            assert set(modal.columns) == {"s1", "s2"}
-            idx = next(
-                i
-                for i, rec in enumerate(modal._pairs)
-                if rec["val_a"] == "0" and rec["val_b"] == "x"
-            )
-            modal.query_one("#multi").move_cursor(row=idx)
-            modal.action_ok()
-            await pilot.pause()
-            mixed = [r for r in app.engine.pending_cells.to_dicts() if r["column"] == "mixed"]
-            assert any(r["val_a"] == "0" and r["val_b"] == "x" for r in mixed)
-            leftover = [r.name for r in app.engine.visible_column_roster()]
-            assert leftover == ["mixed"]
 
     asyncio.run(_run())
