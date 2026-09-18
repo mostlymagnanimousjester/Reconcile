@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from reconcile.engine import Place, RosterRow
-from reconcile.insights import extra_insights, same_date_expr
+from reconcile.insights import SENTINEL_VALUES, extra_insights, same_date_expr, sentinel_side_tag
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -90,6 +90,8 @@ def _roster_agg_maps(
                 | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
             ).any().alias("ws"),
             same_date_expr().any().alias("same_date"),
+            pl.col("val_a").is_in(list(SENTINEL_VALUES)).any().alias("sent_a"),
+            pl.col("val_b").is_in(list(SENTINEL_VALUES)).any().alias("sent_b"),
             pl.col("val_a").n_unique().alias("n_a"),
             pl.col("val_b").n_unique().alias("n_b"),
             pl.col("val_a").unique().sort().alias("ua"),
@@ -144,6 +146,9 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
             n_a, n_b, n_ab = int(st["n_a"]), int(st["n_b"]), int(st["n_ab"])
             cat = "yes" if n_a <= 30 and n_b <= 30 and n_ab <= 50 else "no"
             tag_bits: list[str] = []
+            sent = sentinel_side_tag(bool(st["sent_a"]), bool(st["sent_b"]))
+            if sent:
+                tag_bits.append(sent)
             if st["trim"]:
                 tag_bits.append("speculative: equal if trim")
             if st["case"]:

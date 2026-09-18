@@ -2243,3 +2243,126 @@ def test_multi_column_pair_accept_empty_to_zero(tmp_path: Path):
             assert shown == ["note"]
 
     asyncio.run(_run())
+
+
+def test_equals_y_returns_to_roster_and_selects_next_below(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,all_a,keep\n1,——,x\n2,——,y\n")
+    write_csv(pb, "id,all_a,keep\n1,a,1\n2,b,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_sentinel_draft("A", "——")
+            app.place.focused_name = "all_a"
+            app.render_all()
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.engine.column_draft == {"all_a"}
+            app.query_one("#grid").focus()
+            app.action_confirm()
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.place.screen == "roster"
+            leftover = [r.name for r in app.engine.visible_column_roster()]
+            assert leftover == ["keep"]
+            assert app.place.focused_name == "keep"
+            shown = [r.name for r in app._table_keys if r is not None]
+            assert shown == ["keep"]
+            footer = str(app.query_one("#footer").render())
+            assert "working…" not in footer
+
+    asyncio.run(_run())
+
+
+def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    flags = (
+        ["red"] * 3
+        + ["blue"] * 2
+        + ["green"]
+        + ["orange"]
+        + ["pink"]
+        + ["purple"]
+        + ["yellow"]
+    )
+    a_rows = ["id,val,Flag"] + [f"{i},{ 'Y' if i < 10 else 'N'},{flags[i] if i < 10 else 'z'}" for i in range(12)]
+    b_rows = ["id,val,Flag"] + [
+        f"{i},{ 'Yes' if i < 10 else 'No'},{flags[i] if i < 10 else 'z'}" for i in range(12)
+    ]
+    write_csv(pa, "\n".join(a_rows) + "\n")
+    write_csv(pb, "\n".join(b_rows) + "\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["Flag"]
+    recs, _, _ = eng.pair_page("val", 0)
+    y_yes = next(r for r in recs if r["val_a"] == "Y" and r["val_b"] == "Yes")
+    ctx = y_yes["Flag__ctx"]
+    assert ctx.startswith("red · blue · green · orange · pink")
+    assert ctx.endswith("…")
+    assert "purple" not in ctx
+    assert "yellow" not in ctx
+    n_yes = next(r for r in recs if r["val_a"] == "N" and r["val_b"] == "No")
+    assert n_yes["Flag__ctx"] == "z"
+    assert "…" not in n_yes["Flag__ctx"]
+
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "Flag" in labels
+            flag_i = labels.index("Flag")
+            shown = str(table.get_row_at(0)[flag_i])
+            assert "red · blue" in shown
+            assert shown.endswith("…")
+            pane = str(app.query_one("#pane").render())
+            assert "Flag" in pane
+            assert "…" in pane
+            app.action_context()
+            await pilot.pause()
+            assert isinstance(app.screen, ContextModal)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+
+    asyncio.run(_run())
+
+
+def test_busy_indicator_shows_for_wait_not_instant_accept(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._busy_note = "working…"
+            app._render_footer()
+            footer = str(app.query_one("#footer").render())
+            assert "working…" in footer
+            app._busy_note = None
+            app._render_footer()
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "working…" not in footer
+            assert app.place.screen == "roster"
+            app.action_refresh()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "working…" not in footer
+
+    asyncio.run(_run())

@@ -31,13 +31,14 @@ r      refresh (re-read live files; last good state on failure)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 v      roster: show/hide accepted and equal columns (default hidden)
 m      accept the same exact pair on selected columns (roster / pair list)
-c      context-column picker (cell step)
+c      context-column picker (pair list / cell step)
 n / p  next / previous page
 q      quit (discards unconfirmed draft)
 ?      this help
 
 At most one draft: column (roster / regex, = sentinel) XOR pair cells (cell step).
 After / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
+After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
 Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
 Tab switch is refused while a pair draft is in flight (Esc cancels).
@@ -58,12 +59,12 @@ Insights are labeled speculative and never change remaining counts.
 
 CSS = """
 Screen {
-    background: #1a120c;
-    color: #f4efe4;
+    background: #24150c;
+    color: #fff3e0;
 }
 #banner {
-    background: #3a1510;
-    color: #ffcc99;
+    background: #7a2216;
+    color: #ffd4a8;
     text-style: bold;
     height: auto;
     padding: 0 1;
@@ -72,8 +73,8 @@ Screen {
     display: none;
 }
 #banner.draft {
-    background: #3a2a10;
-    color: #ffe566;
+    background: #7a3c08;
+    color: #ffe27a;
     text-style: bold;
 }
 #filter-row {
@@ -81,9 +82,9 @@ Screen {
     padding: 0 1;
 }
 #filter-row Input {
-    background: #2a2218;
-    color: #f4efe4;
-    border: tall #6a5a40;
+    background: #3a2214;
+    color: #fff3e0;
+    border: tall #e08a38;
 }
 #work {
     height: 1fr;
@@ -93,75 +94,81 @@ Screen {
     max-height: 24;
     overflow-y: auto;
     padding: 0 1;
-    color: #f4efe4;
-    background: #22180f;
+    color: #fff3e0;
+    background: #2c180e;
 }
 #footer {
     dock: bottom;
     height: auto;
     min-height: 1;
     padding: 0 1;
-    background: #2a1a10;
-    color: #ffe566;
+    background: #3c1a0c;
+    color: #ffe27a;
     text-style: bold;
+}
+#footer.busy {
+    color: #ffc44d;
 }
 #tabs {
     height: 3;
     padding: 0 1;
 }
 Button {
-    background: #5a4030;
-    color: #fff8e8;
-    border: tall #8a6040;
+    background: #c45a24;
+    color: #fff8ec;
+    border: tall #f0a050;
 }
 Button:hover, Button:focus, Button.-active {
-    background: #6a5040;
-    color: #fff8e8;
-    border: tall #c08040;
+    background: #e06a2c;
+    color: #fffaf0;
+    border: tall #ffc070;
 }
 Button.-primary, Button.primary {
-    background: #5a4030;
-    color: #fff8e8;
-    border: tall #c08040;
+    background: #c45a24;
+    color: #fff8ec;
+    border: tall #ffc070;
 }
 #tabs Button {
-    background: #3a2a18;
-    color: #ffe566;
-    border: tall #8a6040;
+    background: #4a2412;
+    color: #ffe27a;
+    border: tall #e08a38;
 }
 DataTable {
     height: 1fr;
 }
 DataTable > .datatable--cursor {
-    background: #5a4030;
-    color: #fff8e8;
+    background: #d45a24;
+    color: #fff8ec;
     text-style: reverse;
 }
 .lever {
     text-style: bold underline;
-    color: #ffe566;
+    color: #ffe27a;
 }
 .pending {
     text-style: bold;
-    color: #ffe566;
+    color: #ffe27a;
 }
 .accepted {
-    color: #8a8070;
+    color: #d2a87a;
+}
+.equal {
+    color: #e8b898;
 }
 .returned {
     text-style: reverse;
-    color: #ffaa33;
+    color: #ffb347;
 }
 .error {
     text-style: bold;
-    color: #ff5533;
+    color: #ff6644;
 }
 #modal {
     width: 80;
     height: auto;
     max-height: 90%;
-    background: #2a1c12;
-    border: heavy #ffaa33;
+    background: #301c10;
+    border: heavy #ffb347;
     padding: 1 2;
 }
 #modal Input {
@@ -173,7 +180,7 @@ DataTable > .datatable--cursor {
     padding: 1;
 }
 .dim {
-    color: #8a8070;
+    color: #d2a87a;
 }
 """
 
@@ -715,6 +722,7 @@ class ReconcileApp(App[int]):
         self._mounted_screen: str | None = None
         self._page_count = 1
         self.show_accepted_columns = False
+        self._busy_note: str | None = None
 
     def draft_in_flight(self) -> bool:
         return self.engine.draft_in_flight()
@@ -846,7 +854,7 @@ class ReconcileApp(App[int]):
             )
         if p.screen == "pair_list":
             return (
-                "Enter cells  a pair  A column  m same pair  U column  "
+                "Enter cells  a pair  A column  m same pair  c context  U column  "
                 "n/p page  Esc roster  ? help  q quit"
             )
         if p.screen == "cell_step":
@@ -865,11 +873,18 @@ class ReconcileApp(App[int]):
     def _render_footer(self) -> None:
         e = self.engine
         p = self.place
-        bits = [
-            f"pending columns {e.pending_columns_n()}",
-            f"unmatched rows {e.unmatched_rows_n()}",
-            f"mismatched columns {e.pending_extras_n()}",
-        ]
+        bits: list[str] = []
+        if self._busy_note:
+            bits.append(self._busy_note)
+        bits.extend(
+            [
+                f"pending columns {e.pending_columns_n()}",
+                f"unmatched rows {e.unmatched_rows_n()}",
+                f"mismatched columns {e.pending_extras_n()}",
+            ]
+        )
+        footer = self.query_one("#footer", Static)
+        footer.set_class(bool(self._busy_note), "busy")
         # Live set only. Never show column-draft N on the cell step (pair XOR).
         # Esc on pair list does not cancel a column draft — don't claim it does.
         if p.screen == "cell_step" and e.pair_draft_col is not None:
@@ -908,7 +923,34 @@ class ReconcileApp(App[int]):
             if tags:
                 spec = "  " + ", ".join(tags)
         hint = "  " + self._now_keys()
-        self.query_one("#footer", Static).update(" · ".join(bits) + spec + hint)
+        footer.update(" · ".join(bits) + spec + hint)
+
+    def _run_busy(self, work) -> None:
+        """Paint 'working…' for a real wait, then run work after the next refresh.
+
+        Instant actions are not wrapped, so the footer does not flicker.
+        """
+        self._busy_note = "working…"
+        try:
+            self._render_footer()
+        except Exception:
+            pass
+
+        def _go() -> None:
+            try:
+                work()
+            finally:
+                self._busy_note = None
+                try:
+                    self._render_footer()
+                except Exception:
+                    pass
+
+        later = getattr(self, "call_later", None)
+        if self.is_running and callable(later):
+            later(_go)
+        else:
+            _go()
 
     def _render_pane(self) -> None:
         p = self.place
@@ -927,15 +969,24 @@ class ReconcileApp(App[int]):
             t.append_text(_diff_text("A:", va, vb, first))
             t.append("\n")
             t.append_text(_diff_text("B:", vb, va, first))
-            if p.screen == "cell_step" and p.column:
-                key = p.focused_key
-                if not key or len(key) != len(self.engine.keys):
+            if p.column:
+                if p.screen == "cell_step":
+                    key = p.focused_key
+                    if not key or len(key) != len(self.engine.keys):
+                        rec = self._focused_rec()
+                        if rec:
+                            key = self.engine.key_of(rec)
+                    ctx = self.engine.context_values(key, p.column)
+                    for name, a, b in ctx:
+                        t.append(f"\n{name}  A|{a}  B|{b}")
+                elif p.screen == "pair_list":
                     rec = self._focused_rec()
-                    if rec:
-                        key = self.engine.key_of(rec)
-                ctx = self.engine.context_values(key, p.column)
-                for name, a, b in ctx:
-                    t.append(f"\n{name}  A|{a}  B|{b}")
+                    for name in self._context_names(p.column):
+                        summary = ""
+                        if rec:
+                            summary = str(rec.get(f"{name}__ctx") or "")
+                        if summary:
+                            t.append(f"\n{name}  {summary}")
             pane.update(t)
         elif p.screen in ("a_only", "b_only"):
             rec = self._focused_rec()
@@ -1014,6 +1065,13 @@ class ReconcileApp(App[int]):
         headers.extend(["pending", "top-pair %", "equal", "cat", "speculative"])
         return headers
 
+    def _context_names(self, column: str) -> list[str]:
+        return [
+            n
+            for n in self.engine.context_columns.get(column, [])
+            if n in self.engine.context_pool and n != column
+        ]
+
     def _column_status(self, row: RosterRow) -> str:
         if row.pending > 0:
             return "pending"
@@ -1078,6 +1136,8 @@ class ReconcileApp(App[int]):
                 styles.append("bold")
             elif draft:
                 styles.append("dim")
+            elif not settled:
+                styles.append("bold #ffe27a")
             label = Text(r.name, style=" ".join(styles) if styles else "")
             cells: list[Any] = []
             if draft:
@@ -1085,7 +1145,12 @@ class ReconcileApp(App[int]):
             cells.append(label)
             if self.show_accepted_columns:
                 status = self._column_status(r)
-                cells.append(Text(status, style="dim") if settled else status)
+                if status == "pending":
+                    cells.append(Text(status, style="bold #ffe27a"))
+                elif status == "accepted":
+                    cells.append(Text(status, style="dim #d2a87a"))
+                else:
+                    cells.append(Text(status, style="dim #e8b898"))
             cells.extend(
                 [str(r.pending), r.top_pair_pct, r.equal, r.categorical, r.speculative]
             )
@@ -1121,13 +1186,14 @@ class ReconcileApp(App[int]):
 
     def _pair_list(self, col: str) -> DataTable:
         table: DataTable = DataTable(cursor_type="row", id="grid")
-        table.add_columns("A", "B", "pending", "speculative")
+        ctx_names = self._context_names(col)
+        table.add_columns("A", "B", "pending", *ctx_names, "speculative")
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
         self._page_count = pages
         self._table_keys = []
         if not recs:
-            table.add_row("(no pending pairs)", "", "0", "")
+            table.add_row("(no pending pairs)", "", "0", *([""] * len(ctx_names)), "")
             self._table_keys = [None]
             return table
         focus = 0
@@ -1139,7 +1205,8 @@ class ReconcileApp(App[int]):
             style = "reverse" if returned else "bold"
             label_a = Text(_display_text(va), style=style)
             label_b = Text(_display_text(vb), style=style)
-            table.add_row(label_a, label_b, str(rec["n"]), tags)
+            ctx_cells = [str(rec.get(f"{n}__ctx") or "") for n in ctx_names]
+            table.add_row(label_a, label_b, str(rec["n"]), *ctx_cells, tags)
             self._table_keys.append(rec)
             if want_a is not None and va == want_a and vb == want_b:
                 focus = i
@@ -1180,11 +1247,7 @@ class ReconcileApp(App[int]):
             "all_matched": "All matched",
         }.get(tab, tab)
         table: DataTable = DataTable(cursor_type="row", id="grid")
-        ctx_names = [
-            n
-            for n in self.engine.context_columns.get(col, [])
-            if n in self.engine.context_pool and n != col
-        ]
+        ctx_names = self._context_names(col)
         headers = [*self.engine.keys, "A", "B", *ctx_names, "speculative"]
         table.add_columns(*headers)
         self._table_keys = []
@@ -1783,10 +1846,27 @@ class ReconcileApp(App[int]):
             elif e.column_draft:
                 if p.screen != "roster":
                     raise InTuiError("ERROR: confirm or cancel the column draft first")
-                names = tuple(sorted(e.column_draft))
-                n = e.confirm_column_draft()
-                e.remember_grain(("columns", *names), n)
-                self.place = e.next_lever_place(p)
+                old_names = [
+                    r.name
+                    for r in e.column_roster(
+                        p.roster_filter, include_settled=self.show_accepted_columns
+                    )
+                ]
+                drafted = [name for name in old_names if name in e.column_draft]
+                if not drafted:
+                    drafted = sorted(e.column_draft)
+                names = tuple(drafted)
+
+                def _confirm_columns() -> None:
+                    n = e.confirm_column_draft()
+                    e.remember_grain(("columns", *names), n)
+                    self._stay_on_roster_after_column(drafted[-1], old_names)
+                    self.set_error(None)
+                    self.render_all()
+                    self.set_focus_work()
+
+                self._run_busy(_confirm_columns)
+                return
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -1966,29 +2046,32 @@ class ReconcileApp(App[int]):
         self.pair_draft_unchecked = still
 
     def action_refresh(self) -> None:
-        try:
-            frozen = None
-            if self.engine.pair_draft_col is not None:
-                frozen = self.engine.pair_draft_key_frame()
-            self.engine.refresh()
-            if frozen is not None:
-                self._sync_pair_draft_after_refresh(frozen)
-            p = self.engine.prune_place(self.place, self.engine.pair_draft_col is not None)
-            self.place = p
-            still = True
-            if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
-                if not p.column or p.column not in self.engine.comparable:
+        def _refresh() -> None:
+            try:
+                frozen = None
+                if self.engine.pair_draft_col is not None:
+                    frozen = self.engine.pair_draft_key_frame()
+                self.engine.refresh()
+                if frozen is not None:
+                    self._sync_pair_draft_after_refresh(frozen)
+                p = self.engine.prune_place(self.place, self.engine.pair_draft_col is not None)
+                self.place = p
+                still = True
+                if p.screen in ("pair_list", "cell_step", "accepted", "equal", "all_matched"):
+                    if not p.column or p.column not in self.engine.comparable:
+                        still = False
+                if p.screen == "cell_step" and self.engine.pair_draft_col is None:
                     still = False
-            if p.screen == "cell_step" and self.engine.pair_draft_col is None:
-                still = False
-                self.place.screen = "pair_list"
-            if not still:
-                self.place = self.engine.next_lever_place(p)
-            self.set_error(None)
-        except InTuiError as exc:
-            self.set_error(exc.message)
-        self.render_all()
-        self.set_focus_work()
+                    self.place.screen = "pair_list"
+                if not still:
+                    self.place = self.engine.next_lever_place(p)
+                self.set_error(None)
+            except InTuiError as exc:
+                self.set_error(exc.message)
+            self.render_all()
+            self.set_focus_work()
+
+        self._run_busy(_refresh)
 
     def _is_paged_screen(self) -> bool:
         return self.place.screen in {
@@ -2043,14 +2126,18 @@ class ReconcileApp(App[int]):
         def done(pat: str | None) -> None:
             if pat is None:
                 return
-            try:
-                self.engine.start_regex_draft(pat)
-                self.place.focused_name = sorted(self.engine.column_draft)[0]
-                self.set_error(None)
-            except InTuiError as exc:
-                self.set_error(exc.message)
-            self.render_all()
-            self.set_focus_work()
+
+            def _run() -> None:
+                try:
+                    self.engine.start_regex_draft(pat)
+                    self.place.focused_name = sorted(self.engine.column_draft)[0]
+                    self.set_error(None)
+                except InTuiError as exc:
+                    self.set_error(exc.message)
+                self.render_all()
+                self.set_focus_work()
+
+            self._run_busy(_run)
 
         self.push_screen(RegexModal(), done)
 
@@ -2069,14 +2156,18 @@ class ReconcileApp(App[int]):
             if result is None:
                 return
             side, sentinel = result
-            try:
-                self.engine.start_sentinel_draft(side, sentinel)
-                self.place.focused_name = sorted(self.engine.column_draft)[0]
-                self.set_error(None)
-            except InTuiError as exc:
-                self.set_error(exc.message)
-            self.render_all()
-            self.set_focus_work()
+
+            def _run() -> None:
+                try:
+                    self.engine.start_sentinel_draft(side, sentinel)
+                    self.place.focused_name = sorted(self.engine.column_draft)[0]
+                    self.set_error(None)
+                except InTuiError as exc:
+                    self.set_error(exc.message)
+                self.render_all()
+                self.set_focus_work()
+
+            self._run_busy(_run)
 
         self.push_screen(SentinelModal(), done)
 
@@ -2139,8 +2230,14 @@ class ReconcileApp(App[int]):
 
     def action_context(self) -> None:
         e = self.engine
-        if self.place.screen != "cell_step" or not self.place.column:
-            self.set_error("ERROR: context columns are only on the cell step")
+        if self.place.screen not in {
+            "pair_list",
+            "cell_step",
+            "accepted",
+            "equal",
+            "all_matched",
+        } or not self.place.column:
+            self.set_error("ERROR: context columns are only on column detail")
             return
         col = self.place.column
         names = [n for n in e.context_pool if n != col]
