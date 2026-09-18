@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from textual.widgets import Button
+from textual.widgets import Button, Static
 
 from reconcile.engine import Engine, Place
 from reconcile.tui import (
@@ -82,7 +82,9 @@ def test_footer_page_n_over_m(tmp_path: Path):
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
             assert "page 2/2" in footer
-            assert "Enter cells" in footer or "a cell" in footer or "? help" in footer
+            assert "? help" in footer
+            assert "Enter cells" not in footer
+            assert "a cell" not in footer
 
     asyncio.run(_run())
 
@@ -272,7 +274,7 @@ def test_categorical_top_row_a_accepts_pair(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_roster_a_stays_on_roster_when_filter_hides_others(tmp_path: Path):
+def test_roster_a_stays_on_roster_after_accepting_one_of_two(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n2,Y,1\n")
     write_csv(pb, "id,Status,Flag\n1,Yes,2\n2,Yes,1\n")
@@ -282,13 +284,14 @@ def test_roster_a_stays_on_roster_when_filter_hides_others(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            filt = app.query_one("#filter")
-            filt.value = "Flag"
-            app.place.roster_filter = "Flag"
             app.place.focused_name = "Flag"
             app.render_all()
             await pilot.pause()
             app.query_one("#grid").focus()
+            table = app.query_one("#grid")
+            names = [r.name for r in app._table_keys if r is not None]
+            flag_i = names.index("Flag")
+            table.move_cursor(row=flag_i)
             row = app._focused_roster()
             assert row is not None and row.name == "Flag"
             app.action_accept()
@@ -986,7 +989,8 @@ def test_U_from_pair_list_undoes_column(tmp_path: Path):
             assert app.place.screen == "pair_list"
             assert app.engine.pair_draft_col is None
             footer = str(app.query_one("#footer").render())
-            assert "U column" in footer
+            assert "? help" in footer
+            assert "U column" not in footer
 
     asyncio.run(_run())
 
@@ -1049,7 +1053,7 @@ def test_cell_a_after_uncheck_draft_n_matches_remaining(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_filter_focused_equals_inserts_equals(tmp_path: Path):
+def test_help_modal_not_footer_cheat_sheet(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")
     write_csv(pb, "id,val\n1,Yes\n")
@@ -1059,15 +1063,21 @@ def test_filter_focused_equals_inserts_equals(tmp_path: Path):
     async def _run() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
-            filt = app.query_one("#filter")
-            filt.focus()
+            footer = str(app.query_one("#footer").render())
+            assert "? help" in footer
+            assert "Enter drill" not in footer
+            assert "regex column draft" not in footer
+            assert len(app.query("#filter")) == 0
+            await pilot.press("question_mark")
             await pilot.pause()
-            assert app.focused is filt
-            await pilot.press("=")
+            assert isinstance(app.screen, HelpModal)
+            body = str(app.screen.query_one("#help").render())
+            assert "ROSTER" in body
+            assert "PAIR LIST" in body
+            assert "CELL STEP" in body
+            await pilot.press("escape")
             await pilot.pause()
-            assert filt.value == "="
-            assert not isinstance(app.screen, SentinelModal)
-            assert not app.draft_in_flight()
+            assert not isinstance(app.screen, HelpModal)
             assert app.place.screen == "roster"
 
     asyncio.run(_run())
@@ -1932,7 +1942,8 @@ def test_roster_v_toggles_accepted_columns(tmp_path: Path):
             shown = [r.name for r in app._table_keys if r is not None]
             assert shown == ["Status"]
             footer = str(app.query_one("#footer").render())
-            assert "v show accepted" in footer
+            assert "? help" in footer
+            assert "Enter drill" not in footer
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
             assert "accepted" not in labels
@@ -1954,7 +1965,8 @@ def test_roster_v_toggles_accepted_columns(tmp_path: Path):
             assert "status" in labels
             assert "accepted" not in labels
             footer = str(app.query_one("#footer").render())
-            assert "v hide accepted" in footer
+            assert "? help" in footer
+            assert "v hide accepted" not in footer
             status_i = labels.index("status")
             by_name = {}
             for i, r in enumerate(app._table_keys):
@@ -2063,8 +2075,10 @@ def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
             assert "mismatched columns 1" in footer
             assert "cells " not in footer
             assert "extras " not in footer
-            assert "v show accepted" in footer
-            assert "m same pair" in footer
+            assert "? help" in footer
+            assert "Enter drill" not in footer
+            assert "v show accepted" not in footer
+            assert "m same pair" not in footer
             app.action_overview()
             await pilot.pause()
             body = str(app.screen.query_one("#overview-body").render())
@@ -2213,7 +2227,8 @@ def test_multi_column_pair_accept_empty_to_zero(tmp_path: Path):
                 "note",
             ]
             footer = str(app.query_one("#footer").render())
-            assert "m same pair" in footer
+            assert "? help" in footer
+            assert "m same pair" not in footer
             app.query_one("#grid").focus()
             await pilot.press("m")
             await pilot.pause()
@@ -2299,12 +2314,12 @@ def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
     recs, _, _ = eng.pair_page("val", 0)
     y_yes = next(r for r in recs if r["val_a"] == "Y" and r["val_b"] == "Yes")
     ctx = y_yes["Flag__ctx"]
-    assert ctx.startswith("red · blue · green · orange · pink")
+    assert ctx.startswith("red 3 | blue 2 | green 1 | orange 1 | pink 1")
     assert ctx.endswith("…")
     assert "purple" not in ctx
     assert "yellow" not in ctx
     n_yes = next(r for r in recs if r["val_a"] == "N" and r["val_b"] == "No")
-    assert n_yes["Flag__ctx"] == "z"
+    assert n_yes["Flag__ctx"] == "z 2"
     assert "…" not in n_yes["Flag__ctx"]
 
     app = ReconcileApp(eng)
@@ -2320,13 +2335,15 @@ def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
             await pilot.pause()
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            assert "Flag" in labels
-            flag_i = labels.index("Flag")
+            assert "ctx:Flag" in labels
+            assert "Flag" not in labels or labels.count("Flag") == 0
+            flag_i = labels.index("ctx:Flag")
             shown = str(table.get_row_at(0)[flag_i])
-            assert "red · blue" in shown
+            assert "red 3 | blue 2" in shown
             assert shown.endswith("…")
             pane = str(app.query_one("#pane").render())
             assert "Flag" in pane
+            assert "red 3" in pane
             assert "…" in pane
             app.action_context()
             await pilot.pause()
@@ -2465,5 +2482,111 @@ def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
             assert any(r["val_a"] == "0" and r["val_b"] == "x" for r in mixed)
             leftover = [r.name for r in app.engine.visible_column_roster()]
             assert leftover == ["mixed"]
+
+    asyncio.run(_run())
+
+
+def test_pending_displays_match_engine(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,cust\n1,Y,1\n2,Y,2\n3,onlyA,3\n")
+    write_csv(pb, "id,Status\n1,Yes\n2,Yes\n4,onlyB\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            pend_i = labels.index("pending")
+            row = next(r for r in app._table_keys if r is not None)
+            shown = str(table.get_row_at(0)[pend_i])
+            assert shown == str(row.pending)
+            assert int(shown) == next(
+                r.pending for r in app.engine.roster() if r.name == row.name
+            )
+            footer = str(app.query_one("#footer").render())
+            assert f"pending columns {app.engine.pending_columns_n()}" in footer
+            app.action_overview()
+            await pilot.pause()
+            ov = app.screen.query_one("#ov-entries")
+            ov_labels = [str(col.label) for col in ov.columns.values()]
+            ov_pend_i = ov_labels.index("pending")
+            by_entry = {
+                str(ov.get_row_at(i)[0]): int(str(ov.get_row_at(i)[ov_pend_i]))
+                for i in range(ov.row_count)
+            }
+            assert by_entry["A-only keys"] == app.engine.pending_a_only_n() == 1
+            assert by_entry["B-only keys"] == app.engine.pending_b_only_n() == 1
+            assert by_entry["Mismatched columns"] == app.engine.pending_extras_n() == 1
+            await pilot.press("escape")
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            tab = app.query_one("#tab-pending", Button)
+            assert f"Pending {row.pending}" in str(tab.label)
+            statics = " ".join(str(s.render()) for s in app.query(Static))
+            assert f"pending {row.pending}" in statics
+            pair_table = app.query_one("#grid")
+            pair_labels = [str(col.label) for col in pair_table.columns.values()]
+            pair_pend_i = pair_labels.index("pending")
+            rec = app._table_keys[0]
+            assert str(pair_table.get_row_at(0)[pair_pend_i]) == str(int(rec["n"]))
+            assert int(rec["n"]) == row.pending
+            app.action_accept()
+            await pilot.pause()
+            leftover = next(r.pending for r in app.engine.roster() if r.name == "Status")
+            statics = " ".join(str(s.render()) for s in app.query(Static))
+            assert f"pending {leftover}" in statics
+
+    asyncio.run(_run())
+
+
+def test_pair_list_context_columns_are_labeled_and_separate(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,val,Flag,Region\n"
+        "1,Y,red,east\n2,Y,red,east\n3,Y,blue,west\n4,Y,green,west\n",
+    )
+    write_csv(
+        pb,
+        "id,val,Flag,Region\n"
+        "1,Yes,red,east\n2,Yes,red,east\n3,Yes,blue,west\n4,Yes,green,west\n",
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["Flag", "Region"]
+    recs, _, _ = eng.pair_page("val", 0)
+    rec = recs[0]
+    assert rec["Flag__ctx"] == "red 2 | blue 1 | green 1"
+    assert rec["Region__ctx"] == "east 2 | west 2"
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "ctx:Flag" in labels
+            assert "ctx:Region" in labels
+            flag_i = labels.index("ctx:Flag")
+            region_i = labels.index("ctx:Region")
+            assert flag_i != region_i
+            flag_cell = str(table.get_row_at(0)[flag_i])
+            region_cell = str(table.get_row_at(0)[region_i])
+            assert "red 2" in flag_cell
+            assert "east 2" in region_cell
+            assert "east" not in flag_cell
+            assert "red" not in region_cell
+            pane = str(app.query_one("#pane").render())
+            assert "Flag" in pane
+            assert "Region" in pane
+            assert pane.index("Flag") != pane.index("Region")
 
     asyncio.run(_run())

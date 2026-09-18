@@ -400,7 +400,7 @@ Refresh: §9.4. New pending cells that happen to have the same two strings are *
 
 Pending view shows the **pair list only** (always the paged list). No cell grid on this step.
 
-- `Enter` on a pair opens the **cell step**: that pair’s pending rows as a pair draft, all checked. First-difference caret lives on this step. Context columns are also on the pair list (top unique values per pair).
+- `Enter` on a pair opens the **cell step**: that pair’s pending rows as a pair draft, all checked. First-difference caret lives on this step. Context columns are also on the pair list (dedicated labeled columns; top unique values with pair-row counts per pair).
 - `Esc` on the cell step cancels the draft and returns to the pair list.
 - `Esc` on the pair list returns to the roster.
 - `a` on the pair list **immediately** accepts that entire pair (all current pending cells with those exact strings). Happy path for a clean recode: top pair, `a`.
@@ -592,7 +592,7 @@ One row per pending comparable column (`kind` `column`, pending > 0), plus settl
 
 Row 1 of **pending** work is the first remaining *column* in A import order (settled rows never take the lever chrome). Clearing comparable columns is not “done” while unmatched rows or mismatched columns remain (footer counts + overview / next lever).
 
-**Filter box (always visible):** case-insensitive substring on column `name`. View only; does not change pairing or drafts. Focus the box to type; `Esc` returns focus to the list (does not have to clear the text). Empty box = all pending columns (and settled, if `v` is on). `/` is **not** this filter; `/` opens regex → column **draft**.
+There is **no roster filter box**. `/` is regex → column **draft**, not a view filter. A filter-mode key is not implemented (§2). The roster always lists remaining pending columns (and settled, if `v` is on) in A import order.
 
 Columns on the roster:
 
@@ -644,7 +644,7 @@ Grid (cell step or non-Pending tabs), 100-row pages:
 - speculative labels when a mismatch
 - **context columns** (cell step and non-Pending grids)
 
-**Context columns:** both-sides intersection, excluding keys and the column under examination; per-column, in memory; display-only. Picker `c` on column detail (pair list, cell step, and non-Pending grids). On the **pair list**, each pair shows unique values for each context column as a compact delimited list of the **5 most occurring** values; if more unique values exist, mark truncation (`…`) and do not dump the rest. On the cell step / non-Pending grids, show A|B raw per row.
+**Context columns:** both-sides intersection, excluding keys and the column under examination; per-column, in memory; display-only. Picker `c` on column detail (pair list, cell step, and non-Pending grids). On the **pair list**, each context column is a **dedicated labeled column** (`ctx:Name`), not a concatenated blob. Each pair shows unique values for that context column as a compact delimited list of the **5 most occurring** values **with pair-row counts** (`foo 12 | bar 4 | baz 1`); if more unique values exist, mark truncation (`…`) and do not dump the rest. Counts are for that pair’s pending rows (the grain), not the whole table. A value present on both A and B of the same row counts once. On the cell step / non-Pending grids, show A|B raw per row in that same dedicated column.
 
 **First-difference caret:** on the cell step footer pane and focused `A`/`B` cells, mark the first differing Python `str` index (after null→`""`). Reverse/standout on both sides. Prefix/length-only differences count. Exact, not speculative. Red-lens safe (§15.8).
 
@@ -670,14 +670,14 @@ Headers that exist on one side only. Exact header + **Side** `A` or `B`; specula
 
 ### 15.6 Footer (always on)
 
-The **only** persistent chrome besides the work list. Show what you can do **now**, not the full keymap (`?` has the rest).
+The **only** persistent chrome besides the work list. Status and current-draft hints, **not** the full keymap (`?` opens the help modal).
 
-Each number is one noun. Do **not** sum cells + unmatched rows + header names into one “cells” (or lumped “pending”) figure.
+Each number is one noun. Do **not** sum cells + unmatched rows + header names into one “cells” (or lumped “pending”) figure. Pending labels (roster `pending` column, pair-list `pending` column and `Pending N` tab, column title `pending N`, unmatched/extras titles, overview `pending` column, footer **pending columns**) show the engine’s still-open comparable mismatches for that grain.
 
 - **pending columns** (comparable columns with pending cell mismatches)
 - **unmatched rows** (A-only keys + B-only keys)
 - **mismatched columns** (headers on one side only)
-- On the roster: `v show accepted` / `v hide accepted`; `m same pair`
+- `? help` (full bindings are in the `?` modal, grouped by screen)
 - Refresh delta after `r` (including returned-to-pending count)
 - Page `n/m` when paged
 - Pair list vs cell step when on detail
@@ -689,7 +689,7 @@ Each number is one noun. Do **not** sum cells + unmatched rows + header names in
 
 **Same keys everywhere.** Do not ship a second keymap when a draft starts; `Space` / `y` / `Esc` simply become useful.
 
-Apply when focus is **not** in a text input (filter box, regex/sentinel modal). In a field: typing goes to the field; `Enter` runs/confirms the field; `Esc` leaves the field (modal: close without run; filter box: back to list).
+Apply when focus is **not** in a text input (regex/sentinel modal). In a field: typing goes to the field; `Enter` runs/confirms the field; `Esc` leaves the field (modal: close without run).
 
 | Key | Meaning |
 |---|---|
@@ -702,7 +702,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `u` | Undo focused grain. After next lever, `u` undoes the last accepted grain (one last action). ERROR if nothing snapshotted for that grain (and no last grain). `U` undo entire column on the **pair list** only (ERROR elsewhere, including cell step where a pair draft is always in flight) |
 | `r` | Refresh (stay put; mark returned-to-pending) |
 | `.` | Repeat last pair as a new draft (§9.6); column detail only (pair list / cell step); refused if a draft is in flight; ERROR if last-pair column is gone |
-| `/` | Roster: regex **column draft** (not the filter box). ERROR off roster |
+| `/` | Roster: regex **column draft**. There is no roster filter box. ERROR off roster |
 | `=` | Roster: exact-value sentinel **column draft** (escape hatch; not the happy path). ERROR off roster |
 | `i` | Overview modal (counts + unmatched rows / mismatched columns). Esc closes. ERROR is not a screen change |
 | `v` | Roster: toggle showing accepted / equal columns (default hidden). Footer hint. ERROR off roster |
@@ -710,7 +710,7 @@ Apply when focus is **not** in a text input (filter box, regex/sentinel modal). 
 | `c` | Context-column picker (column detail: pair list / cell step / non-Pending grids). ERROR off column detail |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
-| `?` | Help |
+| `?` | Help modal (bindings grouped by screen). Esc closes. Footer does not dump the full key list |
 
 No `f`, `s`, or `j`.
 
@@ -833,12 +833,12 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
-| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. Persistent filter box. Immediate `a` column **in place**; `/` `=` behind glass; `m` same pair on columns |
+| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. No roster filter box (`/` is regex draft). Immediate `a` column **in place**; `/` `=` behind glass; `m` same pair on columns |
 | Batch column accept | Independent regex `/` or exact-value sentinel `=`. Polars `=` gone; `=` drafts pending columns whose chosen side is that comparable-row constant. Draft all `[ON]`; banner/footer `y ACCEPT selected`; `m` uses ON columns; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--a`/`--b`/`--keys` required; CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs only (no `1`–`4`); `a` accepts the current selection on every screen |
-| Keybindings | One map (§15.7). `Esc` always back. `a` = accept selection. `v` = show/hide accepted columns. `m` = same pair on selected columns. No `f`/`s`/`j` |
+| Keybindings | One map (§15.7). `Esc` always back. `a` = accept selection. `v` = show/hide accepted columns. `m` = same pair on selected columns. `?` = help modal. No `f`/`s`/`j` and no roster filter box |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
 | Extra columns | Exact header + Side `A` or `B`; name is never prefixed |

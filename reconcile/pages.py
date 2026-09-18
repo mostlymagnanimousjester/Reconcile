@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.compare import _empty_df, _empty_mismatch_schema
-from reconcile.insights import CONTEXT_TOP_N, CONTEXT_TRUNCATION_MARK, CONTEXT_VALUE_SEP, extra_insights
+from reconcile.insights import (
+    CONTEXT_TOP_N,
+    CONTEXT_TRUNCATION_MARK,
+    CONTEXT_VALUE_SEP,
+    extra_insights,
+)
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -107,7 +112,12 @@ def _context_names(eng: Engine, column: str) -> list[str]:
 def _attach_pair_context_summaries(
     eng: Engine, column: str, pair_chunk: pl.DataFrame
 ) -> pl.DataFrame:
-    """Top-N unique context values per pair. Call after the pair-list slice."""
+    """Top-N unique context values per pair, with pair-row counts.
+
+    Count is how many pending cells (keys) of this pair carry that value on
+    either side. A value on both A and B of the same row counts once.
+    Call after the pair-list slice. One summary column per context name.
+    """
     names = _context_names(eng, column)
     if not names:
         return pair_chunk
@@ -122,6 +132,7 @@ def _attach_pair_context_summaries(
     if scoped.is_empty():
         return pair_chunk.with_columns(empty_cols)
     scoped = _attach_context(eng, scoped, column)
+    key_cols = list(eng.keys)
     parts: list[pl.DataFrame] = []
     for name in names:
         for side in ("a", "b"):
@@ -132,13 +143,17 @@ def _attach_pair_context_summaries(
                 scoped.select(
                     "val_a",
                     "val_b",
+                    *key_cols,
                     pl.lit(name).alias("_ctx"),
                     pl.col(col).fill_null("").cast(pl.Utf8).alias("_val"),
                 )
             )
     if not parts:
         return pair_chunk.with_columns(empty_cols)
-    long = pl.concat(parts)
+    long = pl.concat(parts).unique(
+        subset=["val_a", "val_b", "_ctx", "_val", *key_cols],
+        maintain_order=True,
+    )
     ranked = (
         long.group_by(["val_a", "val_b", "_ctx", "_val"])
         .len()
@@ -152,10 +167,15 @@ def _attach_pair_context_summaries(
         ranked.filter(pl.col("_rank") <= CONTEXT_TOP_N)
         .sort(["val_a", "val_b", "_ctx", "_rank"])
         .with_columns(
-            pl.when(pl.col("_val") == "")
-            .then(pl.lit("(empty)"))
-            .otherwise(pl.col("_val"))
-            .alias("_shown")
+            pl.concat_str(
+                [
+                    pl.when(pl.col("_val") == "")
+                    .then(pl.lit("(empty)"))
+                    .otherwise(pl.col("_val")),
+                    pl.lit(" "),
+                    pl.col("len").cast(pl.Utf8),
+                ]
+            ).alias("_shown")
         )
     )
     summarized = (

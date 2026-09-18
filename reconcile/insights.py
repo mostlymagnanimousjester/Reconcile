@@ -19,8 +19,19 @@ DATE_FORMATS = (
 _WS_RE = re.compile(r"[\u00a0\t\r\n]")
 
 CONTEXT_TOP_N = 5
-CONTEXT_VALUE_SEP = " · "
-CONTEXT_TRUNCATION_MARK = "…"
+CONTEXT_VALUE_SEP = " | "
+CONTEXT_TRUNCATION_MARK = " …"
+
+
+def context_header(name: str) -> str:
+    """Dedicated pair/cell table header for one context column."""
+    return f"ctx:{name}"
+
+
+def format_context_value(value: str, count: int) -> str:
+    """One unique context value with its pair-row count."""
+    label = value if value else "(empty)"
+    return f"{label} {count}"
 
 _EMPTY_SENTINELS = pl.DataFrame(
     {"column": [], "sent_a": [], "sent_b": []},
@@ -133,12 +144,16 @@ def column_sentinel_frame(cells: pl.DataFrame) -> pl.DataFrame:
 
 
 def format_top_uniques(values: list[str], limit: int = CONTEXT_TOP_N) -> str:
-    """Most-occurring unique values as a delimited list; mark truncation."""
+    """Most-occurring unique values with pair-row counts; mark truncation.
+
+    ``values`` is one entry per counted row (the pair grain). Counts are of
+    those rows, not of the whole table. Shape: ``foo 12 | bar 4 | baz 1 …``.
+    """
     counts: dict[str, int] = {}
     for value in values:
         counts[value] = counts.get(value, 0) + 1
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    shown = [value if value else "(empty)" for value, _ in ranked[:limit]]
+    shown = [format_context_value(value, n) for value, n in ranked[:limit]]
     text = CONTEXT_VALUE_SEP.join(shown)
     if len(ranked) > limit:
         text += CONTEXT_TRUNCATION_MARK
