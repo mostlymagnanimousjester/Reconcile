@@ -247,8 +247,10 @@ class Engine:
     ) -> tuple[str, str] | None:
         return pages_mod.next_pair_below(self, column, val_a, val_b)
 
-    def union_pairs(self, columns: list[str]) -> list[dict[str, Any]]:
-        return pages_mod.union_pairs(self, columns)
+    def union_pairs(
+        self, columns: list[str], page: int = 0
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        return pages_mod.union_pairs(self, columns, page)
 
     def page_index_for_pair(self, column: str, val_a: str, val_b: str) -> tuple[int, int]:
         return pages_mod.page_index_for_pair(self, column, val_a, val_b)

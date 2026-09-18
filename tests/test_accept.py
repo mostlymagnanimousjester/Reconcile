@@ -457,7 +457,7 @@ def test_accept_pair_across_columns_empty_to_zero(tmp_path: Path):
     write_csv(pa, "id,qty,amt,note\n1,,,x\n2,,,y\n")
     write_csv(pb, "id,qty,amt,note\n1,0,0,x\n2,0,0,z\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    union = eng.union_pairs(["qty", "amt", "note"])
+    union, _, _ = eng.union_pairs(["qty", "amt", "note"])
     empty_pair = next(r for r in union if r["val_a"] == "" and r["val_b"] == "0")
     assert empty_pair["n"] == 4
     assert empty_pair["n_cols"] == 2

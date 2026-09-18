@@ -585,7 +585,7 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
 
     def _fill_pairs(self) -> None:
         names = [n for n in self.columns if n in self.selected]
-        self._pairs = self.engine.union_pairs(names)
+        self._pairs, _, _ = self.engine.union_pairs(names)
         self.phase = "pairs"
         self.query_one("#multi-title", Static).update(
             f"Pick one exact pair ({len(names)} column(s)). Enter applies."
@@ -652,7 +652,7 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
             if not names:
                 self._set_err("ERROR: select at least one column")
                 return
-            pairs = self.engine.union_pairs(names)
+            pairs, _, _ = self.engine.union_pairs(names)
             if not pairs:
                 self._set_err("ERROR: no pending pairs in the selected columns")
                 return
@@ -1623,7 +1623,7 @@ class ReconcileApp(App[int]):
                         raise InTuiError("ERROR: that key is not pending")
                     e.remember_grain(("unmatched", "A", key), n)
                     nxt = e.next_pending_key_in_grid("A", key)
-                    self.place.focused_key = nxt or key
+                    self.place.focused_key = nxt
                     if nxt:
                         page, _ = e.page_index_for_unmatched_key("A", nxt)
                         self.place.page = page
@@ -1636,7 +1636,7 @@ class ReconcileApp(App[int]):
                         raise InTuiError("ERROR: that key is not pending")
                     e.remember_grain(("unmatched", "B", key), n)
                     nxt = e.next_pending_key_in_grid("B", key)
-                    self.place.focused_key = nxt or key
+                    self.place.focused_key = nxt
                     if nxt:
                         page, _ = e.page_index_for_unmatched_key("B", nxt)
                         self.place.page = page

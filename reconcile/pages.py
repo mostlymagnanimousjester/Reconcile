@@ -309,16 +309,27 @@ def next_pair_below(
     return None
 
 
-def union_pairs(eng: Engine, columns: list[str]) -> list[dict[str, Any]]:
+def union_pairs(
+    eng: Engine, columns: list[str], page: int = 0
+) -> tuple[list[dict[str, Any]], int, int]:
     """Grouped exact ``(val_a, val_b)`` union across pending cells of ``columns``."""
+    empty = pl.DataFrame(
+        {"val_a": [], "val_b": [], "n": [], "n_cols": []},
+        schema={
+            "val_a": pl.Utf8,
+            "val_b": pl.Utf8,
+            "n": pl.UInt32,
+            "n_cols": pl.UInt32,
+        },
+    )
     if not columns or eng.pending_cells.is_empty():
-        return []
+        return _page(empty, page)
     frame = eng.pending_cells.filter(pl.col("column").is_in(list(columns)))
     if frame.is_empty():
-        return []
+        return _page(empty, page)
     grouped = (
         frame.group_by(["val_a", "val_b"])
         .agg(pl.len().alias("n"), pl.col("column").n_unique().alias("n_cols"))
         .sort(["n", "val_a", "val_b"], descending=[True, False, False])
     )
-    return grouped.to_dicts()
+    return _page(grouped, page)
