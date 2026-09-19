@@ -120,18 +120,17 @@ def sort_unmatched(eng: Engine) -> None:
 
 
 def pair_groups(eng: Engine, column: str) -> pl.DataFrame:
-    pending = eng.pending_cells.filter(pl.col("column") == column)
-    if pending.is_empty():
-        return pl.DataFrame(
-            {"val_a": [], "val_b": [], "n": []},
-            schema={"val_a": pl.Utf8, "val_b": pl.Utf8, "n": pl.UInt32},
-        )
-    return (
-        pending.group_by(["val_a", "val_b"])
-        .len()
-        .rename({"len": "n"})
-        .sort(["n", "val_a", "val_b"], descending=[True, False, False])
+    empty = pl.DataFrame(
+        {"val_a": [], "val_b": [], "n": []},
+        schema={"val_a": pl.Utf8, "val_b": pl.Utf8, "n": pl.UInt32},
     )
+    cached = getattr(eng, "_pair_groups_df", None)
+    if cached is None or cached.is_empty():
+        return empty
+    hit = cached.filter(pl.col("column") == column).select("val_a", "val_b", "n")
+    if hit.is_empty():
+        return empty
+    return hit
 
 
 def equal_count(eng: Engine, column: str) -> int:

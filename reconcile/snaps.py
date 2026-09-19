@@ -8,7 +8,7 @@ import polars as pl
 
 from reconcile.compare import _empty_df, _empty_mismatch_schema
 from reconcile.engine import ExtraSnap, InTuiError
-from reconcile.roster import _build_roster_cache
+from reconcile.roster import refresh_derived
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -38,19 +38,22 @@ def _ensure_unmatched_snap_frames(eng: Engine) -> None:
         eng.unmatched_snaps_b = eng.b_only.head(0)
 
 
-def _pending_cells(eng: Engine) -> pl.DataFrame:
-    if eng.mismatches.is_empty() or eng.cell_snaps.is_empty():
-        return eng.mismatches
-    return eng.mismatches.join(
-        eng.cell_snaps, on=[*eng.keys, "column", "val_a", "val_b"], how="anti"
-    )
+def _split_on_unique(
+    left: pl.DataFrame, snaps: pl.DataFrame, on: list[str]
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Left-join ``left`` to unique snaps. Pending order is left-frame order."""
+    marked = snaps.select(on).unique().with_columns(pl.lit(True).alias("_snap"))
+    joined = left.join(marked, on=on, how="left")
+    pending = joined.filter(pl.col("_snap").is_null()).drop("_snap")
+    accepted = joined.filter(pl.col("_snap").is_not_null()).drop("_snap")
+    return pending, accepted
 
 
-def _accepted_cells_current(eng: Engine) -> pl.DataFrame:
+def _split_cells(eng: Engine) -> tuple[pl.DataFrame, pl.DataFrame]:
     if eng.mismatches.is_empty() or eng.cell_snaps.is_empty():
-        return eng.mismatches.head(0)
-    return eng.mismatches.join(
-        eng.cell_snaps, on=[*eng.keys, "column", "val_a", "val_b"], how="inner"
+        return eng.mismatches, eng.mismatches.head(0)
+    return _split_on_unique(
+        eng.mismatches, eng.cell_snaps, [*eng.keys, "column", "val_a", "val_b"]
     )
 
 
@@ -64,11 +67,8 @@ def _split_unmatched(eng: Engine, side: str) -> tuple[pl.DataFrame, pl.DataFrame
     if set(snaps.columns) != set(frame.columns):
         # Schema drift: full-row identity cannot match (not a key-only ignore).
         return frame, frame.head(0)
-    snaps = snaps.select(list(frame.columns))
     cols = list(frame.columns)
-    pending = frame.join(snaps, on=cols, how="anti")
-    accepted = frame.join(snaps, on=cols, how="inner")
-    return pending, accepted
+    return _split_on_unique(frame, snaps.select(cols), cols)
 
 
 def _split_extras(eng: Engine) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -81,12 +81,11 @@ def _split_extras(eng: Engine) -> tuple[list[tuple[str, str]], list[tuple[str, s
 
 def apply_snapshots(eng: Engine) -> None:
     _ensure_unmatched_snap_frames(eng)
-    eng.pending_cells = _pending_cells(eng)
-    eng.accepted_cells = _accepted_cells_current(eng)
+    eng.pending_cells, eng.accepted_cells = _split_cells(eng)
     eng.pending_a_only, eng.accepted_a_only = _split_unmatched(eng, "A")
     eng.pending_b_only, eng.accepted_b_only = _split_unmatched(eng, "B")
     eng.pending_extras, eng.accepted_extras = _split_extras(eng)
-    eng._roster_cache = _build_roster_cache(eng)
+    refresh_derived(eng)
 
 
 def _cell_snap_cols(eng: Engine) -> list[str]:
@@ -102,13 +101,14 @@ def _vstack_cell_snaps(eng: Engine, frame: pl.DataFrame) -> int:
     if eng.cell_snaps.is_empty():
         new = frame.unique()
     else:
-        new = frame.join(eng.cell_snaps, on=cols, how="anti")
+        new = frame.join(eng.cell_snaps, on=cols, how="anti").unique()
     n = new.height
     if n:
+        # Unique the delta only — do not re-unique the growing snap store.
         eng.cell_snaps = (
-            new.unique()
+            new
             if eng.cell_snaps.is_empty()
-            else pl.concat([eng.cell_snaps, new], how="vertical").unique()
+            else pl.concat([eng.cell_snaps, new], how="vertical")
         )
     apply_snapshots(eng)
     return n
@@ -156,12 +156,15 @@ def accept_cell(
 
 
 def confirm_column_draft(eng: Engine) -> int:
-    names = [n for n in list(eng.column_draft)]
-    total = 0
-    for name in names:
-        total += accept_column(eng, name)
+    if eng.pair_draft_col is not None:
+        raise InTuiError("ERROR: confirm or cancel the pair draft first")
+    names = list(eng.column_draft)
     eng.column_draft = set()
-    return total
+    if not names:
+        return 0
+    return _vstack_cell_snaps(
+        eng, eng.pending_cells.filter(pl.col("column").is_in(names))
+    )
 
 
 def confirm_pair_draft(
@@ -169,12 +172,14 @@ def confirm_pair_draft(
 ) -> int:
     if eng.pair_draft_col is None:
         return 0
-    col, va, vb = eng.pair_draft_col, eng.pair_draft_va, eng.pair_draft_vb
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == col)
-        & (pl.col("val_a") == va)
-        & (pl.col("val_b") == vb)
-    )
+    frame = eng._pair_draft_cells
+    if frame is None:
+        col, va, vb = eng.pair_draft_col, eng.pair_draft_va, eng.pair_draft_vb
+        frame = eng.pending_cells.filter(
+            (pl.col("column") == col)
+            & (pl.col("val_a") == va)
+            & (pl.col("val_b") == vb)
+        )
     if unchecked:
         exc = pl.DataFrame(
             {k: [key[i] for key in unchecked] for i, k in enumerate(eng.keys)}
@@ -183,9 +188,7 @@ def confirm_pair_draft(
     if frame.is_empty():
         raise InTuiError("ERROR: nothing to confirm (all unchecked)")
     n = _vstack_cell_snaps(eng, frame)
-    eng.pair_draft_col = None
-    eng.pair_draft_va = None
-    eng.pair_draft_vb = None
+    eng.clear_pair_draft()
     return n
 
 
@@ -290,9 +293,7 @@ def undo_extra(eng: Engine, side: str, name: str) -> int:
 
 
 def column_has_returned(eng: Engine, column: str) -> bool:
-    if eng.returned_cells_df.is_empty():
-        return False
-    return eng.returned_cells_df.filter(pl.col("column") == column).height > 0
+    return column in eng._returned_columns
 
 
 def cell_is_returned(eng: Engine, key: tuple[str, ...], column: str) -> bool:
@@ -324,16 +325,7 @@ def key_is_returned(eng: Engine, side: str, key: tuple[str, ...]) -> bool:
 
 
 def pair_has_returned(eng: Engine, column: str, val_a: str, val_b: str) -> bool:
-    if eng.returned_cells_df.is_empty():
-        return False
-    pending = eng.pending_cells.filter(
-        (pl.col("column") == column)
-        & (pl.col("val_a") == val_a)
-        & (pl.col("val_b") == val_b)
-    )
-    if pending.is_empty():
-        return False
-    ret = eng.returned_cells_df.filter(pl.col("column") == column)
-    if ret.is_empty():
-        return False
-    return pending.join(ret, on=eng.keys, how="inner").height > 0
+    from reconcile.pages import pairs_returned_mask
+
+    hits = pairs_returned_mask(eng, column, [(val_a, val_b)])
+    return bool(hits and hits[0])

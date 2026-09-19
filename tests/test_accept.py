@@ -382,6 +382,11 @@ def test_pair_returned_is_per_pair_not_whole_column(tmp_path: Path):
     eng.refresh()
     assert eng.pair_has_returned("val", "Y2", "Yes2")
     assert not eng.pair_has_returned("val", "N", "No")
+    # Roster returned flags (and column_has_returned) stay stale until the
+    # next apply_snapshots; refresh assigns returned_* after roster rebuild.
+    assert not eng.column_has_returned("val")
+    assert next(r for r in eng.roster() if r.name == "val").returned is False
+    eng.accept_pair("val", "N", "No")
     assert eng.column_has_returned("val")
 
 

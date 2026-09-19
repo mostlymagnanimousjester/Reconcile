@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 PAGE_SIZE = 100
 
 
+def invalidate_equal_caches(eng: Engine) -> None:
+    """Equals / all-matched frames depend on matched rows, not snaps."""
+    eng._equal_by_col = {}
+    eng._all_matched_by_col = {}
+
+
 def _page_dicts(frame: pl.DataFrame) -> list[dict[str, Any]]:
     """Materialize at most PAGE_SIZE rows. Callers must slice first."""
     if frame.height > PAGE_SIZE:
@@ -45,8 +51,17 @@ def _attach_context(eng: Engine, chunk: pl.DataFrame, column: str) -> pl.DataFra
     ]
     if not names or chunk.is_empty() or eng.matched_a.is_empty():
         return chunk
-    a_sel = eng.matched_a.select(eng.keys + names).rename({n: f"{n}__ctx_a" for n in names})
-    b_sel = eng.matched_b.select(eng.keys + names).rename({n: f"{n}__ctx_b" for n in names})
+    needed = chunk.select(eng.keys).unique()
+    a_sel = (
+        eng.matched_a.join(needed, on=eng.keys, how="semi")
+        .select(eng.keys + names)
+        .rename({n: f"{n}__ctx_a" for n in names})
+    )
+    b_sel = (
+        eng.matched_b.join(needed, on=eng.keys, how="semi")
+        .select(eng.keys + names)
+        .rename({n: f"{n}__ctx_b" for n in names})
+    )
     out = chunk.join(a_sel, on=eng.keys, how="left").join(b_sel, on=eng.keys, how="left")
     fills = [pl.col(f"{n}__ctx_a").fill_null("").cast(pl.Utf8) for n in names] + [
         pl.col(f"{n}__ctx_b").fill_null("").cast(pl.Utf8) for n in names
@@ -62,6 +77,7 @@ def _page_with_context(
     page = max(0, min(page, pages - 1))
     chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
     chunk = _attach_context(eng, chunk, column)
+    chunk = _attach_cell_returned(eng, chunk, column)
     return _page_dicts(chunk), page, pages
 
 
@@ -200,57 +216,164 @@ def _attach_pair_context_summaries(
     return out
 
 
+def _pair_ctx_frame(eng: Engine, column: str) -> pl.DataFrame:
+    cached = eng._pair_ctx_by_col.get(column)
+    if cached is not None:
+        return cached
+    groups = eng.pair_groups(column)
+    computed = _attach_pair_context_summaries(eng, column, groups)
+    eng._pair_ctx_by_col[column] = computed
+    return computed
+
+
 def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
     groups = eng.pair_groups(column)
     total = groups.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
     chunk = groups.slice(page * PAGE_SIZE, PAGE_SIZE)
-    chunk = _attach_pair_context_summaries(eng, column, chunk)
+    ctx = _pair_ctx_frame(eng, column)
+    extra = [c for c in ctx.columns if c not in ("val_a", "val_b", "n", "column")]
+    if extra and not chunk.is_empty():
+        chunk = chunk.join(ctx.select(["val_a", "val_b", *extra]), on=["val_a", "val_b"], how="left")
+        chunk = chunk.with_columns([pl.col(c).fill_null("") for c in extra])
     return _page_dicts(chunk), page, pages
+
+
+def _equal_frame(eng: Engine, column: str) -> pl.DataFrame:
+    cached = eng._equal_by_col.get(column)
+    if cached is not None:
+        return cached
+    empty = _empty_df(_empty_mismatch_schema(eng.keys))
+    if eng.matched_a.is_empty() or column not in eng.comparable:
+        eng._equal_by_col[column] = empty
+        return empty
+    a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
+    b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
+    frame = a.join(b, on=eng.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
+    eng._equal_by_col[column] = frame
+    return frame
+
+
+def _all_matched_frame(eng: Engine, column: str) -> pl.DataFrame:
+    cached = eng._all_matched_by_col.get(column)
+    if cached is not None:
+        return cached
+    empty = _empty_df(_empty_mismatch_schema(eng.keys))
+    if eng.matched_a.is_empty() or column not in eng.comparable:
+        eng._all_matched_by_col[column] = empty
+        return empty
+    a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
+    b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
+    frame = a.join(b, on=eng.keys, how="inner")
+    eng._all_matched_by_col[column] = frame
+    return frame
+
+
+def _pair_cells_frame(eng: Engine, column: str, val_a: str, val_b: str) -> pl.DataFrame:
+    cached = eng._pair_draft_cells
+    if (
+        cached is not None
+        and eng.pair_draft_col == column
+        and eng.pair_draft_va == val_a
+        and eng.pair_draft_vb == val_b
+    ):
+        return cached
+    return eng.pending_cells.filter(
+        (pl.col("column") == column)
+        & (pl.col("val_a") == val_a)
+        & (pl.col("val_b") == val_b)
+    ).sort(eng.keys)
 
 
 def pair_cells_page(
     eng: Engine, column: str, val_a: str, val_b: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == column)
-        & (pl.col("val_a") == val_a)
-        & (pl.col("val_b") == val_b)
-    ).sort(eng.keys)
-    return _page_with_context(eng, frame, page, column)
+    return _page_with_context(eng, _pair_cells_frame(eng, column, val_a, val_b), page, column)
 
 
 def cells_for_tab(
     eng: Engine, column: str, tab: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
-    empty = _empty_df(_empty_mismatch_schema(eng.keys))
     if tab == "accepted":
         frame = eng.accepted_cells.filter(pl.col("column") == column)
     elif tab == "equal":
-        if eng.matched_a.is_empty():
-            frame = empty
-        else:
-            a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
-            b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
-            frame = a.join(b, on=eng.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
+        frame = _equal_frame(eng, column)
     elif tab == "all_matched":
-        if eng.matched_a.is_empty():
-            frame = empty
-        else:
-            a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
-            b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
-            frame = a.join(b, on=eng.keys, how="inner")
+        frame = _all_matched_frame(eng, column)
     else:
         frame = eng.pending_cells.filter(pl.col("column") == column)
     return _page_with_context(eng, frame.sort(eng.keys), page, column)
+
+
+def pairs_returned_mask(
+    eng: Engine, column: str, pairs: list[tuple[str, str]]
+) -> list[bool]:
+    if not pairs:
+        return []
+    frame = pl.DataFrame(
+        {"val_a": [a for a, _ in pairs], "val_b": [b for _, b in pairs]},
+        schema={"val_a": pl.Utf8, "val_b": pl.Utf8},
+    )
+    out = _pairs_returned_frame(eng, column, frame)
+    return out.get_column("_returned").to_list()
+
+
+def _pairs_returned_frame(
+    eng: Engine, column: str, pair_frame: pl.DataFrame
+) -> pl.DataFrame:
+    empty_flag = pair_frame.with_columns(pl.lit(False).alias("_returned"))
+    if (
+        pair_frame.is_empty()
+        or eng.returned_cells_df.is_empty()
+        or eng.pending_cells.is_empty()
+    ):
+        return empty_flag
+    pending = eng.pending_cells.filter(pl.col("column") == column)
+    ret = eng.returned_cells_df.filter(pl.col("column") == column)
+    if pending.is_empty() or ret.is_empty():
+        return empty_flag
+    scoped = pending.join(
+        pair_frame.select("val_a", "val_b").unique(),
+        on=["val_a", "val_b"],
+        how="inner",
+    )
+    if scoped.is_empty():
+        return empty_flag
+    hits = (
+        scoped.join(ret, on=eng.keys, how="inner")
+        .select("val_a", "val_b")
+        .unique()
+        .with_columns(pl.lit(True).alias("_returned"))
+    )
+    return pair_frame.join(hits, on=["val_a", "val_b"], how="left").with_columns(
+        pl.col("_returned").fill_null(False)
+    )
+
+
+def _attach_cell_returned(
+    eng: Engine, chunk: pl.DataFrame, column: str
+) -> pl.DataFrame:
+    if chunk.is_empty() or eng.returned_cells_df.is_empty():
+        return chunk.with_columns(pl.lit(False).alias("_returned"))
+    ret = (
+        eng.returned_cells_df.filter(pl.col("column") == column)
+        .select(eng.keys)
+        .unique()
+        .with_columns(pl.lit(True).alias("_returned"))
+    )
+    if ret.is_empty():
+        return chunk.with_columns(pl.lit(False).alias("_returned"))
+    return chunk.join(ret, on=eng.keys, how="left").with_columns(
+        pl.col("_returned").fill_null(False)
+    )
 
 
 def unmatched_page(
     eng: Engine, side: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
     accepted = eng.accepted_a_only if side == "A" else eng.accepted_b_only
-    frame = (eng.a_only if side == "A" else eng.b_only).sort(eng.keys)
+    frame = eng.a_only if side == "A" else eng.b_only
     total = frame.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
@@ -289,15 +412,19 @@ def extras_rows(eng: Engine) -> list[dict[str, Any]]:
     # Order: exact name (working rule). Spec §18: exact name. Mix sides by name then side.
     all_extras.sort(key=lambda x: (x[1], x[0]))
     others = {"A": list(eng.b.headers), "B": list(eng.a.headers)}
+    tags_map = eng._extra_tags
     for side, name in all_extras:
         pending = (side, name) in eng.pending_extras
+        tags = tags_map.get((side, name))
+        if tags is None:
+            tags = extra_insights(name, others[side])
         rows.append(
             {
                 "side": side,
                 "name": name,
                 "pending": 1 if pending else 0,
                 "accepted": 0 if pending else 1,
-                "speculative": extra_insights(name, others[side]),
+                "speculative": tags[:3],
                 "returned": (side, name) in eng.returned_extras,
             }
         )
@@ -333,14 +460,10 @@ def context_values(
 def first_pending_key_in_pair(
     eng: Engine, column: str, val_a: str, val_b: str
 ) -> tuple[str, ...] | None:
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == column)
-        & (pl.col("val_a") == val_a)
-        & (pl.col("val_b") == val_b)
-    )
+    frame = _pair_cells_frame(eng, column, val_a, val_b)
     if frame.is_empty():
         return None
-    rec = frame.sort(eng.keys).head(1).row(0, named=True)
+    rec = frame.head(1).row(0, named=True)
     return tuple(str(rec[k]) for k in eng.keys)
 
 
@@ -350,7 +473,6 @@ def next_pending_key_in_grid(
     pending = eng.pending_a_only if side == "A" else eng.pending_b_only
     if pending.is_empty():
         return None
-    pending = pending.sort(eng.keys)
     parts: list[pl.Expr] = []
     acc: pl.Expr = pl.lit(True)
     for i, k in enumerate(eng.keys):
@@ -369,14 +491,11 @@ def next_pending_cell_in_pair(
 ) -> tuple[str, ...] | None:
     if eng.pair_draft_col is None:
         return None
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == eng.pair_draft_col)
-        & (pl.col("val_a") == eng.pair_draft_va)
-        & (pl.col("val_b") == eng.pair_draft_vb)
+    frame = _pair_cells_frame(
+        eng, eng.pair_draft_col, eng.pair_draft_va or "", eng.pair_draft_vb or ""
     )
     if frame.is_empty():
         return None
-    frame = frame.sort(eng.keys)
     parts: list[pl.Expr] = []
     acc: pl.Expr = pl.lit(True)
     for i, k in enumerate(eng.keys):
