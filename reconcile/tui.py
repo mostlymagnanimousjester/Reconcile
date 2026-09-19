@@ -1040,12 +1040,53 @@ class ReconcileApp(App[int]):
             self._remount_work()
             return
         screen = self.place.screen
+        table = self.query_one("#grid", DataTable)
         if screen == "roster":
-            self._fill_roster(self.query_one("#grid", DataTable))
+            self._fill_roster(table)
             return
-        # Same screen, new data: rebuild the existing grid in place.
+        if screen == "pair_list":
+            self._fill_pair_view(table)
+            return
+        if screen in ("cell_step", "accepted", "equal", "all_matched"):
+            self._fill_cell_grid(table)
+            return
+        if screen == "a_only":
+            self._fill_unmatched(table, "A")
+            return
+        if screen == "b_only":
+            self._fill_unmatched(table, "B")
+            return
+        if screen == "extras":
+            self._fill_extras(table)
+            return
         self._remount_work()
         self._mounted_screen = self._work_layout_key()
+
+    def _sync_columns(self, table: DataTable, headers: list[str]) -> None:
+        current = [str(col.label) for col in table.columns.values()]
+        if current != headers:
+            table.clear(columns=True)
+            self._add_columns(table, headers)
+        else:
+            table.clear()
+
+    def _set_col_title(self, text: str) -> None:
+        if self.query("#col-title"):
+            self.query_one("#col-title", Static).update(text)
+
+    def _refresh_tab_bar(self, current: str, pending_n: int | None = None) -> None:
+        if not self.query("#tabs"):
+            return
+        pending_label = f"Pending {pending_n}" if pending_n is not None else "Pending"
+        labels = [
+            ("pending", pending_label),
+            ("accepted", "Accepted"),
+            ("equal", "Equal"),
+            ("all_matched", "All matched"),
+        ]
+        for key, label in labels:
+            btn = self.query_one(f"#tab-{key}", Button)
+            btn.label = f"[{label}]" if key == current else label
 
     def _roster_headers(self) -> list[str]:
         headers: list[str] = []
@@ -1090,12 +1131,7 @@ class ReconcileApp(App[int]):
 
     def _fill_roster(self, table: DataTable) -> None:
         headers = self._roster_headers()
-        current = [str(col.label) for col in table.columns.values()]
-        if current != headers:
-            table.clear(columns=True)
-            self._add_columns(table, headers)
-        else:
-            table.clear()
+        self._sync_columns(table, headers)
         rows = self.engine.column_roster(
             self.place.roster_filter, include_settled=self.show_accepted_columns
         )
@@ -1192,19 +1228,28 @@ class ReconcileApp(App[int]):
     def _pair_view(self) -> Vertical:
         col = self.place.column or ""
         if not col:
-            return Vertical(Static("No column."))
+            return Vertical(Static("No column.", id="col-title"))
         pending_n = self._column_pending_n(col)
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        self._fill_pair_list(table, col)
         return Vertical(
-            Static(f"COLUMN {col}   pending {pending_n}"),
+            Static(f"COLUMN {col}   pending {pending_n}", id="col-title"),
             self._tab_bar("pending", pending_n),
-            self._pair_list(col),
+            table,
         )
 
-    def _pair_list(self, col: str) -> DataTable:
-        table: DataTable = DataTable(cursor_type="row", id="grid")
+    def _fill_pair_view(self, table: DataTable) -> None:
+        col = self.place.column or ""
+        pending_n = self._column_pending_n(col)
+        self._set_col_title(f"COLUMN {col}   pending {pending_n}")
+        self._refresh_tab_bar("pending", pending_n)
+        self._fill_pair_list(table, col)
+
+    def _fill_pair_list(self, table: DataTable, col: str) -> None:
         ctx_names = self._context_names(col)
         ctx_headers = [context_header(n) for n in ctx_names]
-        self._add_columns(table, ["A", "B", "pending", *ctx_headers, "speculative"])
+        headers = ["A", "B", "pending", *ctx_headers, "speculative"]
+        self._sync_columns(table, headers)
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
         self._page_count = pages
@@ -1212,7 +1257,7 @@ class ReconcileApp(App[int]):
         if not recs:
             table.add_row("(no pending pairs)", "", "0", *([""] * len(ctx_names)), "")
             self._table_keys = [None]
-            return table
+            return
         focus = 0
         want_a, want_b = self.place.pair_val_a, self.place.pair_val_b
         returned_hits = self.engine.pairs_returned_mask(
@@ -1233,7 +1278,6 @@ class ReconcileApp(App[int]):
         table.move_cursor(row=focus)
         rec = recs[focus]
         self.place.pair_val_a, self.place.pair_val_b = rec["val_a"], rec["val_b"]
-        return table
 
     def _move_cursor_to_focused_key(self, table: DataTable) -> None:
         want = self.place.focused_key
@@ -1267,10 +1311,36 @@ class ReconcileApp(App[int]):
             "all_matched": "All matched",
         }.get(tab, tab)
         table: DataTable = DataTable(cursor_type="row", id="grid")
+        self._fill_cell_rows(table, col)
+        tab_current = tab if self.place.screen != "cell_step" else "pending"
+        pending_n = self._column_pending_n(col)
+        return Vertical(
+            Static(f"COLUMN {col}   {title}   pending {pending_n}", id="col-title"),
+            self._tab_bar(tab_current, pending_n),
+            table,
+        )
+
+    def _fill_cell_grid(self, table: DataTable) -> None:
+        col = self.place.column or ""
+        tab = self.place.view_tab
+        title = {
+            "pending": "Pending (cell step)",
+            "accepted": "Accepted",
+            "equal": "Equal",
+            "all_matched": "All matched",
+        }.get(tab, tab)
+        pending_n = self._column_pending_n(col)
+        self._set_col_title(f"COLUMN {col}   {title}   pending {pending_n}")
+        tab_current = tab if self.place.screen != "cell_step" else "pending"
+        self._refresh_tab_bar(tab_current, pending_n)
+        self._fill_cell_rows(table, col)
+
+    def _fill_cell_rows(self, table: DataTable, col: str) -> None:
+        tab = self.place.view_tab
         ctx_names = self._context_names(col)
         ctx_headers = [context_header(n) for n in ctx_names]
         headers = [*self.engine.keys, "A", "B", *ctx_headers, "speculative"]
-        self._add_columns(table, headers)
+        self._sync_columns(table, headers)
         self._table_keys = []
         if self.place.screen == "cell_step":
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
@@ -1282,82 +1352,89 @@ class ReconcileApp(App[int]):
             if not recs:
                 table.add_row(*([""] * (len(headers) - 1)), "(no pending cells for this pair)")
                 self._table_keys = [None]
-            else:
-                focus_i = 0
-                if self.place.focused_key:
-                    for i, rec in enumerate(recs):
-                        if self.engine.key_of(rec) == self.place.focused_key:
-                            focus_i = i
-                            break
+                return
+            focus_i = 0
+            if self.place.focused_key:
                 for i, rec in enumerate(recs):
-                    key = self.engine.key_of(rec)
-                    mark = ""
-                    if draft:
-                        mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
-                    returned = bool(rec.get("_returned"))
-                    tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
-                    key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
-                    ctx_cells = [
-                        f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
-                        for n in ctx_names
-                    ]
-                    if i == focus_i:
-                        fd = self.engine.first_diff(rec["val_a"], rec["val_b"])
-                        va_t = Text(mark)
-                        va_t.append_text(_diff_text("", rec["val_a"], rec["val_b"], fd))
-                        vb_t = _diff_text("", rec["val_b"], rec["val_a"], fd)
-                    else:
-                        va_t = Text(
-                            mark + rec["val_a"],
-                            style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
-                        )
-                        vb_t = rec["val_b"]
-                    table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
-                    self._table_keys.append(rec)
-                self._move_cursor_to_focused_key(table)
-        else:
-            recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
-            self.place.page = page
-            self._page_count = pages
-            if not recs:
-                table.add_row(*([""] * (len(headers) - 1)), "(empty)")
-                self._table_keys = [None]
+                    if self.engine.key_of(rec) == self.place.focused_key:
+                        focus_i = i
+                        break
+            for i, rec in enumerate(recs):
+                key = self.engine.key_of(rec)
+                mark = ""
+                if draft:
+                    mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
+                returned = bool(rec.get("_returned"))
+                tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
+                key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
+                ctx_cells = [
+                    f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+                    for n in ctx_names
+                ]
+                if i == focus_i:
+                    fd = self.engine.first_diff(rec["val_a"], rec["val_b"])
+                    va_t = Text(mark)
+                    va_t.append_text(_diff_text("", rec["val_a"], rec["val_b"], fd))
+                    vb_t = _diff_text("", rec["val_b"], rec["val_a"], fd)
+                else:
+                    va_t = Text(
+                        mark + rec["val_a"],
+                        style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
+                    )
+                    vb_t = rec["val_b"]
+                table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
+                self._table_keys.append(rec)
+            self._move_cursor_to_focused_key(table)
+            return
+        recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
+        self.place.page = page
+        self._page_count = pages
+        if not recs:
+            table.add_row(*([""] * (len(headers) - 1)), "(empty)")
+            self._table_keys = [None]
+            return
+        focus_i = 0
+        if self.place.focused_key:
+            for i, rec in enumerate(recs):
+                if self.engine.key_of(rec) == self.place.focused_key:
+                    focus_i = i
+                    break
+        for i, rec in enumerate(recs):
+            tags = ""
+            if rec.get("val_a") != rec.get("val_b"):
+                tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
+            key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
+            ctx_cells = [
+                f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+                for n in ctx_names
+            ]
+            if i == focus_i and rec.get("val_a") != rec.get("val_b"):
+                fd = self.engine.first_diff(str(rec["val_a"]), str(rec["val_b"]))
+                va_t = _diff_text("", str(rec["val_a"]), str(rec["val_b"]), fd)
+                vb_t = _diff_text("", str(rec["val_b"]), str(rec["val_a"]), fd)
             else:
-                focus_i = 0
-                if self.place.focused_key:
-                    for i, rec in enumerate(recs):
-                        if self.engine.key_of(rec) == self.place.focused_key:
-                            focus_i = i
-                            break
-                for i, rec in enumerate(recs):
-                    tags = ""
-                    if rec.get("val_a") != rec.get("val_b"):
-                        tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
-                    key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
-                    ctx_cells = [
-                        f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
-                        for n in ctx_names
-                    ]
-                    if i == focus_i and rec.get("val_a") != rec.get("val_b"):
-                        fd = self.engine.first_diff(str(rec["val_a"]), str(rec["val_b"]))
-                        va_t = _diff_text("", str(rec["val_a"]), str(rec["val_b"]), fd)
-                        vb_t = _diff_text("", str(rec["val_b"]), str(rec["val_a"]), fd)
-                    else:
-                        style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
-                        va_t = Text(str(rec["val_a"]), style=style)
-                        vb_t = str(rec["val_b"])
-                    table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
-                    self._table_keys.append(rec)
-                self._move_cursor_to_focused_key(table)
-        tab_current = tab if self.place.screen != "cell_step" else "pending"
-        pending_n = self._column_pending_n(col)
+                style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
+                va_t = Text(str(rec["val_a"]), style=style)
+                vb_t = str(rec["val_b"])
+            table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
+            self._table_keys.append(rec)
+        self._move_cursor_to_focused_key(table)
+
+    def _unmatched(self, side: str) -> Vertical:
+        table: DataTable = DataTable(cursor_type="row", id="grid")
+        pending_n = (
+            self.engine.pending_a_only_n() if side == "A" else self.engine.pending_b_only_n()
+        )
+        self._fill_unmatched(table, side)
         return Vertical(
-            Static(f"COLUMN {col}   {title}   pending {pending_n}"),
-            self._tab_bar(tab_current, pending_n),
+            Static(
+                f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)",
+                id="col-title",
+            ),
             table,
         )
 
-    def _unmatched(self, side: str) -> Vertical:
+    def _fill_unmatched(self, table: DataTable, side: str) -> None:
         self._follow_focused_key_page(
             lambda key: self.engine.page_index_for_unmatched_key(side, key)
         )
@@ -1366,8 +1443,13 @@ class ReconcileApp(App[int]):
         self._page_count = pages
         frame = self.engine.a_only if side == "A" else self.engine.b_only
         cols = list(frame.columns)
-        table: DataTable = DataTable(cursor_type="row", id="grid")
-        table.add_columns("st", *cols)
+        headers = ["st", *cols]
+        current = [str(col.label) for col in table.columns.values()]
+        if current != headers:
+            table.clear(columns=True)
+            table.add_columns(*headers)
+        else:
+            table.clear()
         self._table_keys = []
         if not recs:
             table.add_row(" ", *([""] * len(cols) or ["(none)"]))
@@ -1392,16 +1474,23 @@ class ReconcileApp(App[int]):
         pending_n = (
             self.engine.pending_a_only_n() if side == "A" else self.engine.pending_b_only_n()
         )
-        return Vertical(
-            Static(
-                f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)"
-            ),
-            table,
+        self._set_col_title(
+            f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)"
         )
 
     def _extras(self) -> Vertical:
         table: DataTable = DataTable(cursor_type="row", id="grid")
-        self._add_columns(table, ["side", "name", "pending", "speculative"])
+        self._fill_extras(table)
+        return Vertical(
+            Static(
+                f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)",
+                id="col-title",
+            ),
+            table,
+        )
+
+    def _fill_extras(self, table: DataTable) -> None:
+        self._sync_columns(table, ["side", "name", "pending", "speculative"])
         rows = self.engine.extras_rows()
         self._table_keys = []
         if not rows:
@@ -1428,9 +1517,8 @@ class ReconcileApp(App[int]):
                     idx = i
                     break
             table.move_cursor(row=idx)
-        return Vertical(
-            Static(f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)"),
-            table,
+        self._set_col_title(
+            f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)"
         )
 
     def _focused_roster(self) -> RosterRow | None:
