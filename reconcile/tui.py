@@ -757,6 +757,7 @@ class ReconcileApp(App[int]):
         self._table_keys: list[Any] = []
         self._mounted_screen: str | None = None
         self._page_count = 1
+        self._draft_n = 0
         self.show_accepted_columns = False
         self._busy_note: str | None = None
 
@@ -809,7 +810,7 @@ class ReconcileApp(App[int]):
             banner.add_class("error")
             return
         if self.engine.column_draft:
-            n = self.engine.column_draft_n()
+            n = self._draft_n
             banner.update(
                 f"{n} column(s) selected for accept. "
                 "y ACCEPT selected · m same pair · Space select/deselect · a this column · Esc cancel"
@@ -838,6 +839,13 @@ class ReconcileApp(App[int]):
                 self._move_cursor_to_focused_key(grid)
 
     def render_all(self) -> None:
+        e = self.engine
+        if e.pair_draft_col is not None:
+            self._draft_n = e.pair_draft_height()
+        elif e.column_draft:
+            self._draft_n = e.column_draft_n()
+        else:
+            self._draft_n = 0
         layout = self._work_layout_key()
         if layout != self._mounted_screen:
             self._remount_work()
@@ -870,18 +878,18 @@ class ReconcileApp(App[int]):
         # Live set only. Never show column-draft N on the cell step (pair XOR).
         # Esc on pair list does not cancel a column draft — don't claim it does.
         if p.screen == "cell_step" and e.pair_draft_col is not None:
-            n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
+            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
         elif e.column_draft and p.screen == "roster":
             bits.append(
-                f"draft {e.column_draft_n()}  y ACCEPT selected  m same pair  Space select/deselect"
+                f"draft {self._draft_n}  y ACCEPT selected  m same pair  Space select/deselect"
             )
         elif e.column_draft:
             bits.append(
-                f"draft {e.column_draft_n()}  y ACCEPT on roster  m same pair  Esc back (draft stays)"
+                f"draft {self._draft_n}  y ACCEPT on roster  m same pair  Esc back (draft stays)"
             )
         elif e.pair_draft_col is not None:
-            n = max(0, e.pair_draft_height() - len(self.pair_draft_unchecked))
+            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
             bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
         if p.screen == "pair_list":
             bits.append("pair list")
@@ -1207,10 +1215,13 @@ class ReconcileApp(App[int]):
             return table
         focus = 0
         want_a, want_b = self.place.pair_val_a, self.place.pair_val_b
+        returned_hits = self.engine.pairs_returned_mask(
+            col, [(rec["val_a"], rec["val_b"]) for rec in recs]
+        )
         for i, rec in enumerate(recs):
             va, vb = rec["val_a"], rec["val_b"]
             tags = ", ".join(self.engine.cell_insights(va, vb))
-            returned = self.engine.pair_has_returned(col, va, vb)
+            returned = bool(returned_hits[i]) if i < len(returned_hits) else False
             style = "reverse" if returned else "bold"
             label_a = Text(_display_text(va), style=style)
             label_b = Text(_display_text(vb), style=style)
@@ -1283,7 +1294,7 @@ class ReconcileApp(App[int]):
                     mark = ""
                     if draft:
                         mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
-                    returned = self.engine.cell_is_returned(key, col)
+                    returned = bool(rec.get("_returned"))
                     tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                     key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
                     ctx_cells = [
@@ -2256,6 +2267,7 @@ class ReconcileApp(App[int]):
             if result is None:
                 return
             e.context_columns[col] = result
+            e._pair_ctx_by_col.pop(col, None)
             self.render_all()
             self.set_focus_work()
 

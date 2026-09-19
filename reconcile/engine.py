@@ -321,6 +321,9 @@ class Engine:
     def pair_has_returned(self, column: str, val_a: str, val_b: str) -> bool:
         return snaps_mod.pair_has_returned(self, column, val_a, val_b)
 
+    def pairs_returned_mask(self, column: str, pairs: list[tuple[str, str]]) -> list[bool]:
+        return pages_mod.pairs_returned_mask(self, column, pairs)
+
     def side_has_returned(self, side: str) -> bool:
         return snaps_mod.side_has_returned(self, side)
 

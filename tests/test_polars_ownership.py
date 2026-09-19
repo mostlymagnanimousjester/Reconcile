@@ -50,6 +50,8 @@ ALLOWLIST_FUNCS = frozenset(
         # page helper: callers must slice first; helper itself may to_dicts
         "_page_dicts",
         "_page",
+        # page-sized pair list → bool mask (not a tall cell dump)
+        "pairs_returned_mask",
         # HardFail duplicate-key .row(0) lives next to these; to_list of
         # schema-sized header lists is not a frame dump.
         "_dup_headers_already_checked",

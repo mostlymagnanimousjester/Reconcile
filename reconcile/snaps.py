@@ -325,16 +325,7 @@ def key_is_returned(eng: Engine, side: str, key: tuple[str, ...]) -> bool:
 
 
 def pair_has_returned(eng: Engine, column: str, val_a: str, val_b: str) -> bool:
-    if eng.returned_cells_df.is_empty():
-        return False
-    pending = eng.pending_cells.filter(
-        (pl.col("column") == column)
-        & (pl.col("val_a") == val_a)
-        & (pl.col("val_b") == val_b)
-    )
-    if pending.is_empty():
-        return False
-    ret = eng.returned_cells_df.filter(pl.col("column") == column)
-    if ret.is_empty():
-        return False
-    return pending.join(ret, on=eng.keys, how="inner").height > 0
+    from reconcile.pages import pairs_returned_mask
+
+    hits = pairs_returned_mask(eng, column, [(val_a, val_b)])
+    return bool(hits and hits[0])
