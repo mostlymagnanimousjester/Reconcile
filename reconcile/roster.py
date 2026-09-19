@@ -31,6 +31,7 @@ def _sync_pair_draft_cache(eng: Engine) -> None:
 def refresh_derived(eng: Engine) -> None:
     """Recompute eager derived caches after snaps or a full rebuild."""
     _sync_pair_draft_cache(eng)
+    eng._pair_ctx_by_col = {}
     eng._roster_cache = _build_roster_cache(eng)
 
 
@@ -69,59 +70,122 @@ def visible_column_roster(eng: Engine, name_filter: str = "") -> list[RosterRow]
     return column_roster(eng, name_filter, include_settled=False)
 
 
+def _empty_pair_groups() -> pl.DataFrame:
+    return pl.DataFrame(
+        {"column": [], "val_a": [], "val_b": [], "n": []},
+        schema={
+            "column": pl.Utf8,
+            "val_a": pl.Utf8,
+            "val_b": pl.Utf8,
+            "n": pl.UInt32,
+        },
+    )
+
+
 def _roster_agg_maps(
     eng: Engine,
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
+    pending_lf = eng.pending_cells.lazy()
+    stats_lf = pending_lf.group_by("column").agg(
+        pl.len().alias("pending"),
+        (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).any().alias("trim"),
+        (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).any().alias("case"),
+        (
+            pl.col("val_a").str.strip_chars().str.to_lowercase()
+            == pl.col("val_b").str.strip_chars().str.to_lowercase()
+        ).any().alias("both"),
+        (
+            pl.col("val_a").cast(pl.Float64, strict=False).is_not_null()
+            & pl.col("val_b").cast(pl.Float64, strict=False).is_not_null()
+            & (pl.col("val_a").str.strip_chars() != "")
+            & (pl.col("val_b").str.strip_chars() != "")
+            & (
+                pl.col("val_a").cast(pl.Float64, strict=False)
+                == pl.col("val_b").cast(pl.Float64, strict=False)
+            )
+        ).any().alias("numeric"),
+        (
+            pl.col("val_a").str.contains(r"[\u00a0\t\r\n]")
+            | pl.col("val_b").str.contains(r"[\u00a0\t\r\n]")
+            | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
+            | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
+        ).any().alias("ws"),
+        same_date_expr().any().alias("same_date"),
+        pl.col("val_a").n_unique().alias("n_a"),
+        pl.col("val_b").n_unique().alias("n_b"),
+    )
+    pairs_lf = (
+        pending_lf.group_by(["column", "val_a", "val_b"])
+        .len()
+        .rename({"len": "n"})
+        .sort(["column", "n", "val_a", "val_b"], descending=[False, True, False, False])
+    )
+    accepted_lf = eng.accepted_cells.lazy().group_by("column").len()
+    mismatch_lf = eng.mismatches.lazy().group_by("column").len()
+    stats_df, pairs_df, accepted_df, mismatch_df = pl.collect_all(
+        [stats_lf, pairs_lf, accepted_lf, mismatch_lf]
+    )
+    if not stats_df.is_empty() and not eng.pending_cells.is_empty():
+        small = stats_df.filter((pl.col("n_a") <= 30) & (pl.col("n_b") <= 30))
+        if small.is_empty():
+            stats_df = stats_df.with_columns(pl.lit(None, dtype=pl.UInt32).alias("n_ab"))
+        else:
+            names = small.get_column("column").to_list()
+            nab = (
+                eng.pending_cells.filter(pl.col("column").is_in(names))
+                .group_by("column")
+                .agg(
+                    pl.col("val_a").unique().sort().alias("ua"),
+                    pl.col("val_b").unique().sort().alias("ub"),
+                )
+                .with_columns(
+                    pl.col("ua")
+                    .list.concat(pl.col("ub"))
+                    .list.unique()
+                    .list.len()
+                    .alias("n_ab"),
+                )
+                .select("column", "n_ab")
+            )
+            stats_df = stats_df.join(nab, on="column", how="left")
+    if pairs_df.is_empty():
+        eng._pair_groups_df = _empty_pair_groups()
+    else:
+        eng._pair_groups_df = pairs_df.select(
+            pl.col("column").cast(pl.Utf8),
+            pl.col("val_a").cast(pl.Utf8),
+            pl.col("val_b").cast(pl.Utf8),
+            pl.col("n").cast(pl.UInt32),
+        )
     pending_by_col: dict[str, int] = {}
     accepted_by_col: dict[str, int] = {}
     top_pair: dict[str, int] = {}
     col_stats: dict[str, dict[str, Any]] = {}
-    if not eng.pending_cells.is_empty():
-        for rec in eng.pending_cells.group_by("column").len().to_dicts():
-            pending_by_col[rec["column"]] = rec["len"]
-        grouped = (
-            eng.pending_cells.group_by(["column", "val_a", "val_b"])
-            .len()
-            .sort(["column", "len"], descending=[False, True])
-        )
-        for rec in grouped.group_by("column").first().to_dicts():
-            top_pair[rec["column"]] = rec["len"]
-        stats = eng.pending_cells.group_by("column").agg(
-            (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).any().alias("trim"),
-            (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).any().alias("case"),
-            (
-                pl.col("val_a").str.strip_chars().str.to_lowercase()
-                == pl.col("val_b").str.strip_chars().str.to_lowercase()
-            ).any().alias("both"),
-            (
-                pl.col("val_a").cast(pl.Float64, strict=False).is_not_null()
-                & pl.col("val_b").cast(pl.Float64, strict=False).is_not_null()
-                & (pl.col("val_a").str.strip_chars() != "")
-                & (pl.col("val_b").str.strip_chars() != "")
-                & (
-                    pl.col("val_a").cast(pl.Float64, strict=False)
-                    == pl.col("val_b").cast(pl.Float64, strict=False)
-                )
-            ).any().alias("numeric"),
-            (
-                pl.col("val_a").str.contains(r"[\u00a0\t\r\n]")
-                | pl.col("val_b").str.contains(r"[\u00a0\t\r\n]")
-                | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
-                | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
-            ).any().alias("ws"),
-            same_date_expr().any().alias("same_date"),
-            pl.col("val_a").n_unique().alias("n_a"),
-            pl.col("val_b").n_unique().alias("n_b"),
-            pl.col("val_a").unique().sort().alias("ua"),
-            pl.col("val_b").unique().sort().alias("ub"),
-        ).with_columns(
-            pl.col("ua").list.concat(pl.col("ub")).list.unique().list.len().alias("n_ab"),
-        ).drop("ua", "ub")
-        for rec in stats.to_dicts():
-            col_stats[rec["column"]] = rec
-    if not eng.accepted_cells.is_empty():
-        for rec in eng.accepted_cells.group_by("column").len().to_dicts():
+    top: dict[str, tuple[str, str, int]] = {}
+    if not stats_df.is_empty():
+        for rec in stats_df.to_dicts():
+            col = rec["column"]
+            pending_by_col[col] = int(rec["pending"])
+            col_stats[col] = rec
+    if not eng._pair_groups_df.is_empty():
+        for rec in (
+            eng._pair_groups_df.group_by("column", maintain_order=True).first().to_dicts()
+        ):
+            n = int(rec["n"])
+            top_pair[rec["column"]] = n
+            top[rec["column"]] = (str(rec["val_a"]), str(rec["val_b"]), n)
+    if not accepted_df.is_empty():
+        for rec in accepted_df.to_dicts():
             accepted_by_col[rec["column"]] = rec["len"]
+    mismatch_n: dict[str, int] = {}
+    if not mismatch_df.is_empty():
+        for rec in mismatch_df.to_dicts():
+            mismatch_n[rec["column"]] = rec["len"]
+    eng._pending_by_col = pending_by_col
+    eng._accepted_by_col = accepted_by_col
+    eng._mismatch_n = mismatch_n
+    eng._col_stats = col_stats
+    eng._top_pair = top
     return pending_by_col, accepted_by_col, top_pair, col_stats
 
 
@@ -130,14 +194,16 @@ def _unmatched_side_tags(eng: Engine, side: str) -> str:
     other = eng.pending_b_only if side == "A" else eng.pending_a_only
     if pending.is_empty() or other.is_empty():
         return ""
+    left = pending.select(eng.keys)
+    right = other.select(eng.keys)
     trim_cols = [pl.col(k).str.strip_chars().alias(k) for k in eng.keys]
-    if not pending.select(trim_cols).join(other.select(trim_cols), on=eng.keys, how="inner").is_empty():
+    if not left.select(trim_cols).join(right.select(trim_cols), on=eng.keys, how="inner").is_empty():
         return "would match if trim"
     case_cols = [pl.col(k).str.to_lowercase().alias(k) for k in eng.keys]
-    if not pending.select(case_cols).join(other.select(case_cols), on=eng.keys, how="inner").is_empty():
+    if not left.select(case_cols).join(right.select(case_cols), on=eng.keys, how="inner").is_empty():
         return "would match if case-fold"
     fold_cols = [pl.col(k).str.strip_chars().str.to_lowercase().alias(k) for k in eng.keys]
-    if not pending.select(fold_cols).join(other.select(fold_cols), on=eng.keys, how="inner").is_empty():
+    if not left.select(fold_cols).join(right.select(fold_cols), on=eng.keys, how="inner").is_empty():
         return "would match if trim/case"
     return ""
 
@@ -157,10 +223,13 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
     sentinels = _sentinel_map(eng)
     rows: list[RosterRow] = []
     matched_n = eng.matched_a.height
-    mismatch_n: dict[str, int] = {}
-    if not eng.mismatches.is_empty():
-        for rec in eng.mismatches.group_by("column").len().to_dicts():
-            mismatch_n[rec["column"]] = rec["len"]
+    mismatch_n = eng._mismatch_n
+    if eng.returned_cells_df.is_empty():
+        eng._returned_columns = set()
+    else:
+        eng._returned_columns = set(
+            eng.returned_cells_df.get_column("column").unique().to_list()
+        )
     for col in eng.comparable:
         pend = pending_by_col.get(col, 0)
         acc = accepted_by_col.get(col, 0)
@@ -171,8 +240,12 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
             cat = "—"
             tags = ""
         else:
-            n_a, n_b, n_ab = int(st["n_a"]), int(st["n_b"]), int(st["n_ab"])
-            cat = "yes" if n_a <= 30 and n_b <= 30 and n_ab <= 50 else "no"
+            n_a, n_b = int(st["n_a"]), int(st["n_b"])
+            if n_a > 30 or n_b > 30:
+                cat = "no"
+            else:
+                n_ab = int(st["n_ab"])
+                cat = "yes" if n_ab <= 50 else "no"
             tag_bits: list[str] = []
             sent_a, sent_b = sentinels.get(col, (None, None))
             sent = format_sentinel_insight(sent_a, sent_b)
@@ -204,7 +277,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 equal=equal,
                 categorical=cat,
                 speculative=tags,
-                returned=eng.column_has_returned(col),
+                returned=col in eng._returned_columns,
             )
         )
     if eng.a_only.height > 0:
@@ -242,11 +315,15 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
     all_extras = [("A", n) for n in eng.extras_a] + [("B", n) for n in eng.extras_b]
     other_a = list(eng.b.headers)
     other_b = list(eng.a.headers)
+    extra_tags: dict[tuple[str, str], list[str]] = {}
+    for side, name in all_extras:
+        others = other_a if side == "A" else other_b
+        extra_tags[(side, name)] = extra_insights(name, others)
+    eng._extra_tags = extra_tags
     for side, name in all_extras:
         pend = 1 if (side, name) in eng.pending_extras else 0
         acc = 1 if (side, name) in eng.accepted_extras else 0
-        others = other_a if side == "A" else other_b
-        tags = ", ".join(extra_insights(name, others)[:2])
+        tags = extra_tags[(side, name)]
         rows.append(
             RosterRow(
                 kind="extra",
@@ -258,7 +335,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 accepted=acc,
                 equal="—",
                 categorical="—",
-                speculative=tags,
+                speculative=", ".join(tags[:2]),
                 returned=(side, name) in eng.returned_extras,
             )
         )
@@ -278,7 +355,7 @@ def _first_pending_key(eng: Engine, side: str) -> tuple[str, ...] | None:
     pending = eng.pending_a_only if side == "A" else eng.pending_b_only
     if pending.is_empty():
         return None
-    rec = pending.sort(eng.keys).head(1).row(0, named=True)
+    rec = pending.head(1).row(0, named=True)
     return tuple(str(rec[k]) for k in eng.keys)
 
 
@@ -313,15 +390,14 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
     # Home must show the work we jumped to: never re-apply a filter that
     # would hide the focused remaining-work row.
     if current.column and current.column in eng.comparable:
-        groups = eng.pair_groups(current.column)
-        if not groups.is_empty():
-            top = groups.row(0, named=True)
+        top = eng._top_pair.get(current.column)
+        if top:
             return replace(
                 current,
                 screen="pair_list",
                 column=current.column,
-                pair_val_a=top["val_a"],
-                pair_val_b=top["val_b"],
+                pair_val_a=top[0],
+                pair_val_b=top[1],
                 page=0,
                 view_tab="pending",
                 roster_filter="",
@@ -331,11 +407,10 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
         if row.pending <= 0:
             continue
         if row.kind == "column":
-            groups = eng.pair_groups(row.name)
+            hit = eng._top_pair.get(row.name)
             va = vb = None
-            if not groups.is_empty():
-                top = groups.row(0, named=True)
-                va, vb = top["val_a"], top["val_b"]
+            if hit:
+                va, vb = hit[0], hit[1]
             return Place(
                 screen="pair_list",
                 column=row.name,

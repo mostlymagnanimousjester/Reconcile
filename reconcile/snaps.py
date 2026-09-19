@@ -293,9 +293,7 @@ def undo_extra(eng: Engine, side: str, name: str) -> int:
 
 
 def column_has_returned(eng: Engine, column: str) -> bool:
-    if eng.returned_cells_df.is_empty():
-        return False
-    return eng.returned_cells_df.filter(pl.col("column") == column).height > 0
+    return column in eng._returned_columns
 
 
 def cell_is_returned(eng: Engine, key: tuple[str, ...], column: str) -> bool:

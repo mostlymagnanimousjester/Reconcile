@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 PAGE_SIZE = 100
 
 
+def invalidate_equal_caches(eng: Engine) -> None:
+    """Equals / all-matched frames depend on matched rows, not snaps."""
+    eng._equal_by_col = {}
+    eng._all_matched_by_col = {}
+
+
 def _page_dicts(frame: pl.DataFrame) -> list[dict[str, Any]]:
     """Materialize at most PAGE_SIZE rows. Callers must slice first."""
     if frame.height > PAGE_SIZE:
@@ -261,7 +267,7 @@ def unmatched_page(
     eng: Engine, side: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
     accepted = eng.accepted_a_only if side == "A" else eng.accepted_b_only
-    frame = (eng.a_only if side == "A" else eng.b_only).sort(eng.keys)
+    frame = eng.a_only if side == "A" else eng.b_only
     total = frame.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
@@ -300,15 +306,19 @@ def extras_rows(eng: Engine) -> list[dict[str, Any]]:
     # Order: exact name (working rule). Spec §18: exact name. Mix sides by name then side.
     all_extras.sort(key=lambda x: (x[1], x[0]))
     others = {"A": list(eng.b.headers), "B": list(eng.a.headers)}
+    tags_map = eng._extra_tags
     for side, name in all_extras:
         pending = (side, name) in eng.pending_extras
+        tags = tags_map.get((side, name))
+        if tags is None:
+            tags = extra_insights(name, others[side])
         rows.append(
             {
                 "side": side,
                 "name": name,
                 "pending": 1 if pending else 0,
                 "accepted": 0 if pending else 1,
-                "speculative": extra_insights(name, others[side]),
+                "speculative": tags[:3],
                 "returned": (side, name) in eng.returned_extras,
             }
         )
@@ -357,7 +367,6 @@ def next_pending_key_in_grid(
     pending = eng.pending_a_only if side == "A" else eng.pending_b_only
     if pending.is_empty():
         return None
-    pending = pending.sort(eng.keys)
     parts: list[pl.Expr] = []
     acc: pl.Expr = pl.lit(True)
     for i, k in enumerate(eng.keys):

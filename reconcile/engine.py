@@ -137,6 +137,25 @@ class Engine:
         self._roster_cache: list[RosterRow] = []
         self._pair_draft_cells: pl.DataFrame | None = None
         self._pair_draft_n: int = 0
+        self._pair_groups_df: pl.DataFrame = pl.DataFrame(
+            {"column": [], "val_a": [], "val_b": [], "n": []},
+            schema={
+                "column": pl.Utf8,
+                "val_a": pl.Utf8,
+                "val_b": pl.Utf8,
+                "n": pl.UInt32,
+            },
+        )
+        self._top_pair: dict[str, tuple[str, str, int]] = {}
+        self._pending_by_col: dict[str, int] = {}
+        self._accepted_by_col: dict[str, int] = {}
+        self._mismatch_n: dict[str, int] = {}
+        self._col_stats: dict[str, dict[str, Any]] = {}
+        self._returned_columns: set[str] = set()
+        self._extra_tags: dict[tuple[str, str], list[str]] = {}
+        self._pair_ctx_by_col: dict[str, pl.DataFrame] = {}
+        self._equal_by_col: dict[str, pl.DataFrame] = {}
+        self._all_matched_by_col: dict[str, pl.DataFrame] = {}
         self._rebuild()
 
     # --- construction ---
@@ -167,7 +186,7 @@ class Engine:
         compare_mod.rebuild_frames(self)
         compare_mod.sort_unmatched(self)
         self._apply_snapshots()
-        roster_mod.refresh_derived(self)
+        pages_mod.invalidate_equal_caches(self)
 
     def _apply_snapshots(self) -> None:
         snaps_mod.apply_snapshots(self)
@@ -351,8 +370,7 @@ class Engine:
         if name in self.column_draft:
             self.column_draft.discard(name)
         else:
-            pend = self.pending_cells.filter(pl.col("column") == name).height
-            if pend > 0:
+            if self._pending_by_col.get(name, 0) > 0:
                 self.column_draft.add(name)
 
     def start_regex_draft(self, pattern: str) -> int:
@@ -368,8 +386,7 @@ class Engine:
         for col in self.comparable:
             if rx.search(col) is None:
                 continue
-            n = self.pending_cells.filter(pl.col("column") == col).height
-            if n > 0:
+            if self._pending_by_col.get(col, 0) > 0:
                 hits.append(col)
         if not hits:
             raise InTuiError("ERROR: regex matched 0 pending columns")
@@ -623,7 +640,7 @@ class Engine:
     def page_index_for_unmatched_key(
         self, side: str, key: tuple[str, ...] | None
     ) -> tuple[int, int]:
-        frame = (self.a_only if side == "A" else self.b_only).sort(self.keys)
+        frame = self.a_only if side == "A" else self.b_only
         return pages_mod.page_index_for_key(frame, self.keys, key)
 
     # --- refresh ---
@@ -698,10 +715,8 @@ class Engine:
         if self.column_draft:
             keep = set()
             for name in self.column_draft:
-                if name in self.comparable:
-                    n = self.pending_cells.filter(pl.col("column") == name).height
-                    if n > 0:
-                        keep.add(name)
+                if name in self.comparable and self._pending_by_col.get(name, 0) > 0:
+                    keep.add(name)
             self.column_draft = keep
         if self.pair_draft_col is not None:
             if self.pair_draft_height() == 0:
