@@ -14,6 +14,26 @@ if TYPE_CHECKING:
     from reconcile.engine import Engine
 
 
+def _sync_pair_draft_cache(eng: Engine) -> None:
+    if eng.pair_draft_col is None:
+        eng._pair_draft_cells = None
+        eng._pair_draft_n = 0
+        return
+    frame = eng.pending_cells.filter(
+        (pl.col("column") == eng.pair_draft_col)
+        & (pl.col("val_a") == eng.pair_draft_va)
+        & (pl.col("val_b") == eng.pair_draft_vb)
+    ).sort(eng.keys)
+    eng._pair_draft_cells = frame
+    eng._pair_draft_n = frame.height
+
+
+def refresh_derived(eng: Engine) -> None:
+    """Recompute eager derived caches after snaps or a full rebuild."""
+    _sync_pair_draft_cache(eng)
+    eng._roster_cache = _build_roster_cache(eng)
+
+
 def roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
     rows = list(eng._roster_cache)
     if name_filter:

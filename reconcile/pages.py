@@ -210,15 +210,26 @@ def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]]
     return _page_dicts(chunk), page, pages
 
 
-def pair_cells_page(
-    eng: Engine, column: str, val_a: str, val_b: str, page: int
-) -> tuple[list[dict[str, Any]], int, int]:
-    frame = eng.pending_cells.filter(
+def _pair_cells_frame(eng: Engine, column: str, val_a: str, val_b: str) -> pl.DataFrame:
+    cached = eng._pair_draft_cells
+    if (
+        cached is not None
+        and eng.pair_draft_col == column
+        and eng.pair_draft_va == val_a
+        and eng.pair_draft_vb == val_b
+    ):
+        return cached
+    return eng.pending_cells.filter(
         (pl.col("column") == column)
         & (pl.col("val_a") == val_a)
         & (pl.col("val_b") == val_b)
     ).sort(eng.keys)
-    return _page_with_context(eng, frame, page, column)
+
+
+def pair_cells_page(
+    eng: Engine, column: str, val_a: str, val_b: str, page: int
+) -> tuple[list[dict[str, Any]], int, int]:
+    return _page_with_context(eng, _pair_cells_frame(eng, column, val_a, val_b), page, column)
 
 
 def cells_for_tab(
@@ -333,14 +344,10 @@ def context_values(
 def first_pending_key_in_pair(
     eng: Engine, column: str, val_a: str, val_b: str
 ) -> tuple[str, ...] | None:
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == column)
-        & (pl.col("val_a") == val_a)
-        & (pl.col("val_b") == val_b)
-    )
+    frame = _pair_cells_frame(eng, column, val_a, val_b)
     if frame.is_empty():
         return None
-    rec = frame.sort(eng.keys).head(1).row(0, named=True)
+    rec = frame.head(1).row(0, named=True)
     return tuple(str(rec[k]) for k in eng.keys)
 
 
@@ -369,14 +376,11 @@ def next_pending_cell_in_pair(
 ) -> tuple[str, ...] | None:
     if eng.pair_draft_col is None:
         return None
-    frame = eng.pending_cells.filter(
-        (pl.col("column") == eng.pair_draft_col)
-        & (pl.col("val_a") == eng.pair_draft_va)
-        & (pl.col("val_b") == eng.pair_draft_vb)
+    frame = _pair_cells_frame(
+        eng, eng.pair_draft_col, eng.pair_draft_va or "", eng.pair_draft_vb or ""
     )
     if frame.is_empty():
         return None
-    frame = frame.sort(eng.keys)
     parts: list[pl.Expr] = []
     acc: pl.Expr = pl.lit(True)
     for i, k in enumerate(eng.keys):

@@ -135,6 +135,8 @@ class Engine:
         self.last_refresh_delta: RefreshDelta | None = None
         self.last_grain: tuple[Any, ...] | None = None
         self._roster_cache: list[RosterRow] = []
+        self._pair_draft_cells: pl.DataFrame | None = None
+        self._pair_draft_n: int = 0
         self._rebuild()
 
     # --- construction ---
@@ -165,6 +167,7 @@ class Engine:
         compare_mod.rebuild_frames(self)
         compare_mod.sort_unmatched(self)
         self._apply_snapshots()
+        roster_mod.refresh_derived(self)
 
     def _apply_snapshots(self) -> None:
         snaps_mod.apply_snapshots(self)
@@ -319,21 +322,13 @@ class Engine:
     def pair_draft_height(self) -> int:
         if self.pair_draft_col is None:
             return 0
-        return self.pending_cells.filter(
-            (pl.col("column") == self.pair_draft_col)
-            & (pl.col("val_a") == self.pair_draft_va)
-            & (pl.col("val_b") == self.pair_draft_vb)
-        ).height
+        return self._pair_draft_n
 
     def pair_draft_key_frame(self) -> pl.DataFrame:
         schema = {k: pl.Utf8 for k in self.keys}
-        if self.pair_draft_col is None:
+        if self.pair_draft_col is None or self._pair_draft_cells is None:
             return _empty_df(schema)
-        return self.pending_cells.filter(
-            (pl.col("column") == self.pair_draft_col)
-            & (pl.col("val_a") == self.pair_draft_va)
-            & (pl.col("val_b") == self.pair_draft_vb)
-        ).select(self.keys)
+        return self._pair_draft_cells.select(self.keys)
 
     def cancel_drafts(self) -> None:
         self.column_draft = set()
@@ -343,6 +338,8 @@ class Engine:
         self.pair_draft_col = None
         self.pair_draft_va = None
         self.pair_draft_vb = None
+        self._pair_draft_cells = None
+        self._pair_draft_n = 0
 
     def toggle_column_draft(self, name: str) -> None:
         if not self.column_draft and self.pair_draft_col is None:
@@ -418,16 +415,19 @@ class Engine:
             raise InTuiError("ERROR: confirm or cancel the column draft first")
         if self.pair_draft_col is not None:
             raise InTuiError("ERROR: confirm or cancel the current pair draft first")
-        n = self.pending_cells.filter(
+        frame = self.pending_cells.filter(
             (pl.col("column") == column)
             & (pl.col("val_a") == val_a)
             & (pl.col("val_b") == val_b)
-        ).height
+        ).sort(self.keys)
+        n = frame.height
         if n == 0:
             return 0
         self.pair_draft_col = column
         self.pair_draft_va = val_a
         self.pair_draft_vb = val_b
+        self._pair_draft_cells = frame
+        self._pair_draft_n = n
         return n
 
     # --- accept ---
@@ -615,11 +615,9 @@ class Engine:
     def page_index_for_pair_key(self, key: tuple[str, ...] | None) -> tuple[int, int]:
         if self.pair_draft_col is None or not key:
             return 0, 0
-        frame = self.pending_cells.filter(
-            (pl.col("column") == self.pair_draft_col)
-            & (pl.col("val_a") == self.pair_draft_va)
-            & (pl.col("val_b") == self.pair_draft_vb)
-        ).sort(self.keys)
+        frame = self._pair_draft_cells
+        if frame is None:
+            return 0, 0
         return pages_mod.page_index_for_key(frame, self.keys, key)
 
     def page_index_for_unmatched_key(
@@ -706,16 +704,8 @@ class Engine:
                         keep.add(name)
             self.column_draft = keep
         if self.pair_draft_col is not None:
-            col, va, vb = self.pair_draft_col, self.pair_draft_va, self.pair_draft_vb
-            n = self.pending_cells.filter(
-                (pl.col("column") == col)
-                & (pl.col("val_a") == va)
-                & (pl.col("val_b") == vb)
-            ).height
-            if n == 0:
-                self.pair_draft_col = None
-                self.pair_draft_va = None
-                self.pair_draft_vb = None
+            if self.pair_draft_height() == 0:
+                self.clear_pair_draft()
         returned_n = returned_cells.height + returned_keys.height + len(self.returned_extras)
         delta = RefreshDelta(
             pending_before=before_pending,
