@@ -339,6 +339,12 @@ def test_tui_s_footer_and_advance(tmp_path: Path):
             footer = str(app.query_one("#footer").render())
             assert "sheet 2/2 data2" in footer
             assert "S next sheet" not in footer
+            app.query_one("#grid").focus()
+            app.action_accept()
+            await pilot.pause()
+            assert app.engine.sheet_remaining_work() == 0
+            footer = str(app.query_one("#footer").render())
+            assert "S next sheet" in footer
             app.action_next_sheet()
             await pilot.pause()
             assert app.tui_error and "no next sheet" in app.tui_error
