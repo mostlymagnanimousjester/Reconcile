@@ -316,7 +316,7 @@ class HelpModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield ScrollableContainer(Static(HELP, id="help"), id="help-scroll")
+            yield ScrollableContainer(Static(HELP, id="help", markup=False), id="help-scroll")
             yield Static("Esc closes · Up/Down/PgUp/PgDn scroll", classes="dim")
 
     def on_mount(self) -> None:
