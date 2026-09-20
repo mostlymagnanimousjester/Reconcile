@@ -55,25 +55,30 @@ _FMT_B_TO_NUMERIC = {
 
 CONTEXT_TOP_N = 5
 CONTEXT_VALUE_SEP = " | "
-CONTEXT_TRUNCATION_MARK = " …"
+CONTEXT_TRUNCATION_MARK = " | +{n} more"
 CONTEXT_TUPLE_SEP = "|"
 CONTEXT_GROUP_MEMBER_SEP = "+"
 
 
 def context_header(name: str) -> str:
     """Dedicated pair/cell table header for one context column."""
-    return f"ctx:{name}"
+    return name
 
 
 def context_group_header(gid: int, members: list[str]) -> str:
     """Dedicated pair/cell table header for one context group."""
-    return f"ctx:g{gid} {CONTEXT_GROUP_MEMBER_SEP.join(members)}"
+    return f"g{gid} {CONTEXT_GROUP_MEMBER_SEP.join(members)}"
 
 
 def format_context_value(value: str, count: int) -> str:
-    """One unique context value with its pair-row count."""
+    """One unique context value with its pending-row count for this pair."""
     label = value if value else "(empty)"
-    return f"{label} {count}"
+    return f"{label}×{count}"
+
+
+def format_context_truncation(n_more: int) -> str:
+    """How many unique context values were omitted after the top-N list."""
+    return CONTEXT_TRUNCATION_MARK.format(n=n_more)
 
 
 def format_context_tuple(parts: list[str]) -> str:
@@ -248,7 +253,7 @@ def format_top_uniques(values: list[str], limit: int = CONTEXT_TOP_N) -> str:
     """Most-occurring unique values with pair-row counts; mark truncation.
 
     ``values`` is one entry per counted row (the pair grain). Counts are of
-    those rows, not of the whole table. Shape: ``foo 12 | bar 4 | baz 1 …``.
+    those rows, not of the whole table. Shape: ``foo×12 | bar×4 | baz×1 | +N more``.
     """
     counts: dict[str, int] = {}
     for value in values:
@@ -257,7 +262,7 @@ def format_top_uniques(values: list[str], limit: int = CONTEXT_TOP_N) -> str:
     shown = [format_context_value(value, n) for value, n in ranked[:limit]]
     text = CONTEXT_VALUE_SEP.join(shown)
     if len(ranked) > limit:
-        text += CONTEXT_TRUNCATION_MARK
+        text += format_context_truncation(len(ranked) - limit)
     return text
 
 
@@ -269,17 +274,17 @@ def cell_insights(val_a: str, val_b: str) -> list[str]:
     case_eq = val_a.lower() == val_b.lower()
     both_eq = val_a.strip().lower() == val_b.strip().lower()
     if trim_eq:
-        tags.append("equal if trim")
+        tags.append("trim")
     if case_eq:
-        tags.append("equal if case-fold")
+        tags.append("case")
     if both_eq and not trim_eq and not case_eq:
-        tags.append("equal if trim+case")
+        tags.append("trim+case")
     if _numeric_equal(val_a, val_b):
-        tags.append("equal as numbers")
+        tags.append("num")
     da = parse_unambiguous_date(val_a)
     db = parse_unambiguous_date(val_b)
     if da is not None and db is not None and da == db:
-        tags.append("same date")
+        tags.append("date")
     return tags
 
 

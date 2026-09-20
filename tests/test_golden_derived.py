@@ -291,9 +291,9 @@ def test_golden_pair_page_context_flag_truncation(tmp_path: Path):
             "val_a": "Y",
             "val_b": "Yes",
             "n": 10,
-            "Flag__ctx": "red 3 | blue 2 | green 1 | orange 1 | pink 1 …",
+            "Flag__ctx": "red×3 | blue×2 | green×1 | orange×1 | pink×1 | +2 more",
         },
-        {"val_a": "N", "val_b": "No", "n": 2, "Flag__ctx": "z 2"},
+        {"val_a": "N", "val_b": "No", "n": 2, "Flag__ctx": "z×2"},
     ]
 
 
@@ -312,8 +312,8 @@ def test_golden_pair_page_context_flag_region(tmp_path: Path):
             "val_a": "Y",
             "val_b": "Yes",
             "n": 4,
-            "Flag__ctx": "red 2 | blue 1 | green 1",
-            "Region__ctx": "east 2 | west 2",
+            "Flag__ctx": "red×2 | blue×1 | green×1",
+            "Region__ctx": "east×2 | west×2",
         }
     ]
 
@@ -333,7 +333,7 @@ def test_golden_pair_page_context_group_tuple(tmp_path: Path):
             "val_a": "Y",
             "val_b": "Yes",
             "n": 4,
-            "g0__gctx": "red|east 2 | blue|west 1 | green|west 1",
+            "g0__gctx": "red|east×2 | blue|west×1 | green|west×1",
         }
     ]
 

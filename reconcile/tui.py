@@ -14,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
-from reconcile.insights import format_context_tuple
+from reconcile.insights import CONTEXT_VALUE_SEP, format_context_tuple
 from reconcile.roster import roster_visible_insight_headers
 from reconcile.suggest import format_preview, format_why
 
@@ -36,16 +36,12 @@ n / p  page (ERROR if unpaged / at end). Digits 0-9 do nothing except inside c
 
 ROSTER (column roster, table A import order)
 a      accept this column in place (selection moves below; does not drill)
-A      ERROR (A is bulk accept on pair list or unmatched keys; on the roster use a)
 v      show/hide accepted and equal columns (default hidden)
 m      pick one same exact pair (union of live draft ON columns, or every pending column). No column picker
 :      regex column draft (comparable names; not a view filter). / is a deprecated alias
 =      exact sentinel (a/b side, then type the constant, Enter Run)
 Space  toggle focused column in the live column draft (ON / off). ERROR if no draft
 y      confirm the live column draft; land on roster (next-below / first pending). ERROR if no draft to confirm
-[ / ]  ERROR (column tabs are only on column detail)
-. / c  ERROR
-n / p  ERROR (no pages)
 
 PAIR LIST (Pending tab)
 Enter  cell step (pair draft of those exact strings)
@@ -66,21 +62,19 @@ Space  toggle focused cell in the pair draft (ON / off)
 y      confirm still-checked cells, then next lever. ERROR if no draft to confirm
 c      context-column picker (Space standalone; 0-9 groups only on that page)
 n / p  page
-[ / ]  ERROR (pair draft in flight)
 Esc    back to pair list (cancels the pair draft)
 
 UNMATCHED KEYS / MISMATCHED COLUMNS  (open from i)
 a      accept this key / extra (selection moves below)
 A      unmatched: all on this side, then next lever. extras: one extra (same as a; no bulk-all-extras)
 n / p  page (keys)
-[ / ]  ERROR (column tabs are only on column detail)
 Esc    roster (cancels a live column draft)
-Suggest (extras only, below the A-not-B / B-not-A lists): rename recipe then r.
-Not a mapping. a accepts the focused extra, not a suggestion. Suggest is not focusable (#grid stays the navigator).
+Suggest (extras only, below the A-not-B / B-not-A lists): rename in source files, then r.
+Not a mapping. a accepts the focused extra, not a suggestion.
 
 DRAFTS
 At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel; pair: cell step).
-After : / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
+After : / or =, selected columns show ON; y accept · Space toggle · Esc cancel.
 After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
 After : / or =, m uses the live ON columns (Space still toggles ON/off). No column picker.
@@ -100,10 +94,13 @@ NOTES
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
-Roster insight columns: sent A / sent B / sent both (values; hidden if unused) and trim / case / trim+case / num / ws / date (y if every pending cell matches; hidden if all n). Pair/cell keep per-pair tags. No speculative: prefix. Insights never change remaining counts.
+ERROR when a key does not apply on this screen (roster A / n/p / [ / ] / . / c; cell-step [ / ]; unmatched [ / ]).
+Roster y/n: y = all pending cells; n = not all.
+Roster insight columns: const A / const B / const both (values; hidden if unused) and trim / case / trim+case / num / ws / date (y if every pending cell matches; hidden if all n). Pair/cell keep per-pair hints (trim, case, date). Insights never change remaining counts.
+top pair % is the share of this column's pending cells that sit in the largest pair.
 Sentinel means that side is one constant on all comparable (shared-key) rows. The header is the kind; the cell is the value (0, "", A=x B=y). Hint for =.
 Sentinel modal: a A or b B picks the side, then type the exact string, Enter Run.
-Context columns (c) are dedicated labeled columns (ctx:Name). Groups are ctx:gN A+B (tuple of members). Pair list: top-5 unique values or tuples with pair-row counts (foo 12 | bar 4 …).
+Context columns (c) are dedicated labeled columns (Flag). Groups are gN Flag+Region (tuple of members). Pair list: top-5 unique values or tuples with pending-row counts for this pair (foo×12 | bar×4 | +N more). Count = pending rows with that value in this pair.
 
 CONTEXT PICKER (c on column detail only)
 Space  toggle standalone context (on without a group; same as today)
@@ -186,11 +183,29 @@ DataTable {
 }
 #suggest-block {
     height: auto;
+    border-top: heavy #e08a38;
+    padding: 1 0 0 0;
+    margin-top: 1;
 }
 #suggest-title {
     text-style: bold;
     color: #ffe27a;
     padding: 0 1;
+}
+#col-title {
+    text-style: bold;
+    color: #ffe27a;
+    padding: 0 1;
+    height: 1;
+}
+#col-page {
+    color: #d2a87a;
+    padding: 0 1;
+    height: 1;
+    text-align: right;
+}
+#col-bar {
+    height: 1;
 }
 #suggest {
     height: auto;
@@ -231,19 +246,31 @@ DataTable > .datatable--cursor {
     border: heavy #ffb347;
     padding: 1 2;
 }
+#help-modal {
+    width: 90%;
+    max-width: 120;
+    height: auto;
+    max-height: 90%;
+    background: #301c10;
+    border: heavy #ffb347;
+    padding: 1 2;
+}
 #modal Input {
     margin: 1 0;
 }
 #help-scroll {
     height: auto;
-    max-height: 36;
+    max-height: 48;
 }
 #help {
     height: auto;
     padding: 1;
 }
 .dim {
-    color: #d2a87a;
+    color: #8a7058;
+}
+.settled {
+    color: #8a7058;
 }
 """
 
@@ -292,9 +319,105 @@ def select_after_accept(
     return new_ids[-1]
 
 
+PAIR_AB_MAX = 32
+PAIR_AB_MIN = 24
+PAIR_PENDING_W = 8
+CONST_MIN_W = 12
+CONST_MAX_W = 16
+CHECK_W = 8
+ROSTER_NUM_W = 8
+SEL_W = 5
+CTX_CELL_MAX = 36
+PAGED_SCREENS = {
+    "pair_list",
+    "cell_step",
+    "accepted",
+    "equal",
+    "all_matched",
+    "a_only",
+    "b_only",
+}
+ROSTER_EMPTY_PENDING = "No pending columns — v or i"
+ROSTER_EMPTY_NONE = "No columns — i"
+ROSTER_EMPTY_PANE = (
+    "v shows accepted and equal columns. "
+    "i opens unmatched keys and mismatched columns. "
+    "y = all pending cells; n = not all."
+)
+
+
 def _display_text(value: str) -> str:
     """Blank key/value cells stay visible in the pane and navigator."""
     return value if value else "(empty)"
+
+
+def _display_list(value: str) -> str:
+    """Empty list / no-rows marker (not a blank value)."""
+    return value if value else "(none)"
+
+
+def _ellipsis(text: str, max_w: int) -> str:
+    if max_w <= 0:
+        return ""
+    if len(text) <= max_w:
+        return text
+    if max_w == 1:
+        return "…"
+    return text[: max_w - 1] + "…"
+
+
+def _truncate_on_sep(text: str, max_w: int, sep: str = CONTEXT_VALUE_SEP) -> str:
+    """Fit a context summary by dropping trailing separator-separated parts."""
+    if len(text) <= max_w:
+        return text
+    parts = text.split(sep)
+    kept: list[str] = []
+    for part in parts:
+        cand = sep.join(kept + [part]) if kept else part
+        if len(cand) > max_w:
+            break
+        kept.append(part)
+    if not kept:
+        return _ellipsis(text, max_w)
+    return sep.join(kept)
+
+
+def _const_cell(value: str) -> str:
+    if value == '""':
+        return '""'
+    if not value:
+        return ""
+    return _ellipsis(value, CONST_MAX_W)
+
+
+def _banner_text(text: str) -> str:
+    if "\n" in text or len(text) <= 80:
+        return text
+    if " — " in text:
+        left, right = text.split(" — ", 1)
+        return f"{left}\n{right}"
+    return text
+
+
+def _context_summary_lines(summary: str) -> list[str]:
+    """One `foo ×12` per line for the pair pane."""
+    if not summary:
+        return ["(none)"]
+    lines: list[str] = []
+    for part in summary.split(CONTEXT_VALUE_SEP):
+        bit = part.strip()
+        if not bit:
+            continue
+        lines.append(bit.replace("×", " ×") if " ×" not in bit else bit)
+    return lines or ["(none)"]
+
+
+def _align(text: str, width: int, how: str) -> str:
+    if how == "right":
+        return text.rjust(width)
+    if how == "center":
+        return text.center(width)
+    return text.ljust(width)
 
 
 def _key_tuples(frame: pl.DataFrame, keys: list[str]) -> set[tuple[str, ...]]:
@@ -332,7 +455,7 @@ class HelpModal(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="modal"):
+        with Vertical(id="help-modal"):
             yield ScrollableContainer(Static(HELP, id="help", markup=False), id="help-scroll")
             yield Static("Esc closes · Up/Down/PgUp/PgDn scroll", classes="dim")
 
@@ -380,17 +503,23 @@ class OverviewModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         e = self.engine
-        lines = ["OVERVIEW (counts)", ""]
+        lines = [
+            "OVERVIEW (counts)",
+            "",
+            f"pending columns {e.pending_columns_n()}",
+            f"unmatched keys {e.unmatched_rows_n()}",
+            f"mismatched columns {e.pending_extras_n()}",
+            "",
+        ]
         lines.extend(e.identity_lines())
         lines += [
             "",
             f"matched keys: {e.matched_key_count()}",
-            f"pending columns {e.pending_columns_n()}",
             f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
             f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
             f"mismatched columns pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
             f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
-            f"remaining work items {e.pending_total()}  (exit 0 when this is 0)",
+            f"total remaining {e.pending_total()}  (exit 0 when this is 0)",
             "",
             "Enter an entry to open that list. Esc closes. a/A do not accept here.",
         ]
@@ -431,7 +560,9 @@ class OverviewModal(ModalScreen[str | None]):
             self.dismiss(key)
 
     def action_refuse(self) -> None:
-        self.query_one("#modal-err", Static).update("ERROR: not remaining work")
+        self.query_one("#modal-err", Static).update(
+            "ERROR: overview is counts only — open a list with Enter, accept on that screen"
+        )
 
     def action_no_pages(self) -> None:
         self.query_one("#modal-err", Static).update("ERROR: no pages on this screen")
@@ -926,17 +1057,18 @@ class ReconcileApp(App[int]):
             return
         if self.engine.column_draft:
             n = self._draft_n
-            banner.update(
-                f"{n} column(s) selected for accept. "
-                "y ACCEPT selected · m same pair · Space select/deselect · a this column · Esc cancel"
-            )
+            banner.update(_banner_text(f"{n} columns ON — y accept · Space toggle · Esc cancel"))
             banner.set_class(False, "hidden")
             banner.remove_class("error")
             banner.add_class("draft")
             return
         if self.engine.pair_draft_col is not None:
             n = max(0, self._draft_n - len(self.pair_draft_unchecked))
-            banner.update(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
+            banner.update(
+                _banner_text(
+                    f"draft {n} cells — y accept · Space toggle · Esc cancel · c context"
+                )
+            )
             banner.set_class(False, "hidden")
             banner.remove_class("error")
             banner.add_class("draft")
@@ -985,40 +1117,35 @@ class ReconcileApp(App[int]):
     def _render_footer(self) -> None:
         e = self.engine
         p = self.place
-        bits: list[str] = []
+        counts: list[str] = []
         if self._busy_note:
-            bits.append(self._busy_note)
-        bits.extend(
+            counts.append(self._busy_note)
+        counts.extend(
             [
                 f"pending columns {e.pending_columns_n()}",
-                f"unmatched rows {e.unmatched_rows_n()}",
+                f"unmatched keys {e.unmatched_rows_n()}",
                 f"mismatched columns {e.pending_extras_n()}",
             ]
         )
-        footer = self.query_one("#footer", Static)
-        footer.set_class(bool(self._busy_note), "busy")
-        if p.page is not None and p.screen in {
-            "pair_list",
-            "cell_step",
-            "accepted",
-            "equal",
-            "all_matched",
-            "a_only",
-            "b_only",
-        }:
-            bits.append(f"page {p.page + 1}/{self._page_count}")
-        if e.last_refresh_delta:
-            bits.append(e.last_refresh_delta.message)
+        hints: list[str] = []
+        if p.page is not None and p.screen in PAGED_SCREENS:
+            hints.append(f"page {p.page + 1}/{self._page_count}")
         if p.screen == "pair_list":
-            bits.append(". repeat")
-            bits.append("u undo")
+            hints.append(". repeat")
+            hints.append("u undo")
         if e.sheet_set:
             name = e.sheet_set[e.sheet_index]
-            bits.append(f"sheet {e.sheet_index + 1}/{len(e.sheet_set)} {name}")
+            hints.append(f"sheet {e.sheet_index + 1}/{len(e.sheet_set)} {name}")
             if e.sheet_remaining_work() == 0:
-                bits.append("S next sheet")
-        bits.append("? help")
-        footer.update(" · ".join(bits))
+                hints.append("S next sheet")
+        hints.append("? help")
+        line1 = f"{' · '.join(counts)}  |  {' · '.join(hints)}"
+        lines = [line1]
+        if e.last_refresh_delta:
+            lines.append(e.last_refresh_delta.message)
+        footer = self.query_one("#footer", Static)
+        footer.set_class(bool(self._busy_note), "busy")
+        footer.update("\n".join(lines))
 
     def _run_busy(self, work) -> None:
         """Paint 'working…' for a real wait, then run work after the next refresh.
@@ -1073,15 +1200,20 @@ class ReconcileApp(App[int]):
                             key = self.engine.key_of(rec)
                     ctx = self.engine.context_values(key, p.column)
                     for name, a, b in ctx:
-                        t.append(f"\n{name}  A|{a}  B|{b}")
+                        t.append(f"\n{name}  A: {_display_text(a)}  B: {_display_text(b)}")
                 elif p.screen == "pair_list":
                     rec = self._focused_rec()
+                    first_view = True
                     for view in self.engine.context_views(p.column):
                         summary = ""
                         if rec:
                             summary = str(rec.get(view.pair_key) or "")
-                        t.append(f"\n\n{view.header[4:] if view.header.startswith('ctx:') else view.header}\n")
-                        t.append(summary if summary else "(none)")
+                        if first_view:
+                            t.append(f"\n\n{view.header}\n")
+                            first_view = False
+                        else:
+                            t.append(f"\n\n{view.header}\n")
+                        t.append("\n".join(_context_summary_lines(summary)))
             pane.update(t)
         elif p.screen in ("a_only", "b_only"):
             rec = self._focused_rec()
@@ -1108,6 +1240,22 @@ class ReconcileApp(App[int]):
                 pane.update(t)
             else:
                 pane.update("")
+        elif p.screen == "roster":
+            rows = self._roster_column_rows()
+            if not rows:
+                pane.update(ROSTER_EMPTY_PANE)
+            else:
+                row = self._focused_roster()
+                t = Text()
+                if row:
+                    if row.sent_a:
+                        t.append(f"const A: {row.sent_a}\n")
+                    if row.sent_b:
+                        t.append(f"const B: {row.sent_b}\n")
+                    if row.sent_both:
+                        t.append(f"const both: {row.sent_both}\n")
+                t.append("y = all pending cells; n = not all")
+                pane.update(t)
         else:
             pane.update("")
 
@@ -1177,6 +1325,28 @@ class ReconcileApp(App[int]):
     def _set_col_title(self, text: str) -> None:
         if self.query("#col-title"):
             self.query_one("#col-title", Static).update(text)
+        if self.query("#col-page"):
+            p = self.place
+            page_txt = ""
+            if p.page is not None and p.screen in PAGED_SCREENS:
+                page_txt = f"page {p.page + 1}/{self._page_count}"
+            self.query_one("#col-page", Static).update(page_txt)
+
+    def _col_bar(self, title: str) -> Horizontal:
+        p = self.place
+        page_txt = ""
+        if p.page is not None and p.screen in PAGED_SCREENS and self._page_count:
+            page_txt = f"page {p.page + 1}/{self._page_count}"
+        return Horizontal(
+            Static(title, id="col-title"),
+            Static(page_txt, id="col-page"),
+            id="col-bar",
+        )
+
+    def _column_title(self, col: str, pending_n: int, extra: str = "") -> str:
+        if extra:
+            return f"{col} — {extra} — {pending_n} pending"
+        return f"{col} — {pending_n} pending"
 
     def _refresh_tab_bar(self, current: str, pending_n: int | None = None) -> None:
         if not self.query("#tabs"):
@@ -1206,8 +1376,14 @@ class ReconcileApp(App[int]):
         headers.append("name")
         if self.show_accepted_columns:
             headers.append("status")
-        headers.extend(["pending", "top-pair %", "equal", "cat"])
-        headers.extend(h for h, _ in roster_visible_insight_headers(rows))
+        headers.extend(["pending", "top pair %", "equal rows", "categorical"])
+        insight = roster_visible_insight_headers(rows)
+        const_headers = [h for h, _ in insight if h.startswith("const ")]
+        check_headers = [h for h, _ in insight if not h.startswith("const ")]
+        headers.extend(const_headers)
+        if const_headers and check_headers:
+            headers.append("│")
+        headers.extend(check_headers)
         return headers
 
     def _context_names(self, column: str) -> list[str]:
@@ -1216,14 +1392,16 @@ class ReconcileApp(App[int]):
     def _cell_ctx_text(self, rec: dict[str, Any], view) -> str:
         if view.group_id is None:
             n = view.members[0]
-            return f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+            a = _display_text(str(rec.get(f"{n}__ctx_a", "") or ""))
+            b = _display_text(str(rec.get(f"{n}__ctx_b", "") or ""))
+            return f"A: {a}  B: {b}"
         a = format_context_tuple(
             [str(rec.get(f"{m}__ctx_a", "") or "") for m in view.members]
         )
         b = format_context_tuple(
             [str(rec.get(f"{m}__ctx_b", "") or "") for m in view.members]
         )
-        return f"A|{a}  B|{b}"
+        return f"A: {a}  B: {b}"
 
     def _column_status(self, row: RosterRow) -> str:
         if row.pending > 0:
@@ -1235,15 +1413,27 @@ class ReconcileApp(App[int]):
     def _add_columns(self, table: DataTable, headers: list[str]) -> None:
         for h in headers:
             if h == "pending":
-                table.add_column(h, width=8)
+                table.add_column(h, width=PAIR_PENDING_W)
             elif h == "status":
                 table.add_column(h, width=10)
+            elif h == "sel" or h == "draft":
+                table.add_column(h, width=SEL_W)
+            elif h == "│":
+                table.add_column(h, width=1)
             elif h in {"trim", "case", "trim+case", "num", "ws", "date"}:
-                table.add_column(h, width=max(4, len(h)))
-            elif h.startswith("sent "):
-                table.add_column(h, width=max(10, len(h) + 2))
-            elif h.startswith("ctx:"):
-                table.add_column(h, width=max(18, min(36, len(h) + 16)))
+                table.add_column(h, width=max(CHECK_W, len(h)))
+            elif h.startswith("const "):
+                table.add_column(h, width=CONST_MAX_W)
+            elif h == "top pair %":
+                table.add_column(h, width=10)
+            elif h == "equal rows":
+                table.add_column(h, width=10)
+            elif h == "categorical":
+                table.add_column(h, width=12)
+            elif h in {"A", "B"}:
+                table.add_column(h, width=PAIR_AB_MAX)
+            elif h == "hints":
+                table.add_column(h, width=16)
             else:
                 table.add_column(h)
 
@@ -1253,6 +1443,11 @@ class ReconcileApp(App[int]):
         self._fill_roster(table)
         return table
 
+    def _dim_text(self, value: str, settled: bool) -> Text | str:
+        if settled:
+            return Text(value, style="dim")
+        return value
+
     def _fill_roster(self, table: DataTable) -> None:
         rows = self._roster_column_rows()
         headers = self._roster_headers(rows)
@@ -1260,19 +1455,15 @@ class ReconcileApp(App[int]):
         self._table_keys = []
         draft = bool(self.engine.column_draft)
         insight_attrs = roster_visible_insight_headers(rows)
+        attr_of = {h: attr for h, attr in insight_attrs}
         if not rows:
             empty = [""] * len(headers)
             name_i = headers.index("name")
-            if self.show_accepted_columns:
-                empty[name_i] = (
-                    "(no comparable columns — i overview for unmatched rows & mismatched columns)"
-                )
-            else:
-                empty[name_i] = (
-                    "(no pending columns — v show accepted · i overview for unmatched rows & mismatched columns)"
-                )
+            empty[name_i] = (
+                ROSTER_EMPTY_NONE if self.show_accepted_columns else ROSTER_EMPTY_PENDING
+            )
             if "pending" in headers:
-                empty[headers.index("pending")] = "0"
+                empty[headers.index("pending")] = _align("0", ROSTER_NUM_W, "right")
             table.add_row(*empty)
             self._table_keys = [None]
             return
@@ -1298,8 +1489,8 @@ class ReconcileApp(App[int]):
             elif draft:
                 styles.append("dim")
             elif not settled:
-                styles.append("bold #ffe27a")
-            label = Text(r.name, style=" ".join(styles) if styles else "")
+                styles.append("bold")
+            label = Text(r.name + "  ", style=" ".join(styles) if styles else "")
             cells: list[Any] = []
             if draft:
                 cells.append(check)
@@ -1307,16 +1498,24 @@ class ReconcileApp(App[int]):
             if self.show_accepted_columns:
                 status = self._column_status(r)
                 if status == "pending":
-                    cells.append(Text(status, style="bold #ffe27a"))
-                elif status == "accepted":
-                    cells.append(Text(status, style="dim #d2a87a"))
+                    cells.append(Text(status, style="bold"))
                 else:
-                    cells.append(Text(status, style="dim #e8b898"))
-            cells.extend(
-                [str(int(r.pending)), r.top_pair_pct, r.equal, r.categorical]
-            )
-            for _header, attr in insight_attrs:
-                cells.append(getattr(r, attr, "") or "")
+                    cells.append(Text(status, style="dim"))
+            cells.append(self._dim_text(_align(str(int(r.pending)), ROSTER_NUM_W, "right"), settled))
+            cells.append(self._dim_text(_align(r.top_pair_pct, 10, "right"), settled))
+            cells.append(self._dim_text(_align(r.equal, 10, "right"), settled))
+            cells.append(self._dim_text(r.categorical, settled))
+            for h in headers:
+                if h == "│":
+                    cells.append(self._dim_text("│", settled))
+                elif h.startswith("const "):
+                    raw = getattr(r, attr_of.get(h, ""), "") or ""
+                    cells.append(self._dim_text(_const_cell(str(raw)), settled))
+                elif h in {"trim", "case", "trim+case", "num", "ws", "date"}:
+                    raw = getattr(r, attr_of.get(h, ""), "") or ""
+                    cells.append(
+                        self._dim_text(_align(str(raw), max(CHECK_W, len(h)), "center"), settled)
+                    )
             key = (r.kind, r.name, r.side)
             table.add_row(*cells, key=str(key))
             self._table_keys.append(r)
@@ -1358,7 +1557,7 @@ class ReconcileApp(App[int]):
         table: DataTable = DataTable(cursor_type="row", id="grid")
         self._fill_pair_list(table, col)
         return Vertical(
-            Static(f"COLUMN {col}   pending {pending_n}", id="col-title"),
+            self._col_bar(self._column_title(col, pending_n)),
             self._tab_bar("pending", pending_n),
             table,
         )
@@ -1366,21 +1565,27 @@ class ReconcileApp(App[int]):
     def _fill_pair_view(self, table: DataTable) -> None:
         col = self.place.column or ""
         pending_n = self._column_pending_n(col)
-        self._set_col_title(f"COLUMN {col}   pending {pending_n}")
+        self._set_col_title(self._column_title(col, pending_n))
         self._refresh_tab_bar("pending", pending_n)
         self._fill_pair_list(table, col)
 
     def _fill_pair_list(self, table: DataTable, col: str) -> None:
         views = self.engine.context_views(col)
         ctx_headers = [v.header for v in views]
-        headers = ["A", "B", "pending", *ctx_headers, "speculative"]
+        headers = ["A", "B", "pending", *ctx_headers, "hints"]
         self._sync_columns(table, headers)
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
         self._page_count = pages
         self._table_keys = []
         if not recs:
-            table.add_row("(no pending pairs)", "", "0", *([""] * len(views)), "")
+            table.add_row(
+                "(none)",
+                "",
+                _align("0", PAIR_PENDING_W, "right"),
+                *([""] * len(views)),
+                "",
+            )
             self._table_keys = [None]
             return
         focus = 0
@@ -1393,10 +1598,18 @@ class ReconcileApp(App[int]):
             tags = ", ".join(self.engine.cell_insights(va, vb))
             returned = bool(returned_hits[i]) if i < len(returned_hits) else False
             style = "reverse" if returned else "bold"
-            label_a = Text(_display_text(va), style=style)
-            label_b = Text(_display_text(vb), style=style)
-            ctx_cells = [str(rec.get(v.pair_key) or "") for v in views]
-            table.add_row(label_a, label_b, str(int(rec["n"])), *ctx_cells, tags)
+            label_a = Text(_ellipsis(_display_text(va), PAIR_AB_MAX), style=style)
+            label_b = Text(_ellipsis(_display_text(vb), PAIR_AB_MAX), style=style)
+            ctx_cells = [
+                _truncate_on_sep(str(rec.get(v.pair_key) or ""), CTX_CELL_MAX) for v in views
+            ]
+            table.add_row(
+                label_a,
+                label_b,
+                _align(str(int(rec["n"])), PAIR_PENDING_W, "right"),
+                *ctx_cells,
+                tags,
+            )
             self._table_keys.append(rec)
             if want_a is not None and va == want_a and vb == want_b:
                 focus = i
@@ -1440,7 +1653,7 @@ class ReconcileApp(App[int]):
         tab_current = tab if self.place.screen != "cell_step" else "pending"
         pending_n = self._column_pending_n(col)
         return Vertical(
-            Static(f"COLUMN {col}   {title}   pending {pending_n}", id="col-title"),
+            self._col_bar(self._column_title(col, pending_n, title)),
             self._tab_bar(tab_current, pending_n),
             table,
         )
@@ -1455,7 +1668,7 @@ class ReconcileApp(App[int]):
             "all_matched": "All matched",
         }.get(tab, tab)
         pending_n = self._column_pending_n(col)
-        self._set_col_title(f"COLUMN {col}   {title}   pending {pending_n}")
+        self._set_col_title(self._column_title(col, pending_n, title))
         tab_current = tab if self.place.screen != "cell_step" else "pending"
         self._refresh_tab_bar(tab_current, pending_n)
         self._fill_cell_rows(table, col)
@@ -1464,18 +1677,25 @@ class ReconcileApp(App[int]):
         tab = self.place.view_tab
         views = self.engine.context_views(col)
         ctx_headers = [v.header for v in views]
-        headers = [*self.engine.keys, "A", "B", *ctx_headers, "speculative"]
+        on_cell_step = self.place.screen == "cell_step"
+        draft = on_cell_step and self.engine.pair_draft_col is not None
+        headers = (["sel"] if draft else []) + [
+            *self.engine.keys,
+            "A",
+            "B",
+            *ctx_headers,
+            "hints",
+        ]
         self._sync_columns(table, headers)
         self._table_keys = []
-        if self.place.screen == "cell_step":
+        if on_cell_step:
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
             self._follow_focused_key_page(self.engine.page_index_for_pair_key)
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
             self.place.page = page
             self._page_count = pages
-            draft = self.engine.pair_draft_col is not None
             if not recs:
-                table.add_row(*([""] * (len(headers) - 1)), "(no pending cells for this pair)")
+                table.add_row(*([""] * (len(headers) - 1)), "(none)")
                 self._table_keys = [None]
                 return
             focus_i = 0
@@ -1486,25 +1706,26 @@ class ReconcileApp(App[int]):
                         break
             for i, rec in enumerate(recs):
                 key = self.engine.key_of(rec)
-                mark = ""
-                if draft:
-                    mark = "[x] " if key not in self.pair_draft_unchecked else "[ ] "
                 returned = bool(rec.get("_returned"))
                 tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                 key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
                 ctx_cells = [self._cell_ctx_text(rec, v) for v in views]
+                on = draft and key not in self.pair_draft_unchecked
                 if i == focus_i:
                     fd = self.engine.first_diff(rec["val_a"], rec["val_b"])
-                    va_t = Text(mark)
-                    va_t.append_text(_diff_text("", rec["val_a"], rec["val_b"], fd))
+                    va_t = _diff_text("", rec["val_a"], rec["val_b"], fd)
                     vb_t = _diff_text("", rec["val_b"], rec["val_a"], fd)
                 else:
                     va_t = Text(
-                        mark + rec["val_a"],
-                        style="reverse" if returned or (draft and key not in self.pair_draft_unchecked) else "bold",
+                        _display_text(rec["val_a"]),
+                        style="reverse" if returned or on else "bold",
                     )
-                    vb_t = rec["val_b"]
-                table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
+                    vb_t = _display_text(rec["val_b"])
+                row_cells: list[Any] = []
+                if draft:
+                    row_cells.append(Text("[ON]", style="bold") if on else Text("[off]", style="dim"))
+                row_cells.extend([*key_cells, va_t, vb_t, *ctx_cells, tags])
+                table.add_row(*row_cells)
                 self._table_keys.append(rec)
             self._move_cursor_to_focused_key(table)
             return
@@ -1512,7 +1733,7 @@ class ReconcileApp(App[int]):
         self.place.page = page
         self._page_count = pages
         if not recs:
-            table.add_row(*([""] * (len(headers) - 1)), "(empty)")
+            table.add_row(*([""] * (len(headers) - 1)), "(none)")
             self._table_keys = [None]
             return
         focus_i = 0
@@ -1533,8 +1754,8 @@ class ReconcileApp(App[int]):
                 vb_t = _diff_text("", str(rec["val_b"]), str(rec["val_a"]), fd)
             else:
                 style = "dim" if rec.get("val_a") == rec.get("val_b") else "bold"
-                va_t = Text(str(rec["val_a"]), style=style)
-                vb_t = str(rec["val_b"])
+                va_t = Text(_display_text(str(rec["val_a"])), style=style)
+                vb_t = _display_text(str(rec["val_b"]))
             table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
             self._table_keys.append(rec)
         self._move_cursor_to_focused_key(table)
@@ -1546,9 +1767,8 @@ class ReconcileApp(App[int]):
         )
         self._fill_unmatched(table, side)
         return Vertical(
-            Static(
-                f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)",
-                id="col-title",
+            self._col_bar(
+                f"{side}-only keys  pending {pending_n}  (raw columns on this side, including extras)"
             ),
             table,
         )
@@ -1571,7 +1791,7 @@ class ReconcileApp(App[int]):
             table.clear()
         self._table_keys = []
         if not recs:
-            table.add_row(" ", *([""] * len(cols) or ["(none)"]))
+            table.add_row(" ", *([""] * (len(cols) - 1)), "(none)" if cols else "(none)")
             self._table_keys = [None]
         else:
             for rec in recs:
@@ -1601,9 +1821,8 @@ class ReconcileApp(App[int]):
         table: DataTable = DataTable(cursor_type="row", id="grid")
         self._fill_extras(table)
         children: list[Any] = [
-            Static(
-                f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)",
-                id="col-title",
+            self._col_bar(
+                f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)"
             ),
             table,
         ]
@@ -1621,8 +1840,7 @@ class ReconcileApp(App[int]):
         self._fill_suggest(table, rows)
         return Vertical(
             Static(
-                "Suggest  rename in the workbook, then r  "
-                "(not a mapping; #grid stays the navigator)",
+                "Suggest — rename in source files, then r",
                 id="suggest-title",
             ),
             table,
@@ -1632,7 +1850,7 @@ class ReconcileApp(App[int]):
     def _fill_suggest(
         self, table: DataTable, rows: list[dict[str, Any]] | None = None
     ) -> None:
-        self._sync_columns(table, ["A", "B", "why", "preview"])
+        self._sync_columns(table, ["A", "B", "normalizers", "keys (shared / still different)"])
         rows = self.engine.suggest_extras() if rows is None else rows
         for rec in rows:
             table.add_row(
@@ -1656,7 +1874,7 @@ class ReconcileApp(App[int]):
         rows = self.engine.extras_rows()
         self._table_keys = []
         if not rows:
-            table.add_row("—", "(no extras)", "0", "")
+            table.add_row("—", "(none)", "0", "")
             self._table_keys = [None]
         else:
             for rec in rows:

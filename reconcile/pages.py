@@ -11,7 +11,6 @@ from reconcile.compare import _empty_df, _empty_mismatch_schema
 from reconcile.insights import (
     CONTEXT_GROUP_MEMBER_SEP,
     CONTEXT_TOP_N,
-    CONTEXT_TRUNCATION_MARK,
     CONTEXT_TUPLE_SEP,
     CONTEXT_VALUE_SEP,
     context_group_header,
@@ -192,9 +191,9 @@ def _ctx_side_expr(members: list[str], side: str, *, as_tuple: bool) -> pl.Expr:
 def _attach_pair_context_summaries(
     eng: Engine, column: str, pair_chunk: pl.DataFrame
 ) -> pl.DataFrame:
-    """Top-N unique context values per pair, with pair-row counts.
+    """Top-N unique context values per pair, with pending-row counts.
 
-    Count is how many pending cells (keys) of this pair carry that value on
+    Count is how many pending rows of this pair carry that value on
     either side. A value on both A and B of the same row counts once.
     Call after the pair-list slice. One summary column per standalone context
     name and per non-empty group (group value = member tuple).
@@ -254,7 +253,7 @@ def _attach_pair_context_summaries(
                     pl.when(pl.col("_val") == "")
                     .then(pl.lit("(empty)"))
                     .otherwise(pl.col("_val")),
-                    pl.lit(" "),
+                    pl.lit("×"),
                     pl.col("len").cast(pl.Utf8),
                 ]
             ).alias("_shown")
@@ -266,7 +265,12 @@ def _attach_pair_context_summaries(
         .join(nuniq, on=["val_a", "val_b", "_ctx"])
         .with_columns(
             pl.when(pl.col("_nuniq") > CONTEXT_TOP_N)
-            .then(pl.col("_vals").list.join(CONTEXT_VALUE_SEP) + pl.lit(CONTEXT_TRUNCATION_MARK))
+            .then(
+                pl.col("_vals").list.join(CONTEXT_VALUE_SEP)
+                + pl.lit(" | +")
+                + (pl.col("_nuniq") - CONTEXT_TOP_N).cast(pl.Utf8)
+                + pl.lit(" more")
+            )
             .otherwise(pl.col("_vals").list.join(CONTEXT_VALUE_SEP))
             .alias("_summary")
         )

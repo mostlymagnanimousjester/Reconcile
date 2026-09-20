@@ -805,7 +805,7 @@ class Engine:
             accepted_after=self.accepted_total(),
             returned=returned_n,
             message=(
-                f"pending {before_pending}→{self.pending_total()}, "
+                f"remaining work {before_pending}→{self.pending_total()}, "
                 f"accepted {before_acc}→{self.accepted_total()}, "
                 f"{returned_n} returned to pending"
             ),

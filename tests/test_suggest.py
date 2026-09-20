@@ -89,7 +89,7 @@ def test_normalize_match_why_and_preview(tmp_path: Path):
     assert rec["why"] == [WHY_STRIP, WHY_CASE, WHY_SEPARATORS, WHY_TOKEN_SORT]
     assert rec["shared"] == 3
     assert rec["pending"] == 1
-    assert format_preview(rec["shared"], rec["pending"]) == "3 shared, 1 pending"
+    assert format_preview(rec["shared"], rec["pending"]) == "3 / 1"
 
 
 def test_no_recipe_when_tokens_differ(tmp_path: Path):
@@ -142,9 +142,9 @@ def test_refresh_rename_makes_comparable_and_drops_suggest(tmp_path: Path):
 
 def test_help_says_suggest_is_rename_then_r():
     assert "Suggest" in HELP
-    assert "rename recipe then r" in HELP
+    assert "rename in source files, then r" in HELP
     assert "not a mapping" in HELP.lower()
-    assert "#grid stays the navigator" in HELP
+    assert "#grid" not in HELP
 
 
 def test_tui_omits_suggest_block_when_no_recipe(tmp_path: Path):
@@ -193,7 +193,10 @@ def test_tui_suggest_below_grid_not_on_overview(tmp_path: Path):
             assert "cust_id" in str(row[0])
             assert "Cust ID" in str(row[1])
             assert "case" in str(row[2])
-            assert "shared" in str(row[3])
+            assert " / " in str(row[3])
+            labels = [str(col.label) for col in suggest.columns.values()]
+            assert "normalizers" in labels
+            assert "keys (shared / still different)" in labels
 
             app.action_overview()
             await pilot.pause()
