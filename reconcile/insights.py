@@ -94,6 +94,21 @@ def first_diff(a: str, b: str) -> int:
     return n
 
 
+def _format_width(fmt: str) -> int:
+    """Character width of a numeric/literal date format (no locale %b)."""
+    widths = {"Y": 4, "y": 2, "m": 2, "d": 2, "H": 2, "M": 2, "S": 2}
+    n = 0
+    i = 0
+    while i < len(fmt):
+        if fmt[i] == "%" and i + 1 < len(fmt) and fmt[i + 1] in widths:
+            n += widths[fmt[i + 1]]
+            i += 2
+        else:
+            n += 1
+            i += 1
+    return n
+
+
 def _with_sas_months(s: str) -> str:
     """Replace English 3-letter month tokens with 01–12 (any case)."""
     out: list[str] = []
@@ -128,9 +143,16 @@ def unambiguous_date_expr(col: str) -> pl.Expr:
     for fmt in _POLARS_DATE_FORMATS:
         if "%b" in fmt:
             num_fmt = _FMT_B_TO_NUMERIC[fmt]
-            parsed.append(named.str.to_datetime(num_fmt, strict=False).dt.date())
+            src = named
         else:
-            parsed.append(raw.str.to_datetime(fmt, strict=False).dt.date())
+            num_fmt = fmt
+            src = raw
+        width = _format_width(num_fmt)
+        parsed.append(
+            pl.when(src.str.len_chars() == width)
+            .then(src.str.to_datetime(num_fmt, strict=False).dt.date())
+            .otherwise(pl.lit(None))
+        )
     lst = pl.concat_list(parsed).list.drop_nulls().list.unique()
     return pl.when(lst.list.len() == 1).then(lst.list.first()).otherwise(pl.lit(None))
 
@@ -147,6 +169,8 @@ def parse_unambiguous_date(s: str):
     for fmt in DATE_FORMATS:
         target = normalized if "%b" in fmt else s
         parse_fmt = _FMT_B_TO_NUMERIC.get(fmt, fmt)
+        if len(target) != _format_width(parse_fmt):
+            continue
         try:
             dt = datetime.strptime(target, parse_fmt)
         except ValueError:
