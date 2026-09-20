@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+import unicodedata
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
@@ -285,6 +287,24 @@ def cell_insights(val_a: str, val_b: str) -> list[str]:
     db = parse_unambiguous_date(val_b)
     if da is not None and db is not None and da == db:
         tags.append("date")
+    if _money_equal(val_a, val_b):
+        tags.append("money")
+    if _pct_equal(val_a, val_b):
+        tags.append("pct")
+    if _idpad_equal(val_a, val_b):
+        tags.append("idpad")
+    if _bool_equal(val_a, val_b):
+        tags.append("bool")
+    if _acctneg_equal(val_a, val_b):
+        tags.append("acctneg")
+    if _xlsdate_equal(val_a, val_b):
+        tags.append("xlsdate")
+    if _inws_equal(val_a, val_b):
+        tags.append("inws")
+    if _dash_equal(val_a, val_b):
+        tags.append("dash")
+    if _fold_equal(val_a, val_b):
+        tags.append("fold")
     return tags
 
 
@@ -297,6 +317,229 @@ def _numeric_equal(a: str, b: str) -> bool:
     if a.strip() == "" or b.strip() == "":
         return False
     return fa == fb
+
+
+_BOOL_TOKENS = frozenset({"y", "yes", "true", "t", "1", "n", "no", "false", "f", "0"})
+_ASCII_DIGITS = re.compile(r"^[0-9]+$")
+_DASH_RE = re.compile(r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe63\uff0d]")
+_DASH_CLASS = r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe63\uff0d]"
+_EXCEL_EPOCH = date(1899, 12, 30)
+# 5-digit serials like 44927; exclude 8-digit YYYYMMDD from the serial path.
+_SERIAL_MAX = 99999
+
+
+def _money_stripped(s: str) -> str:
+    return s.replace("$", "").replace("€", "").replace("£", "").replace(",", "").replace(" ", "")
+
+
+def _money_equal(a: str, b: str) -> bool:
+    sa, sb = _money_stripped(a), _money_stripped(b)
+    if sa == a and sb == b:
+        return False
+    return _numeric_equal(sa, sb)
+
+
+def _pct_parts(s: str) -> tuple[float | None, bool]:
+    t = s.strip()
+    has = t.endswith("%")
+    core = t[:-1].strip() if has else t
+    if core == "":
+        return None, has
+    try:
+        val = float(core)
+    except ValueError:
+        return None, has
+    return (val / 100.0 if has else val), has
+
+
+def _pct_equal(a: str, b: str) -> bool:
+    va, ha = _pct_parts(a)
+    vb, hb = _pct_parts(b)
+    if va is None or vb is None or not (ha or hb):
+        return False
+    return va == vb
+
+
+def _idpad_equal(a: str, b: str) -> bool:
+    if "." in a or "." in b:
+        return False
+    if not _ASCII_DIGITS.fullmatch(a) or not _ASCII_DIGITS.fullmatch(b):
+        return False
+    return int(a) == int(b)
+
+
+def _bool_equal(a: str, b: str) -> bool:
+    return a.lower() in _BOOL_TOKENS and b.lower() in _BOOL_TOKENS
+
+
+def _acctneg_norm(s: str) -> tuple[str, bool]:
+    t = s.strip()
+    if len(t) >= 2 and t.startswith("(") and t.endswith(")"):
+        return "-" + t[1:-1].strip(), True
+    return t, False
+
+
+def _acctneg_equal(a: str, b: str) -> bool:
+    na, pa = _acctneg_norm(a)
+    nb, pb = _acctneg_norm(b)
+    if not pa and not pb:
+        return False
+    return _numeric_equal(na, nb)
+
+
+def _excel_serial_date(s: str):
+    if parse_unambiguous_date(s) is not None:
+        return None
+    if not _ASCII_DIGITS.fullmatch(s):
+        return None
+    n = int(s)
+    if n < 0 or n > _SERIAL_MAX:
+        return None
+    return _EXCEL_EPOCH + timedelta(days=n)
+
+
+def _xlsdate_equal(a: str, b: str) -> bool:
+    da = parse_unambiguous_date(a)
+    db = parse_unambiguous_date(b)
+    sa = _excel_serial_date(a)
+    sb = _excel_serial_date(b)
+    res_a = da or sa
+    res_b = db or sb
+    if res_a is None or res_b is None or res_a != res_b:
+        return False
+    if da is not None and db is not None:
+        return False
+    return sa is not None or sb is not None
+
+
+def _inws_equal(a: str, b: str) -> bool:
+    return re.sub(r"\s+", " ", a) == re.sub(r"\s+", " ", b)
+
+
+def _dash_equal(a: str, b: str) -> bool:
+    return _DASH_RE.sub("-", a) == _DASH_RE.sub("-", b)
+
+
+def _fold_text(s: str) -> str:
+    nfkc = unicodedata.normalize("NFKC", s)
+    return "".join(
+        c for c in unicodedata.normalize("NFD", nfkc) if not unicodedata.category(c).startswith("M")
+    )
+
+
+def _fold_equal(a: str, b: str) -> bool:
+    return _fold_text(a) == _fold_text(b)
+
+
+def _float_expr(expr: pl.Expr) -> pl.Expr:
+    stripped = expr.str.strip_chars()
+    return (
+        pl.when(stripped != "")
+        .then(stripped.cast(pl.Float64, strict=False))
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+    )
+
+
+def money_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    na = (
+        pl.col(col_a)
+        .str.replace_all(r"[$€£]", "")
+        .str.replace_all(",", "")
+        .str.replace_all(" ", "")
+    )
+    nb = (
+        pl.col(col_b)
+        .str.replace_all(r"[$€£]", "")
+        .str.replace_all(",", "")
+        .str.replace_all(" ", "")
+    )
+    fa, fb = _float_expr(na), _float_expr(nb)
+    stripped = (na != pl.col(col_a)) | (nb != pl.col(col_b))
+    return stripped & fa.is_not_null() & fb.is_not_null() & (fa == fb)
+
+
+def pct_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    def _parts(col: str) -> tuple[pl.Expr, pl.Expr]:
+        raw = pl.col(col).str.strip_chars()
+        has = raw.str.ends_with("%")
+        core = pl.when(has).then(raw.str.strip_suffix("%").str.strip_chars()).otherwise(raw)
+        num = _float_expr(core)
+        return pl.when(has).then(num / 100.0).otherwise(num), has
+
+    va, ha = _parts(col_a)
+    vb, hb = _parts(col_b)
+    return (ha | hb) & va.is_not_null() & vb.is_not_null() & (va == vb)
+
+
+def idpad_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    a, b = pl.col(col_a), pl.col(col_b)
+    digits = a.str.contains(r"^[0-9]+$") & b.str.contains(r"^[0-9]+$")
+    return digits & (a.cast(pl.Int64, strict=False) == b.cast(pl.Int64, strict=False))
+
+
+def bool_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    tokens = list(_BOOL_TOKENS)
+    return pl.col(col_a).str.to_lowercase().is_in(tokens) & pl.col(col_b).str.to_lowercase().is_in(
+        tokens
+    )
+
+
+def acctneg_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    def _norm(col: str) -> tuple[pl.Expr, pl.Expr]:
+        raw = pl.col(col).str.strip_chars()
+        is_paren = raw.str.contains(r"^\(.*\)$")
+        inner = raw.str.strip_prefix("(").str.strip_suffix(")").str.strip_chars()
+        return pl.when(is_paren).then(pl.lit("-") + inner).otherwise(raw), is_paren
+
+    na, pa = _norm(col_a)
+    nb, pb = _norm(col_b)
+    fa, fb = _float_expr(na), _float_expr(nb)
+    return (pa | pb) & fa.is_not_null() & fb.is_not_null() & (fa == fb)
+
+
+def excel_serial_date_expr(col: str) -> pl.Expr:
+    raw = pl.col(col)
+    is_serial = raw.str.contains(r"^[0-9]+$")
+    n = raw.cast(pl.Int64, strict=False)
+    in_range = n.is_not_null() & (n >= 0) & (n <= _SERIAL_MAX)
+    not_date = unambiguous_date_expr(col).is_null()
+    return (
+        pl.when(is_serial & in_range & not_date)
+        .then(pl.lit(_EXCEL_EPOCH) + pl.duration(days=n))
+        .otherwise(pl.lit(None))
+    )
+
+
+def xlsdate_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    da = unambiguous_date_expr(col_a)
+    db = unambiguous_date_expr(col_b)
+    sa = excel_serial_date_expr(col_a)
+    sb = excel_serial_date_expr(col_b)
+    ra = pl.coalesce(da, sa)
+    rb = pl.coalesce(db, sb)
+    return ra.is_not_null() & rb.is_not_null() & (ra == rb) & (sa.is_not_null() | sb.is_not_null())
+
+
+def inws_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    return pl.col(col_a).str.replace_all(r"\s+", " ") == pl.col(col_b).str.replace_all(r"\s+", " ")
+
+
+def dash_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    return pl.col(col_a).str.replace_all(_DASH_CLASS, "-") == pl.col(col_b).str.replace_all(
+        _DASH_CLASS, "-"
+    )
+
+
+def fold_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
+    def _norm(col: str) -> pl.Expr:
+        return (
+            pl.col(col)
+            .str.normalize("NFKC")
+            .str.normalize("NFD")
+            .str.replace_all(r"\p{M}", "")
+        )
+
+    return _norm(col_a) == _norm(col_b)
 
 
 def is_categorical_pending(pending_a: list[str], pending_b: list[str]) -> bool:

@@ -277,6 +277,10 @@ def test_help_power_user_grain():
     assert "no draft to confirm" in HELP
     assert "next sheet" in HELP
     assert "-sheets" in HELP
+    assert "y = all pending cells" in HELP
+    assert "money" in HELP
+    assert "xlsdate" in HELP
+    assert "fold" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -2775,6 +2779,58 @@ def test_roster_speculative_column_has_no_prefix(tmp_path: Path):
             assert "shared value pattern" not in shown
 
     asyncio.run(_run())
+
+
+def test_roster_check_headers_hide_all_n_and_show_when_matching(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, 'id,money,plain\n1,"$1,234",foo\n2,"€2 000",bar\n')
+    write_csv(pb, "id,money,plain\n1,1234,baz\n2,2000,qux\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _match() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels = [str(col.label) for col in app.query_one("#grid").columns.values()]
+            assert "money" in labels
+            assert "plain" not in labels
+            money_i = labels.index("money")
+            by_name = {r.name: i for i, r in enumerate(app._table_keys) if r is not None}
+            shown = str(app.query_one("#grid").get_row_at(by_name["money"])[money_i]).strip()
+            assert shown == "y"
+            plain_shown = str(app.query_one("#grid").get_row_at(by_name["plain"])[money_i]).strip()
+            assert plain_shown == "n"
+
+    asyncio.run(_match())
+
+    pa2, pb2 = tmp_path / "a2.csv", tmp_path / "b2.csv"
+    write_csv(pa2, "id,val\n1,foo\n2,bar\n")
+    write_csv(pb2, "id,val\n1,baz\n2,qux\n")
+    hidden = ReconcileApp(
+        Engine.from_paths(str(pa2), str(pb2), ["id"], a_delim=",", b_delim=",")
+    )
+
+    async def _hidden() -> None:
+        async with hidden.run_test() as pilot:
+            await pilot.pause()
+            labels = [str(col.label) for col in hidden.query_one("#grid").columns.values()]
+            for name in (
+                "trim",
+                "num",
+                "date",
+                "money",
+                "pct",
+                "idpad",
+                "bool",
+                "acctneg",
+                "xlsdate",
+                "inws",
+                "dash",
+                "fold",
+            ):
+                assert name not in labels
+
+    asyncio.run(_hidden())
 
 
 def test_regex_draft_m_uses_on_columns_not_all_pending(tmp_path: Path):

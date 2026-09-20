@@ -64,6 +64,17 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
         "equal": "0",
         "categorical": "yes",
     }
+    new_n = {
+        "money": "n",
+        "pct": "n",
+        "idpad": "n",
+        "bool": "n",
+        "acctneg": "n",
+        "xlsdate": "n",
+        "inws": "n",
+        "dash": "n",
+        "fold": "n",
+    }
     expected = {
         "sent_a": {
             **n_base,
@@ -77,6 +88,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
         "sent_b": {
             **n_base,
@@ -90,6 +102,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
         "sent_both": {
             **n_base,
@@ -103,6 +116,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
         "trim_c": {
             **n_base,
@@ -116,6 +130,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "y",
             "date": "n",
+            **new_n,
         },
         "case_c": {
             **n_base,
@@ -129,6 +144,8 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
+            "bool": "y",
         },
         "num_c": {
             **n_base,
@@ -142,6 +159,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "y",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
         "ws_c": {
             **n_base,
@@ -155,6 +173,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "y",
             "date": "n",
+            **new_n,
         },
         "date_c": {
             **n_base,
@@ -168,6 +187,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "y",
+            **new_n,
         },
         "mixed": {
             **n_base,
@@ -181,6 +201,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
         "plain": {
             **n_base,
@@ -194,6 +215,7 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
             "num": "n",
             "ws": "n",
             "date": "n",
+            **new_n,
         },
     }
     assert set(by_name) == set(expected)
@@ -212,6 +234,15 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
         "num",
         "ws",
         "date",
+        "money",
+        "pct",
+        "idpad",
+        "bool",
+        "acctneg",
+        "xlsdate",
+        "inws",
+        "dash",
+        "fold",
     )
     for name, want in expected.items():
         row = by_name[name]

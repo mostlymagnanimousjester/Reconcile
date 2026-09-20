@@ -15,7 +15,7 @@ from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
 from reconcile.insights import CONTEXT_VALUE_SEP, format_context_tuple
-from reconcile.roster import roster_visible_insight_headers
+from reconcile.roster import CHECK_HEADERS, roster_visible_insight_headers
 from reconcile.suggest import format_preview, format_why
 
 HELP = """\
@@ -96,7 +96,7 @@ This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
 ERROR when a key does not apply on this screen (roster A / n/p / [ / ] / . / c; cell-step [ / ]; unmatched [ / ]).
 Roster y/n: y = all pending cells; n = not all.
-Roster insight columns: const A / const B / const both (values; hidden if unused) and trim / case / trim+case / num / ws / date (y if every pending cell matches; hidden if all n). Pair/cell keep per-pair hints (trim, case, date). Insights never change remaining counts.
+Roster insight columns: const A / const B / const both (values; hidden if unused) and trim / case / trim+case / num / ws / date / money / pct / idpad / bool / acctneg / xlsdate / inws / dash / fold (y if every pending cell matches; hidden if all n). Pair/cell keep per-pair hints (trim, case, date, money, bool, …). Insights never change remaining counts. Integer vs float display (1 vs 1.0) is num, not a separate column.
 top pair % is the share of this column's pending cells that sit in the largest pair.
 Sentinel means that side is one constant on all comparable (shared-key) rows. The header is the kind; the cell is the value (0, "", A=x B=y). Hint for =.
 Sentinel modal: a A or b B picks the side, then type the exact string, Enter Run.
@@ -1420,7 +1420,7 @@ class ReconcileApp(App[int]):
                 table.add_column(h, width=SEL_W)
             elif h == "│":
                 table.add_column(h, width=1)
-            elif h in {"trim", "case", "trim+case", "num", "ws", "date"}:
+            elif h in CHECK_HEADERS:
                 table.add_column(h, width=max(CHECK_W, len(h)))
             elif h.startswith("const "):
                 table.add_column(h, width=CONST_MAX_W)
@@ -1511,7 +1511,7 @@ class ReconcileApp(App[int]):
                 elif h.startswith("const "):
                     raw = getattr(r, attr_of.get(h, ""), "") or ""
                     cells.append(self._dim_text(_const_cell(str(raw)), settled))
-                elif h in {"trim", "case", "trim+case", "num", "ws", "date"}:
+                elif h in CHECK_HEADERS:
                     raw = getattr(r, attr_of.get(h, ""), "") or ""
                     cells.append(
                         self._dim_text(_align(str(raw), max(CHECK_W, len(h)), "center"), settled)

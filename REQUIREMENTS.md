@@ -49,7 +49,7 @@ Compare is **exact raw text**.
 
 **Speculative insights** (§10) may *describe* why two unequal strings look related. They must never change the contract, remaining-diff counts, or pairing.
 
-Roster insights are per-column cells (`const A` / `const B` / `const both` values; `trim` / `case` / `trim+case` / `num` / `ws` / `date` as `y`/`n`). Pair/cell pages still use a `hints` column for **this pair**. Show the insight text only; do not prefix tags with `speculative:`. Shorten pair/cell tags to the roster words (`trim`, `case`, `trim+case`, `num`, `date`) where they align.
+Roster insights are per-column cells (`const A` / `const B` / `const both` values; `trim` / `case` / `trim+case` / `num` / `ws` / `date` / `money` / `pct` / `idpad` / `bool` / `acctneg` / `xlsdate` / `inws` / `dash` / `fold` as `y`/`n`). Pair/cell pages still use a `hints` column for **this pair**. Show the insight text only; do not prefix tags with `speculative:`. Shorten pair/cell tags to the roster words (`trim`, `case`, `trim+case`, `num`, `date`, `money`, `bool`, …) where they align.
 
 ---
 
@@ -428,18 +428,27 @@ Replace the packed `speculative` string. Keep `pending`, **`top pair %`**, `equa
 
 A both-row fills `const A`, `const B`, and `const both`. The header is the kind; the cell is the value. That is the `=` recipe.
 
-**Check columns** (`y` / `n`). A check is `y` only if **every pending cell** in that column satisfies the predicate (`.all()`, not `.any()`). Hide the header if every pending row is `n`. Settled `v` rows may show empty/`n` under headers kept by pending rows.
+**Check columns** (`y` / `n`). A check is `y` only if **every pending cell** in that column satisfies the predicate (`.all()`, not `.any()`). Hide the header if every pending comparable row is `n` (no pending `y`). Settled `v` rows may show empty/`n` under headers kept alive by pending `y` rows. Do not keep a header for settled-only.
 
 | Header | Predicate |
 |---|---|
 | `trim` | strip-equal |
 | `case` | lower-equal |
 | `trim+case` | strip then lower (not exclusive leftover) |
-| `num` | both parse as float, neither blank after strip, floats equal |
+| `num` | both parse as float, neither blank after strip, floats equal. Covers integer vs float display (`1` vs `1.0` / `1.00`); there is no separate `intfloat` column. |
 | `ws` | NBSP / tab / CR / LF, or either side differs from strip |
 | `date` | `same_date_expr()` (see §10.4) |
+| `money` | strip `$` `€` `£` and thousands commas/spaces, then numeric-equal; at least one side must change under that strip (so `1` vs `1.0` stays `num` only) |
+| `pct` | `5%` vs `0.05`: a `%` suffix means divide by 100. Require `%` on one or both sides. Do not treat every `5` vs `0.05` as percent. |
+| `idpad` | both ASCII digit strings (no decimal point); equal as integers (`00123` vs `123`) |
+| `bool` | both sides in `{y,yes,true,t,1}` ∪ `{n,no,false,f,0}` (case-insensitive) — same bool or opposite |
+| `acctneg` | `(123.45)` vs `-123.45`: unwrap `(…)` to a leading minus, then numeric-equal; at least one side must be paren-wrapped |
+| `xlsdate` | Excel Windows serial (epoch 1899-12-30) vs a date `parse_unambiguous_date` accepts, same calendar date. Serial is an integer digit string in `0..99999` that is not itself an unambiguous date. If a serial-like number faces a non-date, `n`. Both-unambiguous-dates stay `date` only. |
+| `inws` | collapse internal whitespace runs (`\s+` → one space), then equal. Distinct from edge `trim` / special `ws`. |
+| `dash` | hyphen / en-dash / em-dash / minus / Unicode dashes normalize to ASCII `-`, then equal |
+| `fold` | NFKC + strip combining marks (José vs Jose, fullwidth digits). Not fuzzy spelling. |
 
-Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top pair %` column.
+Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top pair %` column. Do **not** add token-reorder, unit conversion, or code↔label columns. `""`→`0` stays pair-only `m`, not a column rule.
 
 ### 10.2 Pair / cell (this pair)
 
@@ -450,6 +459,7 @@ Keep, per exact pair, from `cell_insights` (roster words in the `hints` column):
 - `trim+case` (exclusive leftover: only when strip+lower holds and neither trim-only nor case-only does)
 - `num`
 - `date` — same parsers as the roster `date` column
+- `money` / `pct` / `idpad` / `bool` / `acctneg` / `xlsdate` / `inws` / `dash` / `fold` — same predicates as the roster, for **this pair** (not `.all()`)
 
 Drop `invisible/odd whitespace` when trim already applies. A leftover-only whitespace tag does not name a keystroke — omit it. Do **not** add sentinel to `cell_insights` (sentinel is a column fact).
 
@@ -705,7 +715,7 @@ Columns on the roster:
 - equal count
 - categorical yes/no
 - optional `sent A` / `sent B` / `sent both` (values; hidden if unused on pending rows)
-- optional `trim` / `case` / `trim+case` / `num` / `ws` / `date` (`y` if every pending cell matches; hidden if all `n`)
+- optional `trim` / `case` / `trim+case` / `num` / `ws` / `date` / `money` / `pct` / `idpad` / `bool` / `acctneg` / `xlsdate` / `inws` / `dash` / `fold` (`y` if every pending cell matches; hidden if all `n`)
 
 There is no separate **accepted-count** column next to a draft/accept checkbox. Pending columns show because they are pending; accepted columns are hidden unless `v`.
 

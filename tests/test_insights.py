@@ -235,3 +235,172 @@ def test_shared_value_pattern_insight_is_gone(tmp_path: Path):
     from reconcile import insights
 
     assert not hasattr(insights, "column_pattern_insight")
+
+
+def _csv_quote(value: str) -> str:
+    if any(ch in value for ch in ',\"\n'):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def _engine_two_col(
+    tmp_path: Path, name: str, rows_a: list[str], rows_b: list[str]
+) -> Engine:
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    a_lines = [f"id,{name}"] + [
+        f"{i},{_csv_quote(v)}" for i, v in enumerate(rows_a, 1)
+    ]
+    b_lines = [f"id,{name}"] + [
+        f"{i},{_csv_quote(v)}" for i, v in enumerate(rows_b, 1)
+    ]
+    write_csv(pa, "\n".join(a_lines) + "\n")
+    write_csv(pb, "\n".join(b_lines) + "\n")
+    return Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+
+
+def _visible_checks(eng: Engine, *, settled: bool = False) -> set[str]:
+    rows = eng.column_roster(include_settled=settled)
+    return {h for h, _ in roster_visible_insight_headers(rows)}
+
+
+NEW_CHECK_FIXTURES = (
+    ("money", "money", "$1,234", "1234", "€2 000", "2000", "foo", "bar"),
+    ("pct", "pct", "5%", "0.05", "50%", "0.5", "5", "0.05"),
+    ("idpad", "idpad", "00123", "123", "0007", "7", "00123", "124"),
+    ("bool", "bool", "yes", "no", "TRUE", "0", "yes", "maybe"),
+    ("acctneg", "acctneg", "(123.45)", "-123.45", "(10)", "-10", "(123.45)", "123.45"),
+    ("xlsdate", "xlsdate", "44927", "2023-01-01", "44928", "2023-01-02", "44927", "hello"),
+    ("inws", "inws", "A  B", "A B", "X   Y", "X Y", "A  B", "C D"),
+    ("dash", "dash", "foo–bar", "foo-bar", "a—b", "a-b", "foo–bar", "foo_bar"),
+    ("fold", "fold", "José", "Jose", "Café", "Cafe", "José", "Maria"),
+)
+
+
+@pytest.mark.parametrize(
+    "header,attr,a1,b1,a2,b2,mix_a,mix_b",
+    NEW_CHECK_FIXTURES,
+    ids=[row[0] for row in NEW_CHECK_FIXTURES],
+)
+def test_new_check_all_match_shows_header_mixed_hides(
+    tmp_path: Path, header: str, attr: str, a1: str, b1: str, a2: str, b2: str, mix_a: str, mix_b: str
+):
+    match = _engine_two_col(tmp_path / "match", header, [a1, a2], [b1, b2])
+    row = next(r for r in match.roster() if r.name == header)
+    assert getattr(row, attr) == "y"
+    assert header in _visible_checks(match)
+
+    mixed = _engine_two_col(tmp_path / "mixed", header, [a1, mix_a], [b1, mix_b])
+    row = next(r for r in mixed.roster() if r.name == header)
+    assert getattr(row, attr) == "n"
+    assert header not in _visible_checks(mixed)
+
+
+def test_existing_trim_num_date_hide_when_all_n(tmp_path: Path):
+    eng = _engine_two_col(tmp_path, "val", ["foo", "bar"], ["baz", "qux"])
+    row = next(r for r in eng.roster() if r.name == "val")
+    assert row.trim == "n"
+    assert row.num == "n"
+    assert row.date == "n"
+    headers = _visible_checks(eng)
+    for name in ("trim", "case", "trim+case", "num", "ws", "date"):
+        assert name not in headers
+
+
+def test_existing_trim_num_date_header_visible_when_one_column_all_matching(
+    tmp_path: Path,
+):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,trim_c,num_c,date_c,plain\n"
+        "1, Y,1,2020-01-02,foo\n"
+        "2, Z,2,2020-01-03,bar\n",
+    )
+    write_csv(
+        pb,
+        "id,trim_c,num_c,date_c,plain\n"
+        "1,Y,1.0,20200102,baz\n"
+        "2,Z,2.00,20200103,qux\n",
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    by_name = {r.name: r for r in eng.roster() if r.kind == "column"}
+    assert by_name["trim_c"].trim == "y"
+    assert by_name["num_c"].num == "y"
+    assert by_name["date_c"].date == "y"
+    assert by_name["plain"].trim == "n"
+    headers = _visible_checks(eng)
+    assert "trim" in headers
+    assert "num" in headers
+    assert "date" in headers
+    assert "intfloat" not in headers
+
+
+def test_existing_trim_mixed_pile_hides_header(tmp_path: Path):
+    eng = _engine_two_col(tmp_path, "val", [" Y", "foo"], ["Y", "bar"])
+    row = next(r for r in eng.roster() if r.name == "val")
+    assert row.trim == "n"
+    assert "trim" not in _visible_checks(eng)
+
+
+def test_intfloat_is_covered_by_num_not_own_column(tmp_path: Path):
+    from reconcile.roster import CHECK_HEADERS
+
+    eng = _engine_two_col(tmp_path, "val", ["1", "2"], ["1.0", "2.00"])
+    row = next(r for r in eng.roster() if r.name == "val")
+    assert row.num == "y"
+    assert "intfloat" not in CHECK_HEADERS
+    assert "intfloat" not in _visible_checks(eng)
+    assert "intfloat" not in cell_insights("1", "1.0")
+    assert "num" in cell_insights("1", "1.0")
+
+
+def test_settled_only_does_not_keep_check_header(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,keep,gone\n1, Y, Q\n2, Z, R\n")
+    write_csv(pb, "id,keep,gone\n1,Y,Q\n2,Z,R\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert "trim" in _visible_checks(eng)
+    eng.accept_column("gone")
+    settled = {r.name: r for r in eng.column_roster(include_settled=True)}
+    assert settled["gone"].pending == 0
+    assert settled["gone"].trim == "n"
+    assert "trim" in _visible_checks(eng, settled=True)
+    eng.accept_column("keep")
+    assert "trim" not in _visible_checks(eng, settled=True)
+
+
+def test_pair_hints_use_short_check_words():
+    assert "money" in cell_insights("$1,234", "1234")
+    assert "pct" in cell_insights("5%", "0.05")
+    assert "pct" not in cell_insights("5", "0.05")
+    assert "idpad" in cell_insights("00123", "123")
+    assert "idpad" not in cell_insights("12.0", "12")
+    assert "bool" in cell_insights("yes", "no")
+    assert "bool" in cell_insights("Yes", "yes")
+    assert "bool" not in cell_insights("yes", "maybe")
+    assert "acctneg" in cell_insights("(123.45)", "-123.45")
+    assert "xlsdate" in cell_insights("44927", "2023-01-01")
+    assert "xlsdate" not in cell_insights("44927", "100")
+    assert "xlsdate" not in cell_insights("2020-01-02", "20200102")
+    assert "inws" in cell_insights("A  B", "A B")
+    assert "dash" in cell_insights("foo–bar", "foo-bar")
+    assert "fold" in cell_insights("José", "Jose")
+    assert "fold" in cell_insights("１２３", "123")
+    assert "date" not in cell_insights("2020-01-02", "01/02/2020")
+    assert "money" not in cell_insights("", "0")
+    assert "bool" not in cell_insights("", "0")
+    assert "num" not in cell_insights("", "0")
+
+
+def test_pct_requires_percent_suffix_on_roster(tmp_path: Path):
+    eng = _engine_two_col(tmp_path, "val", ["5", "10"], ["0.05", "0.10"])
+    row = next(r for r in eng.roster() if r.name == "val")
+    assert row.pct == "n"
+    assert "pct" not in _visible_checks(eng)
+
+
+def test_xlsdate_rejects_serial_vs_plain_number(tmp_path: Path):
+    eng = _engine_two_col(tmp_path, "val", ["44927", "44927"], ["44927.0", "100"])
+    row = next(r for r in eng.roster() if r.name == "val")
+    assert row.xlsdate == "n"
+    assert "xlsdate" not in _visible_checks(eng)
