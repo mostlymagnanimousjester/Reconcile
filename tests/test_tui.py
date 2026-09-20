@@ -1,7 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from textual.widgets import Button, Static
+from textual.containers import ScrollableContainer
+from textual.widgets import Button, Input, Static
 
 from reconcile.engine import Engine, Place
 from reconcile.tui import (
@@ -126,10 +127,113 @@ def test_keys_1_to_4_do_not_switch_tabs(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_square_brackets_cycle_column_tabs(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "accepted"
+            assert app.place.view_tab == "accepted"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "equal"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "all_matched"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "all_matched"
+            assert app.tui_error and "last tab" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "equal"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "accepted"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.view_tab == "pending"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.tui_error and "first tab" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_square_brackets_error_on_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.tui_error and "column tabs" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.tui_error and "column tabs" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_square_brackets_refused_during_pair_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 1
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.tui_error and "pair draft" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.tui_error and "pair draft" in app.tui_error
+
+    asyncio.run(_run())
+
+
 def test_help_says_exact_sentinel_not_polars_selector():
     assert "Polars selector" not in HELP
     assert "exact sentinel" in HELP
     assert "regex column draft" in HELP
+    assert "a/b side" in HELP or "a A or b B" in HELP
 
 
 def test_help_xor_and_no_digit_tab_keys():
@@ -138,9 +242,13 @@ def test_help_xor_and_no_digit_tab_keys():
     assert "0-9" in HELP
     assert "context picker" in HELP.lower() or "CONTEXT PICKER" in HELP
     assert "this page" in HELP.lower()
+    assert ":" in HELP
+    assert "[" in HELP
+    assert "]" in HELP
     xor = next(line for line in HELP.splitlines() if "At most one draft" in line)
     assert "/" in xor
     assert "=" in xor
+    assert ":" in xor
     lower = HELP.lower()
     assert "1 pending" not in lower
     assert "2 accepted" not in lower
@@ -164,6 +272,9 @@ def test_help_power_user_grain():
     assert "v      roster" in HELP or "v shows" in HELP.lower() or "show/hide accepted" in HELP.lower()
     assert "in place" in HELP.lower()
     assert "same exact pair" in HELP.lower() or "m      accept" in HELP
+    assert "same as a (one column)" not in HELP
+    assert "Roster A is ERROR" in HELP or "on the roster use a" in HELP
+    assert "no draft to confirm" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -189,8 +300,8 @@ def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
             assert app.engine.column_draft == {"Status", "Flag"}
             assert app.draft_in_flight() is True
             assert app.engine.draft_in_flight() is True
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "2 column" in banner
             pending_before = app.engine.pending_cells_n()
             app.action_drill()
             await pilot.pause()
@@ -205,9 +316,8 @@ def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
             await pilot.pause()
             assert app.engine.pending_cells_n() == pending_before
             assert app.engine.column_draft == {"Status", "Flag"}
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
-            assert "draft stays" in footer
+            assert app.tui_error and "column draft" in app.tui_error
+            assert "draft stays" not in str(app.query_one("#footer").render())
             assert app.place.screen != "cell_step"
 
     asyncio.run(_run())
@@ -232,9 +342,13 @@ def test_cell_step_footer_shows_pair_draft_not_column_n(tmp_path: Path):
             app.place.pair_val_b = "Yes"
             app.render_all()
             await pilot.pause()
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
+            assert "y confirm" in banner
             footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
-            assert "cell step" in footer
+            assert "? help" in footer
+            assert "U column" not in footer
+            assert "cell step" not in footer
 
     asyncio.run(_run())
 
@@ -301,6 +415,28 @@ def test_roster_a_stays_on_roster_after_accepting_one_of_two(tmp_path: Path):
             await pilot.pause()
             assert app.place.screen == "roster"
             assert next(r for r in app.engine.roster() if r.name == "Flag").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "Status").pending > 0
+
+    asyncio.run(_run())
+
+
+def test_roster_A_errors_does_not_accept(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pending = app.engine.pending_cells_n()
+            app.query_one("#grid").focus()
+            await pilot.press("A")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == pending
+            assert app.tui_error and "on the roster use a" in app.tui_error
             assert next(r for r in app.engine.roster() if r.name == "Status").pending > 0
 
     asyncio.run(_run())
@@ -537,15 +673,78 @@ def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, SentinelModal)
+            assert not isinstance(app.focused, Input)
             modal.action_ok()
             await pilot.pause()
             assert isinstance(app.screen, SentinelModal)
             assert "ERROR" in str(modal.query_one("#modal-err").render())
             assert not app.draft_in_flight()
-            modal.action_cancel()
+            await pilot.press("a")
+            await pilot.pause()
+            assert modal._side == "A"
+            modal.query_one("#sentinel").value = "NA"
+            modal.action_ok()
             await pilot.pause()
             assert not isinstance(app.screen, SentinelModal)
-            assert not app.draft_in_flight()
+            assert app.engine.column_draft == {"s"}
+
+    asyncio.run(_run())
+
+
+def test_sentinel_b_selects_side_b(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s\n1,x\n2,y\n")
+    write_csv(pb, "id,s\n1,NA\n2,NA\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("equals")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, SentinelModal)
+            await pilot.press("b")
+            await pilot.pause()
+            assert modal._side == "B"
+            modal.query_one("#sentinel").value = "NA"
+            modal.action_ok()
+            await pilot.pause()
+            assert not isinstance(app.screen, SentinelModal)
+            assert app.engine.column_draft == {"s"}
+
+    asyncio.run(_run())
+
+
+def test_sentinel_input_letter_a_is_literal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s\n1,x\n2,y\n")
+    write_csv(pb, "id,s\n1,NA\n2,NA\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("equals")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, SentinelModal)
+            await pilot.press("b")
+            await pilot.pause()
+            assert modal._side == "B"
+            inp = modal.query_one("#sentinel")
+            assert app.focused is inp
+            await pilot.press("N", "A")
+            await pilot.pause()
+            assert inp.value == "NA"
+            assert modal._side == "B"
+            assert isinstance(app.screen, SentinelModal)
 
     asyncio.run(_run())
 
@@ -1017,7 +1216,8 @@ def test_cell_step_footer_does_not_advertise_U(tmp_path: Path):
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
             assert "U column" not in footer
-            assert "cell step" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "y confirm" in banner
 
     asyncio.run(_run())
 
@@ -1042,16 +1242,41 @@ def test_cell_a_after_uncheck_draft_n_matches_remaining(tmp_path: Path):
             app.pair_draft_unchecked = {("1",)}
             app.render_all()
             await pilot.pause()
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
             app.query_one("#grid").focus()
             await pilot.press("a")
             await pilot.pause()
             assert ("1",) not in app.pair_draft_unchecked
             assert app.engine.pair_draft_height() == 2
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
             assert app.engine.pending_cells_n() == 2
+
+    asyncio.run(_run())
+
+
+def test_pair_list_footer_has_repeat_and_undo_only(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert ". repeat" in footer
+            assert "u undo" in footer
+            assert "? help" in footer
+            assert "y ACCEPT" not in footer
+            assert "Enter" not in footer
+            assert "U column" not in footer
 
     asyncio.run(_run())
 
@@ -1086,6 +1311,28 @@ def test_help_modal_not_footer_cheat_sheet(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_help_scrolls_with_down(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert isinstance(app.screen, HelpModal)
+            scroll = app.screen.query_one("#help-scroll", ScrollableContainer)
+            before = scroll.scroll_offset.y
+            await pilot.press("down")
+            await pilot.pause()
+            assert scroll.scroll_offset.y > before
+
+    asyncio.run(_run())
+
+
 def test_uncheck_last_column_cancels_draft(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n")
@@ -1114,6 +1361,66 @@ def test_uncheck_last_column_cancels_draft(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_y_with_no_draft_errors(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            pending = app.engine.pending_cells_n()
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert not app.engine.column_draft
+            assert app.engine.pair_draft_col is None
+            assert app.engine.pending_cells_n() == pending
+            assert app.tui_error and "no draft to confirm" in app.tui_error
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.engine.pair_draft_col is None
+            assert app.engine.pending_cells_n() == pending
+            assert app.tui_error and "no draft to confirm" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_esc_from_pair_list_cancels_column_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("Status|Flag")
+            assert app.engine.column_draft == {"Status", "Flag"}
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.engine.column_draft == {"Status", "Flag"}
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert not app.engine.column_draft
+
+    asyncio.run(_run())
+
+
 def test_regex_modal_escape_closes_without_app_back(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")
@@ -1134,6 +1441,61 @@ def test_regex_modal_escape_closes_without_app_back(tmp_path: Path):
             assert not isinstance(app.screen, RegexModal)
             assert app.place.screen == "roster"
             assert not app.draft_in_flight()
+
+    asyncio.run(_run())
+
+
+def test_regex_modal_unfocused_a_does_not_accept(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            pending = app.engine.pending_cells_n()
+            await pilot.press("slash")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, RegexModal)
+            modal.query_one("#pat").blur()
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            assert isinstance(app.screen, RegexModal)
+            assert app.place.screen == "roster"
+            assert not app.engine.column_draft
+            assert app.engine.pending_cells_n() == pending
+            assert app.engine.accepted_cells.height == 0
+
+    asyncio.run(_run())
+
+
+def test_colon_opens_regex_modal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status\n1,Y\n")
+    write_csv(pb, "id,Status\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("colon")
+            await pilot.pause()
+            assert isinstance(app.screen, RegexModal)
+            app.screen.query_one("#pat").value = "Status"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not isinstance(app.screen, RegexModal)
+            assert app.place.screen == "roster"
+            assert app.engine.column_draft == {"Status"}
 
     asyncio.run(_run())
 
@@ -1842,7 +2204,7 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             assert "ACCEPT" in banner
             assert "select/deselect" in banner
             footer = str(app.query_one("#footer").render())
-            assert "y ACCEPT selected" in footer
+            assert "y ACCEPT selected" not in footer
             assert "a grain" not in footer
             table = app.query_one("#grid")
             marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
@@ -1867,8 +2229,8 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             app.action_toggle()
             await pilot.pause()
             assert "mixed" not in app.engine.column_draft
-            footer = str(app.query_one("#footer").render())
-            assert "y ACCEPT selected" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "y ACCEPT selected" in banner
 
     asyncio.run(_run())
 
@@ -2464,8 +2826,8 @@ def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
             app.render_all()
             await pilot.pause()
             assert app.engine.column_draft == {"s1", "s2"}
-            footer = str(app.query_one("#footer").render())
-            assert "m same pair" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "m same pair" in banner
             app.query_one("#grid").focus()
             app.action_multi_pair()
             await pilot.pause()

@@ -9,7 +9,7 @@ import polars as pl
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
@@ -17,28 +17,31 @@ from reconcile.engine import Engine, InTuiError, Place, RosterRow
 from reconcile.insights import format_context_tuple
 
 HELP = """\
-KEYS  (? this help · Esc closes)
+KEYS  (? this help · Esc closes · Up/Down/PgUp/PgDn scroll)
 
 EVERYWHERE
 Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
-Esc    back (close modal → cancel roster/cell-step draft → parent screen)
+Esc    one layer (close modal with no draft change → cancel pair draft → child screen to roster and cancel column draft)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
-A      accept all on this screen (entire column from pair list; all unmatched keys on this side)
+A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
 u      undo last accept, then focused grain
 r      refresh (re-read live files; last good state on failure)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 ?      this help
 q      quit (discards unconfirmed draft)
+n / p  page (ERROR if unpaged / at end). Digits 0-9 do nothing except inside c
 
 ROSTER (column roster, table A import order)
 a      accept this column in place (selection moves below; does not drill)
-A      same as a (one column)
+A      ERROR (A is bulk accept on pair list or unmatched keys; on the roster use a)
 v      show/hide accepted and equal columns (default hidden)
 m      same exact pair on columns
-/      regex column draft (comparable names; not a view filter)
-=      exact sentinel (side A|B, comparable-row constant)
-Space  toggle focused column in the live column draft (ON / off)
-y      confirm the live column draft; land on roster (next-below / first pending)
+:      regex column draft (comparable names; not a view filter). / is a deprecated alias
+=      exact sentinel (a/b side, then type the constant, Enter Run)
+Space  toggle focused column in the live column draft (ON / off). ERROR if no draft
+y      confirm the live column draft; land on roster (next-below / first pending). ERROR if no draft to confirm
+[ / ]  ERROR (column tabs are only on column detail)
+. / c  ERROR
 n / p  ERROR (no pages)
 
 PAIR LIST (Pending tab)
@@ -46,37 +49,42 @@ Enter  cell step (pair draft of those exact strings)
 a      accept this pair (selection moves below)
 A      accept entire column
 m      same exact pair on columns
-c      context-column picker (Space standalone; 0-9 groups on that page)
+c      context-column picker (Space standalone; 0-9 groups only on that page)
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 n / p  next / previous page
 .      last pair: cell-step if already on that column's pair list; else that pair (column detail only)
-Esc    roster
+[ / ]  next / previous named tab (no wrap)
+Esc    roster and cancel a live column draft
+Footer chrome here: . repeat · u undo (full list is this help)
 
 CELL STEP
 a      accept this cell (selection moves below)
 Space  toggle focused cell in the pair draft (ON / off)
-y      confirm still-checked cells, then next lever
-c      context-column picker (Space standalone; 0-9 groups on that page)
+y      confirm still-checked cells, then next lever. ERROR if no draft to confirm
+c      context-column picker (Space standalone; 0-9 groups only on that page)
 n / p  page
+[ / ]  ERROR (pair draft in flight)
 Esc    back to pair list (cancels the pair draft)
 
 UNMATCHED KEYS / MISMATCHED COLUMNS  (open from i)
 a      accept this key / extra (selection moves below)
-A      accept all unmatched on this side, then next lever
+A      unmatched: all on this side, then next lever. extras: one extra (same as a; no bulk-all-extras)
 n / p  page (keys)
-Esc    roster
+[ / ]  ERROR (column tabs are only on column detail)
+Esc    roster (cancels a live column draft)
 
 DRAFTS
-At most one draft: column XOR pair cells (column: roster / regex, = sentinel; pair: cell step).
-After / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
+At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel; pair: cell step).
+After : / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
 After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
-After / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
+After : / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
 m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
+y with no draft: ERROR no draft to confirm.
 
 TABS / PLACE
-Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
-Tab switch is refused while a pair draft is in flight (Esc cancels).
+Named tabs (Pending / Accepted / Equal / All matched). ] next tab · [ previous tab. No keys 1–4.
+Tab switch is refused while a pair draft is in flight (Esc cancels the pair draft).
 U is pair-list only. . is column detail only.
 The column roster lists pending comparable columns in table A import order.
 v shows accepted/equal columns dim (pending section, then settled), not as remaining work.
@@ -89,6 +97,7 @@ This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
 The speculative column shows insight text only (no speculative: prefix). Insights never change remaining counts.
 Sentinel means that side is one constant on all comparable (shared-key) rows: sentinel A=0, sentinel B="", sentinel both A=x B=y.
+Sentinel modal: a A or b B picks the side, then type the exact string, Enter Run.
 Context columns (c) are dedicated labeled columns (ctx:Name). Groups are ctx:gN A+B (tuple of members). Pair list: top-5 unique values or tuples with pair-row counts (foo 12 | bar 4 …).
 
 CONTEXT PICKER (c on column detail only)
@@ -208,10 +217,12 @@ DataTable > .datatable--cursor {
 #modal Input {
     margin: 1 0;
 }
-#help {
+#help-scroll {
     height: auto;
     max-height: 36;
-    overflow-y: auto;
+}
+#help {
+    height: auto;
     padding: 1;
 }
 .dim {
@@ -294,12 +305,37 @@ def _diff_text(label: str, value: str, other: str, first: int) -> Text:
 
 
 class HelpModal(ModalScreen[None]):
-    BINDINGS = [Binding("escape", "close", "Close"), Binding("question_mark", "close", "Close")]
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close"),
+        Binding("up", "scroll_up", show=False),
+        Binding("down", "scroll_down", show=False),
+        Binding("pageup", "page_up", show=False),
+        Binding("pagedown", "page_down", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield Static(HELP, id="help")
-            yield Static("Esc closes", classes="dim")
+            yield ScrollableContainer(Static(HELP, id="help", markup=False), id="help-scroll")
+            yield Static("Esc closes · Up/Down/PgUp/PgDn scroll", classes="dim")
+
+    def on_mount(self) -> None:
+        self.query_one("#help-scroll", ScrollableContainer).focus()
+
+    def _help_scroll(self) -> ScrollableContainer:
+        return self.query_one("#help-scroll", ScrollableContainer)
+
+    def action_scroll_up(self) -> None:
+        self._help_scroll().scroll_up()
+
+    def action_scroll_down(self) -> None:
+        self._help_scroll().scroll_down()
+
+    def action_page_up(self) -> None:
+        self._help_scroll().scroll_page_up()
+
+    def action_page_down(self) -> None:
+        self._help_scroll().scroll_page_down()
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -417,6 +453,10 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("enter", "ok", "Run", priority=True),
+        Binding("a", "side_a", show=False, priority=True),
+        Binding("A", "side_a", show=False, priority=True),
+        Binding("b", "side_b", show=False, priority=True),
+        Binding("B", "side_b", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -425,11 +465,15 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
                 "Sentinel = that side is one constant on all comparable (shared-key) rows. Choose exactly one side."
             )
             with Horizontal():
-                yield Button("A", id="side-a")
-                yield Button("B", id="side-b")
+                side_a = Button("A", id="side-a")
+                side_a.can_focus = False
+                yield side_a
+                side_b = Button("B", id="side-b")
+                side_b.can_focus = False
+                yield side_b
             yield Input(placeholder="exact string (empty is legal)", id="sentinel")
             yield Static(
-                "Enter Run · Esc cancel. After Run: y ACCEPT selected, Space select/deselect.",
+                "a A · b B · type sentinel · Enter Run · Esc cancel",
                 classes="dim",
             )
             yield Static("", id="modal-err", classes="error")
@@ -437,18 +481,29 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
 
     def on_mount(self) -> None:
         self._side = None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"side_a", "side_b"} and isinstance(self.focused, Input):
+            return False
+        return True
+
+    def _set_side(self, side: str) -> None:
+        self._side = side
+        self.query_one("#side-a", Button).label = "[A]" if side == "A" else "A"
+        self.query_one("#side-b", Button).label = "[B]" if side == "B" else "B"
         self.query_one("#sentinel", Input).focus()
+
+    def action_side_a(self) -> None:
+        self._set_side("A")
+
+    def action_side_b(self) -> None:
+        self._set_side("B")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "side-a":
-            self._side = "A"
-            event.button.label = "[A]"
-            self.query_one("#side-b", Button).label = "B"
+            self._set_side("A")
         elif event.button.id == "side-b":
-            self._side = "B"
-            event.button.label = "[B]"
-            self.query_one("#side-a", Button).label = "A"
-        self.query_one("#sentinel", Input).focus()
+            self._set_side("B")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -599,6 +654,9 @@ class ContextModal(ModalScreen[ContextPick | None]):
             if ordered:
                 groups[gid] = ordered
         self.dismiss(ContextPick(singles=sorted(self.selected), groups=groups))
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
 
 
 class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
@@ -795,6 +853,7 @@ class ReconcileApp(App[int]):
         Binding("q", "quit_app", "Quit", show=False),
         Binding("c", "context", "Context", show=False),
         Binding("slash", "regex", "Regex", show=False),
+        Binding("colon", "regex", "Regex", show=False),
         Binding("equals", "sentinel", "Sentinel", show=False),
         Binding("full_stop", "repeat_pair", "Repeat", show=False),
         Binding("question_mark", "help", "Help", show=False),
@@ -804,8 +863,13 @@ class ReconcileApp(App[int]):
         Binding("m", "multi_pair", "Same pair", show=False),
         Binding(".", "repeat_pair", "Repeat", show=False),
         Binding("/", "regex", "Regex", show=False),
+        Binding(":", "regex", "Regex", show=False),
         Binding("=", "sentinel", "Sentinel", show=False),
         Binding("?", "help", "Help", show=False),
+        Binding("left_square_bracket", "tab_prev", show=False),
+        Binding("right_square_bracket", "tab_next", show=False),
+        Binding("[", "tab_prev", show=False),
+        Binding("]", "tab_next", show=False),
     ]
 
     def __init__(self, engine: Engine, place: Place | None = None) -> None:
@@ -844,13 +908,9 @@ class ReconcileApp(App[int]):
         return isinstance(self.screen, ModalScreen)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        # App enter/escape are priority=True so they otherwise steal every modal.
-        # Disabled bindings are skipped; the modal's Esc/Enter then run.
-        if action in {"drill", "back"} and self._modal_active():
-            return False
-        if action == "overview" and self._modal_active():
-            return False
-        if action == "multi_pair" and self._modal_active():
+        # A modal is a real layer: no app verb leaks through (accept/quit/regex/…).
+        # Disabled bindings are skipped; the modal's own keys then run.
+        if isinstance(self.screen, ModalScreen):
             return False
         if self._in_input() and action not in {"back", "drill"}:
             return False
@@ -876,6 +936,13 @@ class ReconcileApp(App[int]):
                 f"{n} column(s) selected for accept. "
                 "y ACCEPT selected · m same pair · Space select/deselect · a this column · Esc cancel"
             )
+            banner.set_class(False, "hidden")
+            banner.remove_class("error")
+            banner.add_class("draft")
+            return
+        if self.engine.pair_draft_col is not None:
+            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
+            banner.update(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
             banner.set_class(False, "hidden")
             banner.remove_class("error")
             banner.add_class("draft")
@@ -936,26 +1003,6 @@ class ReconcileApp(App[int]):
         )
         footer = self.query_one("#footer", Static)
         footer.set_class(bool(self._busy_note), "busy")
-        # Live set only. Never show column-draft N on the cell step (pair XOR).
-        # Esc on pair list does not cancel a column draft — don't claim it does.
-        if p.screen == "cell_step" and e.pair_draft_col is not None:
-            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
-            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
-        elif e.column_draft and p.screen == "roster":
-            bits.append(
-                f"draft {self._draft_n}  y ACCEPT selected  m same pair  Space select/deselect"
-            )
-        elif e.column_draft:
-            bits.append(
-                f"draft {self._draft_n}  y ACCEPT on roster  m same pair  Esc back (draft stays)"
-            )
-        elif e.pair_draft_col is not None:
-            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
-            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
-        if p.screen == "pair_list":
-            bits.append("pair list")
-        elif p.screen == "cell_step":
-            bits.append("cell step")
         if p.page is not None and p.screen in {
             "pair_list",
             "cell_step",
@@ -968,15 +1015,11 @@ class ReconcileApp(App[int]):
             bits.append(f"page {p.page + 1}/{self._page_count}")
         if e.last_refresh_delta:
             bits.append(e.last_refresh_delta.message)
-        if p.focused_key:
-            bits.append("key " + ", ".join(_display_text(x) for x in p.focused_key))
-        spec = ""
-        if p.screen in ("pair_list", "cell_step") and p.pair_val_a is not None:
-            tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
-            if tags:
-                spec = "  " + ", ".join(tags)
+        if p.screen == "pair_list":
+            bits.append(". repeat")
+            bits.append("u undo")
         bits.append("? help")
-        footer.update(" · ".join(bits) + spec)
+        footer.update(" · ".join(bits))
 
     def _run_busy(self, work) -> None:
         """Paint 'working…' for a real wait, then run work after the next refresh.
@@ -1281,10 +1324,11 @@ class ReconcileApp(App[int]):
             ("equal", "Equal"),
             ("all_matched", "All matched"),
         ]
-        buttons = [
-            Button(f"[{label}]" if key == current else label, id=f"tab-{key}")
-            for key, label in labels
-        ]
+        buttons = []
+        for key, label in labels:
+            btn = Button(f"[{label}]" if key == current else label, id=f"tab-{key}")
+            btn.can_focus = False
+            buttons.append(btn)
         return Horizontal(*buttons, id="tabs")
 
     def _column_pending_n(self, col: str) -> int:
@@ -1660,6 +1704,7 @@ class ReconcileApp(App[int]):
         elif self.engine.column_draft and p.screen == "roster":
             self.engine.column_draft = set()
         elif p.screen in ("pair_list", "a_only", "b_only", "extras", "accepted", "equal", "all_matched"):
+            self.engine.column_draft = set()
             self.place = Place(
                 screen="roster",
                 roster_filter=p.roster_filter,
@@ -1911,22 +1956,9 @@ class ReconcileApp(App[int]):
             if e.column_draft and p.screen in ("pair_list", "cell_step"):
                 raise InTuiError("ERROR: confirm or cancel the column draft first")
             if p.screen == "roster":
-                row = self._focused_roster()
-                if not row:
-                    return
-                if row.kind != "column":
-                    raise InTuiError("ERROR: column roster accepts columns only")
-                if row.pending == 0:
-                    raise InTuiError("ERROR: no pending cells in this column")
-                old_names = [
-                    r.name
-                    for r in e.column_roster(
-                        p.roster_filter, include_settled=self.show_accepted_columns
-                    )
-                ]
-                n = e.accept_column(row.name)
-                e.remember_grain(("column", row.name), n)
-                self._stay_on_roster_after_column(row.name, old_names)
+                raise InTuiError(
+                    "ERROR: A is bulk accept on pair list or unmatched keys; on the roster use a"
+                )
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
                     n_pend = e.pending_cells.filter(pl.col("column") == p.column).height
@@ -2038,6 +2070,8 @@ class ReconcileApp(App[int]):
 
                 self._run_busy(_confirm_columns)
                 return
+            else:
+                raise InTuiError("ERROR: no draft to confirm")
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
@@ -2554,6 +2588,55 @@ class ReconcileApp(App[int]):
         if self.place.screen in ("a_only", "b_only", "extras"):
             self._render_pane()
 
+    _COLUMN_TABS = ("pending", "accepted", "equal", "all_matched")
+
+    def _column_detail_tab(self) -> str | None:
+        p = self.place
+        if not p.column:
+            return None
+        if p.screen == "pair_list":
+            return "pending"
+        if p.screen == "cell_step":
+            return p.view_tab or "pending"
+        if p.screen in ("accepted", "equal", "all_matched"):
+            return p.screen
+        return None
+
+    def _apply_column_tab(self, tab: str) -> None:
+        if tab == "pending":
+            self.place.view_tab = "pending"
+            self.place.screen = "pair_list"
+        else:
+            self.place.view_tab = tab
+            self.place.screen = tab
+
+    def action_tab_next(self) -> None:
+        self._step_column_tab(1)
+
+    def action_tab_prev(self) -> None:
+        self._step_column_tab(-1)
+
+    def _step_column_tab(self, delta: int) -> None:
+        tab = self._column_detail_tab()
+        if tab is None:
+            self.set_error("ERROR: column tabs are only on column detail")
+            return
+        if self.engine.pair_draft_col is not None:
+            self.set_error("ERROR: confirm or cancel the pair draft first")
+            return
+        idx = self._COLUMN_TABS.index(tab)
+        nxt = idx + delta
+        if nxt < 0:
+            self.set_error("ERROR: first tab")
+            return
+        if nxt >= len(self._COLUMN_TABS):
+            self.set_error("ERROR: last tab")
+            return
+        self.set_error(None)
+        self._apply_column_tab(self._COLUMN_TABS[nxt])
+        self.render_all()
+        self.set_focus_work()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if not bid.startswith("tab-"):
@@ -2567,12 +2650,7 @@ class ReconcileApp(App[int]):
             event.stop()
             self._render_footer()
             return
-        if tab == "pending":
-            self.place.view_tab = "pending"
-            self.place.screen = "pair_list"
-        else:
-            self.place.view_tab = tab
-            self.place.screen = tab  # accepted / equal / all_matched
+        self._apply_column_tab(tab)
         event.stop()
         self.render_all()
         self.set_focus_work()
