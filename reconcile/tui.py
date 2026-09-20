@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import polars as pl
@@ -13,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
-from reconcile.insights import context_header
+from reconcile.insights import format_context_tuple
 
 HELP = """\
 KEYS  (? this help · Esc closes)
@@ -45,7 +46,7 @@ Enter  cell step (pair draft of those exact strings)
 a      accept this pair (selection moves below)
 A      accept entire column
 m      same exact pair on columns
-c      context-column picker
+c      context-column picker (Space standalone; 0-9 groups on that page)
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 n / p  next / previous page
 .      last pair: cell-step if already on that column's pair list; else that pair (column detail only)
@@ -55,7 +56,7 @@ CELL STEP
 a      accept this cell (selection moves below)
 Space  toggle focused cell in the pair draft (ON / off)
 y      confirm still-checked cells, then next lever
-c      context-column picker
+c      context-column picker (Space standalone; 0-9 groups on that page)
 n / p  page
 Esc    back to pair list (cancels the pair draft)
 
@@ -88,7 +89,14 @@ This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
 The speculative column shows insight text only (no speculative: prefix). Insights never change remaining counts.
 Sentinel means that side is one constant on all comparable (shared-key) rows: sentinel A=0, sentinel B="", sentinel both A=x B=y.
-Context columns (c) are dedicated labeled columns (ctx:Name). Pair list: top-5 unique values with pair-row counts (foo 12 | bar 4 …).
+Context columns (c) are dedicated labeled columns (ctx:Name). Groups are ctx:gN A+B (tuple of members). Pair list: top-5 unique values or tuples with pair-row counts (foo 12 | bar 4 …).
+
+CONTEXT PICKER (c on column detail only)
+Space  toggle standalone context (on without a group; same as today)
+0-9    toggle the focused column's membership in group N
+Enter/y confirm · Esc cancel
+A column can be standalone and in several groups. Empty groups do not appear.
+0-9 apply only on this page (not roster / pair list / cell step).
 """
 
 CSS = """
@@ -452,12 +460,19 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
         self.dismiss((self._side, self.query_one("#sentinel", Input).value))
 
 
-class ContextModal(ModalScreen[list[str] | None]):
+@dataclass
+class ContextPick:
+    singles: list[str]
+    groups: dict[int, list[str]]
+
+
+class ContextModal(ModalScreen[ContextPick | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("enter", "ok", "OK", priority=True),
         Binding("space", "toggle", "Toggle"),
         Binding("y", "ok", "OK"),
+        *[Binding(str(d), f"toggle_group({d})", show=False, priority=True) for d in range(10)],
         *[
             Binding(k, "noop", show=False, priority=True)
             for k in (
@@ -487,36 +502,56 @@ class ContextModal(ModalScreen[list[str] | None]):
         ],
     ]
 
-    def __init__(self, names: list[str], selected: set[str]) -> None:
+    def __init__(
+        self,
+        names: list[str],
+        selected: set[str],
+        groups: dict[int, list[str]] | None = None,
+    ) -> None:
         super().__init__()
         self.names = names
         self.selected = set(selected)
+        self.groups: dict[int, set[str]] = {}
+        for gid, members in (groups or {}).items():
+            g = int(gid)
+            if 0 <= g <= 9:
+                self.groups[g] = {m for m in members if m in names}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield Static("Context columns (intersection, not keys, not this column). Space toggle.")
+            yield Static(
+                "Context columns (intersection, not keys, not this column). "
+                "Space = standalone. 0-9 = groups."
+            )
             table: DataTable = DataTable(cursor_type="row", id="ctx")
-            table.add_columns("on", "name")
+            table.add_columns("on", "groups", "name")
             yield table
-            yield Static("Enter/y confirm · Esc cancel", classes="dim")
+            yield Static(
+                "Enter/y confirm · Esc cancel · Space standalone · 0-9 group",
+                classes="dim",
+            )
 
     def on_mount(self) -> None:
         self._fill()
         self.query_one("#ctx", DataTable).focus()
+
+    def _groups_label(self, name: str) -> str:
+        gids = [str(g) for g in range(10) if name in self.groups.get(g, set())]
+        return " · ".join(gids)
 
     def _fill(self) -> None:
         table = self.query_one("#ctx", DataTable)
         table.clear()
         for n in self.names:
             mark = "[x]" if n in self.selected else "[ ]"
-            table.add_row(mark, n, key=n)
+            table.add_row(mark, self._groups_label(n), n, key=n)
 
     def _focused_column(self) -> str | None:
         table = self.query_one("#ctx", DataTable)
-        if not self.names:
+        if not self.names or table.row_count <= 0:
             return None
         row = table.get_row_at(table.cursor_row)
-        return str(row[1])
+        return str(row[-1])
 
     def action_toggle(self) -> None:
         name = self._focused_column()
@@ -530,6 +565,24 @@ class ContextModal(ModalScreen[list[str] | None]):
         self._fill()
         self.query_one("#ctx", DataTable).move_cursor(row=row)
 
+    def action_toggle_group(self, gid: int) -> None:
+        name = self._focused_column()
+        if not name:
+            return
+        gid = int(gid)
+        if gid < 0 or gid > 9:
+            return
+        members = self.groups.setdefault(gid, set())
+        if name in members:
+            members.discard(name)
+            if not members:
+                del self.groups[gid]
+        else:
+            members.add(name)
+        row = self.query_one("#ctx", DataTable).cursor_row
+        self._fill()
+        self.query_one("#ctx", DataTable).move_cursor(row=row)
+
     def action_noop(self) -> None:
         return
 
@@ -537,7 +590,15 @@ class ContextModal(ModalScreen[list[str] | None]):
         self.dismiss(None)
 
     def action_ok(self) -> None:
-        self.dismiss(sorted(self.selected))
+        groups: dict[int, list[str]] = {}
+        for gid in range(10):
+            members = self.groups.get(gid)
+            if not members:
+                continue
+            ordered = [n for n in self.names if n in members]
+            if ordered:
+                groups[gid] = ordered
+        self.dismiss(ContextPick(singles=sorted(self.selected), groups=groups))
 
 
 class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
@@ -973,11 +1034,11 @@ class ReconcileApp(App[int]):
                         t.append(f"\n{name}  A|{a}  B|{b}")
                 elif p.screen == "pair_list":
                     rec = self._focused_rec()
-                    for name in self._context_names(p.column):
+                    for view in self.engine.context_views(p.column):
                         summary = ""
                         if rec:
-                            summary = str(rec.get(f"{name}__ctx") or "")
-                        t.append(f"\n\n{name}\n")
+                            summary = str(rec.get(view.pair_key) or "")
+                        t.append(f"\n\n{view.header[4:] if view.header.startswith('ctx:') else view.header}\n")
                         t.append(summary if summary else "(none)")
             pane.update(t)
         elif p.screen in ("a_only", "b_only"):
@@ -1099,11 +1160,19 @@ class ReconcileApp(App[int]):
         return headers
 
     def _context_names(self, column: str) -> list[str]:
-        return [
-            n
-            for n in self.engine.context_columns.get(column, [])
-            if n in self.engine.context_pool and n != column
-        ]
+        return self.engine.context_singles(column)
+
+    def _cell_ctx_text(self, rec: dict[str, Any], view) -> str:
+        if view.group_id is None:
+            n = view.members[0]
+            return f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
+        a = format_context_tuple(
+            [str(rec.get(f"{m}__ctx_a", "") or "") for m in view.members]
+        )
+        b = format_context_tuple(
+            [str(rec.get(f"{m}__ctx_b", "") or "") for m in view.members]
+        )
+        return f"A|{a}  B|{b}"
 
     def _column_status(self, row: RosterRow) -> str:
         if row.pending > 0:
@@ -1246,8 +1315,8 @@ class ReconcileApp(App[int]):
         self._fill_pair_list(table, col)
 
     def _fill_pair_list(self, table: DataTable, col: str) -> None:
-        ctx_names = self._context_names(col)
-        ctx_headers = [context_header(n) for n in ctx_names]
+        views = self.engine.context_views(col)
+        ctx_headers = [v.header for v in views]
         headers = ["A", "B", "pending", *ctx_headers, "speculative"]
         self._sync_columns(table, headers)
         recs, page, pages = self.engine.pair_page(col, self.place.page)
@@ -1255,7 +1324,7 @@ class ReconcileApp(App[int]):
         self._page_count = pages
         self._table_keys = []
         if not recs:
-            table.add_row("(no pending pairs)", "", "0", *([""] * len(ctx_names)), "")
+            table.add_row("(no pending pairs)", "", "0", *([""] * len(views)), "")
             self._table_keys = [None]
             return
         focus = 0
@@ -1270,7 +1339,7 @@ class ReconcileApp(App[int]):
             style = "reverse" if returned else "bold"
             label_a = Text(_display_text(va), style=style)
             label_b = Text(_display_text(vb), style=style)
-            ctx_cells = [str(rec.get(f"{n}__ctx") or "") for n in ctx_names]
+            ctx_cells = [str(rec.get(v.pair_key) or "") for v in views]
             table.add_row(label_a, label_b, str(int(rec["n"])), *ctx_cells, tags)
             self._table_keys.append(rec)
             if want_a is not None and va == want_a and vb == want_b:
@@ -1337,8 +1406,8 @@ class ReconcileApp(App[int]):
 
     def _fill_cell_rows(self, table: DataTable, col: str) -> None:
         tab = self.place.view_tab
-        ctx_names = self._context_names(col)
-        ctx_headers = [context_header(n) for n in ctx_names]
+        views = self.engine.context_views(col)
+        ctx_headers = [v.header for v in views]
         headers = [*self.engine.keys, "A", "B", *ctx_headers, "speculative"]
         self._sync_columns(table, headers)
         self._table_keys = []
@@ -1367,10 +1436,7 @@ class ReconcileApp(App[int]):
                 returned = bool(rec.get("_returned"))
                 tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
                 key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
-                ctx_cells = [
-                    f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
-                    for n in ctx_names
-                ]
+                ctx_cells = [self._cell_ctx_text(rec, v) for v in views]
                 if i == focus_i:
                     fd = self.engine.first_diff(rec["val_a"], rec["val_b"])
                     va_t = Text(mark)
@@ -1404,10 +1470,7 @@ class ReconcileApp(App[int]):
             if rec.get("val_a") != rec.get("val_b"):
                 tags = ", ".join(self.engine.cell_insights(rec["val_a"], rec["val_b"]))
             key_cells = [_display_text(str(rec[k])) for k in self.engine.keys]
-            ctx_cells = [
-                f"A|{rec.get(f'{n}__ctx_a', '')}  B|{rec.get(f'{n}__ctx_b', '')}"
-                for n in ctx_names
-            ]
+            ctx_cells = [self._cell_ctx_text(rec, v) for v in views]
             if i == focus_i and rec.get("val_a") != rec.get("val_b"):
                 fd = self.engine.first_diff(str(rec["val_a"]), str(rec["val_b"]))
                 va_t = _diff_text("", str(rec["val_a"]), str(rec["val_b"]), fd)
@@ -2350,16 +2413,18 @@ class ReconcileApp(App[int]):
         col = self.place.column
         names = [n for n in e.context_pool if n != col]
         selected = set(e.context_columns.get(col, []))
+        groups = e.context_groups.get(col, {})
 
-        def done(result: list[str] | None) -> None:
+        def done(result: ContextPick | None) -> None:
             if result is None:
                 return
-            e.context_columns[col] = result
+            e.context_columns[col] = result.singles
+            e.context_groups[col] = result.groups
             e._pair_ctx_by_col.pop(col, None)
             self.render_all()
             self.set_focus_work()
 
-        self.push_screen(ContextModal(names, selected), done)
+        self.push_screen(ContextModal(names, selected, groups), done)
 
     def action_multi_pair(self) -> None:
         if self._in_input() or self._modal_active():

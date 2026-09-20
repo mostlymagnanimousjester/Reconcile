@@ -6,7 +6,9 @@ from reconcile.engine import Engine, InTuiError
 from reconcile.insights import (
     CONTEXT_TRUNCATION_MARK,
     cell_insights,
+    context_group_header,
     extra_insights,
+    format_context_tuple,
     format_sentinel_insight,
     format_sentinel_value,
     format_top_uniques,
@@ -33,6 +35,11 @@ def test_format_top_uniques_keeps_five_and_marks_truncation():
     assert "yellow" not in text
     assert format_top_uniques(["a", "a", "b"]) == "a 2 | b 1"
     assert format_top_uniques(["", "x", ""]) == "(empty) 2 | x 1"
+    tuples = ["red|east"] * 3 + ["blue|west"] * 2 + ["green|west"]
+    assert format_top_uniques(tuples) == "red|east 3 | blue|west 2 | green|west 1"
+    assert format_context_tuple(["red", "east"]) == "red|east"
+    assert format_context_tuple(["", "west"]) == "(empty)|west"
+    assert context_group_header(0, ["Flag", "Region"]) == "ctx:g0 Flag+Region"
 
 
 def test_format_sentinel_insight_shows_side_and_value():
