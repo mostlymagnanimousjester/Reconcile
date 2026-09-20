@@ -7,15 +7,15 @@ from reconcile.insights import (
     CONTEXT_TRUNCATION_MARK,
     cell_insights,
     context_group_header,
-    extra_insights,
     format_context_tuple,
+    format_sentinel_both,
     format_sentinel_insight,
     format_sentinel_value,
     format_top_uniques,
     parse_unambiguous_date,
     same_date_expr,
-    unmatched_key_insights,
 )
+from reconcile.roster import roster_visible_insight_headers
 from tests.xlsxutil import write_csv
 
 
@@ -49,6 +49,7 @@ def test_format_sentinel_insight_shows_side_and_value():
     assert format_sentinel_insight(None, "") == 'sentinel B=""'
     assert format_sentinel_insight("x", "y") == "sentinel both A=x B=y"
     assert format_sentinel_insight(None, None) is None
+    assert format_sentinel_both("NA", "z") == "A=NA B=z"
 
 
 def test_cell_insights_do_not_treat_token_lists_as_sentinels():
@@ -65,12 +66,14 @@ def test_cell_insights_do_not_treat_token_lists_as_sentinels():
 def test_trim_case_numeric_whitespace():
     tags = cell_insights(" Y", "Y")
     assert any("trim" in t for t in tags)
+    assert not any("whitespace" in t for t in tags)
     tags = cell_insights("Yes", "yes")
     assert any("case-fold" in t for t in tags)
     tags = cell_insights("1", "1.0")
     assert any("numbers" in t for t in tags)
     tags = cell_insights("a\u00a0", "a")
-    assert any("whitespace" in t for t in tags)
+    assert any("trim" in t for t in tags)
+    assert not any("whitespace" in t for t in tags)
 
 
 def test_same_date_unambiguous():
@@ -81,34 +84,51 @@ def test_same_date_unambiguous():
     assert any("same date" in t for t in tags)
     tags = cell_insights("2020-01-01", "01/01/2020")
     assert any("same date" in t for t in tags)
+    tags = cell_insights("15JAN2024", "2024-01-15")
+    assert any("same date" in t for t in tags)
+    tags = cell_insights("15JAN24", "20240115")
+    assert any("same date" in t for t in tags)
+    tags = cell_insights("15-JAN-2024", "2024-01-15")
+    assert any("same date" in t for t in tags)
+    tags = cell_insights("JAN2024", "2024-01-01")
+    assert any("same date" in t for t in tags)
+    tags = cell_insights("15JAN2024:14:30:00", "2024-01-15T14:30:00")
+    assert any("same date" in t for t in tags)
 
 
 def test_ambiguous_us_eu_emits_nothing_for_date():
     assert parse_unambiguous_date("01/02/2020") is None
 
 
-def test_extra_near_miss():
-    tags = extra_insights("cust_id", ["customer_id", "val"])
-    assert any("near-miss" in t or "speculative" in t for t in tags)
-
-
-def test_unmatched_trim():
-    tags = unmatched_key_insights((" A ",), [("A",)])
-    assert tags
-
-
-def test_roster_same_date_via_polars_any(tmp_path: Path):
+def test_roster_same_date_all_pending_and_sas_formats(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
-    write_csv(pa, "id,d,other\n1,2020-01-02,x\n2,nope,y\n")
-    write_csv(pb, "id,d,other\n1,20200102,x\n2,nope2,y\n")
+    write_csv(
+        pa,
+        "id,all_iso,mixed,date9,date7,date11,monyy,dt\n"
+        "1,2020-01-02,2020-01-02,15JAN2024,15JAN24,15-JAN-2024,JAN2024,15JAN2024:14:30:00\n"
+        "2,2020-01-02,nope,15JAN2024,15JAN24,15-JAN-2024,JAN2024,15JAN2024:14:30:00\n",
+    )
+    write_csv(
+        pb,
+        "id,all_iso,mixed,date9,date7,date11,monyy,dt\n"
+        "1,20200102,20200102,2024-01-15,20240115,2024-01-15,2024-01-01,2024-01-15T14:30:00\n"
+        "2,20200102,nope2,2024-01-15,20240115,2024-01-15,2024-01-01,2024-01-15T14:30:00\n",
+    )
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    row = next(r for r in eng.roster() if r.name == "d")
-    assert "same date" in row.speculative
-    assert "speculative:" not in row.speculative
+    by_name = {r.name: r for r in eng.roster() if r.kind == "column"}
+    assert by_name["all_iso"].date == "y"
+    assert by_name["mixed"].date == "n"
+    assert by_name["date9"].date == "y"
+    assert by_name["date7"].date == "y"
+    assert by_name["date11"].date == "y"
+    assert by_name["monyy"].date == "y"
+    assert by_name["dt"].date == "y"
     import polars as pl
 
-    pending = eng.pending_cells.filter(pl.col("column") == "d")
-    assert pending.select(same_date_expr().any()).item() is True
+    pending = eng.pending_cells.filter(pl.col("column") == "all_iso")
+    assert pending.select(same_date_expr().all()).item() is True
+    mixed = eng.pending_cells.filter(pl.col("column") == "mixed")
+    assert mixed.select(same_date_expr().all()).item() is False
 
 
 def test_roster_ambiguous_us_eu_date_not_same_date(tmp_path: Path):
@@ -117,7 +137,7 @@ def test_roster_ambiguous_us_eu_date_not_same_date(tmp_path: Path):
     write_csv(pb, "id,d\n1,01/02/2020\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     row = next(r for r in eng.roster() if r.name == "d")
-    assert "same date" not in row.speculative
+    assert row.date == "n"
 
 
 def test_roster_speculation_flags_sentinel_on_a_b_or_both(tmp_path: Path):
@@ -125,14 +145,32 @@ def test_roster_speculation_flags_sentinel_on_a_b_or_both(tmp_path: Path):
     write_csv(pa, "id,only_a,only_b,both,plain\n1,0,x,NA,foo\n2,0,y,NA,bar\n")
     write_csv(pb, "id,only_a,only_b,both,plain\n1,x,,z,baz\n2,y,,z,qux\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
-    by_name = {r.name: r.speculative for r in eng.roster() if r.kind == "column"}
-    assert "sentinel A=0" in by_name["only_a"]
-    assert "sentinel B" not in by_name["only_a"]
-    assert 'sentinel B=""' in by_name["only_b"]
-    assert "sentinel A" not in by_name["only_b"]
-    assert by_name["both"] == "sentinel both A=NA B=z"
-    assert "speculative:" not in by_name["both"]
-    assert "sentinel" not in by_name["plain"]
+    by_name = {r.name: r for r in eng.roster() if r.kind == "column"}
+    assert by_name["only_a"].sent_a == "0"
+    assert by_name["only_a"].sent_b == ""
+    assert by_name["only_a"].sent_both == ""
+    assert by_name["only_b"].sent_b == '""'
+    assert by_name["only_b"].sent_a == ""
+    assert by_name["only_b"].sent_both == ""
+    assert by_name["both"].sent_a == "NA"
+    assert by_name["both"].sent_b == "z"
+    assert by_name["both"].sent_both == "A=NA B=z"
+    assert by_name["plain"].sent_a == ""
+    assert by_name["plain"].sent_b == ""
+    headers = {h for h, _ in roster_visible_insight_headers(eng.column_roster())}
+    assert "sent A" in headers
+    assert "sent B" in headers
+    assert "sent both" in headers
+
+    pb2 = tmp_path / "b_only.csv"
+    pa2 = tmp_path / "a_only_b.csv"
+    write_csv(pa2, "id,only_b\n1,x\n2,y\n")
+    write_csv(pb2, "id,only_b\n1,\n2,\n")
+    eng_b = Engine.from_paths(str(pa2), str(pb2), ["id"], a_delim=",", b_delim=",")
+    hide = {h for h, _ in roster_visible_insight_headers(eng_b.column_roster())}
+    assert "sent B" in hide
+    assert "sent A" not in hide
+    assert "sent both" not in hide
 
 
 def test_sentinel_uses_comparable_rows_not_unmatched_keys(tmp_path: Path):
@@ -141,9 +179,10 @@ def test_sentinel_uses_comparable_rows_not_unmatched_keys(tmp_path: Path):
     write_csv(pb, "id,col\n1,x\n2,y\n88,888\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     row = next(r for r in eng.roster() if r.name == "col")
-    assert "sentinel A=0" in row.speculative
-    assert "999" not in row.speculative
-    assert "888" not in row.speculative
+    assert row.sent_a == "0"
+    assert "999" not in row.sent_a
+    assert "888" not in row.sent_a
+    assert row.sent_b == ""
     assert eng.pending_a_only_n() == 1
     assert eng.pending_b_only_n() == 1
     n = eng.start_sentinel_draft("A", "0")
@@ -161,7 +200,9 @@ def test_non_constant_side_is_not_sentinel(tmp_path: Path):
     write_csv(pb, "id,col\n1,1\n2,x\n3,y\n")
     eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
     row = next(r for r in eng.roster() if r.name == "col")
-    assert "sentinel" not in row.speculative
+    assert row.sent_a == ""
+    assert row.sent_b == ""
+    assert row.sent_both == ""
     with pytest.raises(InTuiError, match="0 pending"):
         eng.start_sentinel_draft("A", "0")
 
@@ -175,6 +216,8 @@ def test_roster_insight_text_has_no_speculative_prefix(tmp_path: Path):
         if row.kind != "column":
             continue
         assert "speculative:" not in row.speculative
+        assert "speculative:" not in row.sent_a
+        assert "speculative:" not in row.sent_both
         assert "shared value pattern" not in row.speculative
         assert "pattern" not in row.speculative
 
@@ -187,6 +230,8 @@ def test_shared_value_pattern_insight_is_gone(tmp_path: Path):
     row = next(r for r in eng.roster() if r.name == "flag")
     assert "shared value pattern" not in row.speculative
     assert "pattern" not in row.speculative
+    assert row.sent_a == ""
+    assert row.trim == "n"
     from reconcile import insights
 
     assert not hasattr(insights, "column_pattern_insight")

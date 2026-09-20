@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from reconcile.engine import Engine, Place
-from reconcile.insights import extra_insights
 from tests.xlsxutil import write_csv
 
 
@@ -59,101 +58,167 @@ def test_golden_roster_tags_bytes(tmp_path: Path):
         "2,y,,z,Y,yes,1.0,a,20200102,y,qux\n",
     )
     by_name = {r.name: r for r in eng.roster() if r.kind == "column"}
+    n_base = {
+        "pending": 2,
+        "accepted": 0,
+        "equal": "0",
+        "categorical": "yes",
+    }
     expected = {
         "sent_a": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "50%",
-            "speculative": "sentinel A=0",
+            "sent_a": "0",
+            "sent_b": "",
+            "sent_both": "",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
         "sent_b": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "50%",
-            "speculative": 'sentinel B=""',
+            "sent_a": "",
+            "sent_b": '""',
+            "sent_both": "",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
         "sent_both": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": "sentinel both A=NA B=z",
+            "sent_a": "NA",
+            "sent_b": "z",
+            "sent_both": "A=NA B=z",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
         "trim_c": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": 'sentinel both A=" Y" B=Y, equal if trim, invisible/odd whitespace',
+            "sent_a": '" Y"',
+            "sent_b": "Y",
+            "sent_both": 'A=" Y" B=Y',
+            "trim": "y",
+            "case": "n",
+            "trim_case": "y",
+            "num": "n",
+            "ws": "y",
+            "date": "n",
         },
         "case_c": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": "sentinel both A=Yes B=yes, equal if case-fold",
+            "sent_a": "Yes",
+            "sent_b": "yes",
+            "sent_both": "A=Yes B=yes",
+            "trim": "n",
+            "case": "y",
+            "trim_case": "y",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
         "num_c": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": "sentinel both A=1 B=1.0, equal as numbers",
+            "sent_a": "1",
+            "sent_b": "1.0",
+            "sent_both": "A=1 B=1.0",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "y",
+            "ws": "n",
+            "date": "n",
         },
         "ws_c": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": 'sentinel both A="a\xa0" B=a, equal if trim, invisible/odd whitespace',
+            "sent_a": '"a\xa0"',
+            "sent_b": "a",
+            "sent_both": 'A="a\xa0" B=a',
+            "trim": "y",
+            "case": "n",
+            "trim_case": "y",
+            "num": "n",
+            "ws": "y",
+            "date": "n",
         },
         "date_c": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "100%",
-            "speculative": "sentinel both A=2020-01-02 B=20200102, same date",
+            "sent_a": "2020-01-02",
+            "sent_b": "20200102",
+            "sent_both": "A=2020-01-02 B=20200102",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "y",
         },
         "mixed": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "50%",
-            "speculative": "",
+            "sent_a": "",
+            "sent_b": "",
+            "sent_both": "",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
         "plain": {
-            "pending": 2,
-            "accepted": 0,
-            "equal": "0",
-            "categorical": "yes",
+            **n_base,
             "top_pair_pct": "50%",
-            "speculative": "",
+            "sent_a": "",
+            "sent_b": "",
+            "sent_both": "",
+            "trim": "n",
+            "case": "n",
+            "trim_case": "n",
+            "num": "n",
+            "ws": "n",
+            "date": "n",
         },
     }
     assert set(by_name) == set(expected)
-    for name, fields in expected.items():
+    fields = (
+        "pending",
+        "accepted",
+        "equal",
+        "categorical",
+        "top_pair_pct",
+        "sent_a",
+        "sent_b",
+        "sent_both",
+        "trim",
+        "case",
+        "trim_case",
+        "num",
+        "ws",
+        "date",
+    )
+    for name, want in expected.items():
         row = by_name[name]
-        got = {
-            "pending": row.pending,
-            "accepted": row.accepted,
-            "equal": row.equal,
-            "categorical": row.categorical,
-            "top_pair_pct": row.top_pair_pct,
-            "speculative": row.speculative,
-        }
-        assert got == fields, name
-        assert "speculative:" not in row.speculative
+        got = {k: getattr(row, k) for k in fields}
+        assert got == want, name
+        assert row.speculative == ""
+        assert "speculative:" not in row.sent_both
         assert "shared value pattern" not in row.speculative
 
 
@@ -186,31 +251,18 @@ def test_golden_extras_tags_slice(tmp_path: Path):
         "id,val,Customer_ID ,cust\n1,a,1,2\n",
         "id,val,customer_id,customer,CUST\n1,a,1,2,3\n",
     )
-    others = {"A": list(eng.b.headers), "B": list(eng.a.headers)}
     extras = eng.extras_rows()
     assert extras, "expected extras rows"
     for rec in extras:
-        tags = extra_insights(rec["name"], others[rec["side"]])
-        assert rec["speculative"] == tags[:3]
+        assert rec["speculative"] == []
         roster = next(
             r
             for r in eng.roster()
             if r.kind == "extra" and r.name == rec["name"] and r.side == rec["side"]
         )
-        assert roster.speculative == ", ".join(tags[:2])
-    # Lock a 3-tag extra so extras UI [:3] vs roster [:2] cannot drift.
+        assert roster.speculative == ""
     cust = next(r for r in extras if r["name"] == "cust" and r["side"] == "A")
-    assert cust["speculative"] == [
-        "near-miss 'customer_id'",
-        "near-miss 'customer'",
-        "name would pair if case",
-    ]
-    roster_cust = next(
-        r for r in eng.roster() if r.kind == "extra" and r.name == "cust" and r.side == "A"
-    )
-    assert roster_cust.speculative == (
-        "near-miss 'customer_id', near-miss 'customer'"
-    )
+    assert cust["speculative"] == []
 
 
 def test_golden_pair_page_context_flag_truncation(tmp_path: Path):

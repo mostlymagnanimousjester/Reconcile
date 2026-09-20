@@ -49,7 +49,7 @@ Compare is **exact raw text**.
 
 **Speculative insights** (§10) may *describe* why two unequal strings look related. They must never change the contract, remaining-diff counts, or pairing.
 
-Insights appear in a column named **`speculative`**. Show the insight text only; do not prefix every tag with `speculative:`.
+Roster insights are per-column cells (`sent A` / `sent B` / `sent both` values; `trim` / `case` / `trim+case` / `num` / `ws` / `date` as `y`/`n`). Pair/cell pages still use a `speculative` column for **this pair**. Show the insight text only; do not prefix tags with `speculative:`.
 
 ---
 
@@ -259,7 +259,7 @@ Remaining work is the **pending** set. The job is “done” when pending count 
 | Confirm drafted columns | Same snapshot rule as accept entire column, applied to every **still-checked** column in the in-flight **column** draft (§9.5). Then the draft is empty |
 | Accept entire pair | Snapshot every current pending cell in this column with exact `valA`, `valB`. Immediate from the pair list (`a`). Stay on that pair list; selection moves to the pair that was **below** (or the new last remaining pair / empty). Does **not** next-lever |
 | Confirm drafted pair | Snapshot every **still-checked** pending cell in the in-flight **pair** draft (§9.6). Then the draft is empty; then **next lever** |
-| Accept same pair on columns | Modal (`m` on roster / pair list): pick target columns, pick one exact `(valA, valB)` from the grouped union, snapshot that pair on every selected column that still has it. Same grain identity as pair accept (exact strings, not fuzzy). Stay on the current screen; selection follows the below/last-remaining rule when the focused row vanishes |
+| Accept same pair on columns | Pair-only `m`. Pair list: apply **this pair** to the live column-draft ON columns, or to every pending column that still has it. Roster: pair picker only (grouped union of those same targets); no column picker. `/`, `=`, and Space already choose columns. Same grain identity as pair accept (exact strings, not fuzzy). Stay on the current screen; selection follows the below/last-remaining rule when the focused row vanishes. One last-accept unit for `u` |
 | Accept one unmatched key | Snapshot `(side, key, row snapshot)`. On the unmatched-key grid, then the next pending key in that grid (not next lever) |
 | Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys. Immediate from the roster row or `A` on that grid. Then **next lever** |
 | Accept one extra column | Snapshot `(side, column name)`. Immediate from Schema extras. Stay on that list; selection moves to the extra that was **below** (or the new last remaining / empty). Does **not** next-lever |
@@ -354,8 +354,8 @@ While a **pair** draft is in flight, `/` and `=` error: confirm or cancel first.
 
 - Full roster stays visible (not a drafted-only list). Drafted rows show a check.
 - Opening `:` (or `/` alias) opens a regex modal. Opening `=` opens a sentinel modal; **`a`/`b` select Side A or Side B** (Buttons are aliases), then one exact-string field; `Enter` Runs; `Esc` closes the modal without changing the draft. Run is refused until a side is selected. No default side.
-- After Run, the **banner** shows the column-draft recipe (`y ACCEPT selected`, Space, Esc cancel). `m` uses the live ON columns (skips the column picker).
-- Column **detail** has no regex/sentinel. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight. `m` on a live column draft is the exception: it applies the same-pair flow to the ON columns.
+- After Run, the **banner** shows the column-draft recipe (`y ACCEPT selected`, Space, Esc cancel). `m` uses the live ON columns (no column picker).
+- Column **detail** has no regex/sentinel. Detail accept column remains immediate (`A`). Pair accept is §9.6, and is refused while a **column** draft is in flight. `m` on a live column draft is the exception: it applies this pair (pair list) or the union pair picker (roster) to the ON columns.
 
 ### 9.6 Exact pending-pair accept
 
@@ -410,41 +410,69 @@ Pending view shows the **pair list only** (always the paged list). No cell grid 
 
 ## 10. Speculative insights (view/filter only)
 
-Computed in Polars from already-established exact diffs (or from extra/unmatched sets as noted). Shown in a column named **`speculative`** without a `speculative:` prefix on each tag. Never change remaining counts.
+Computed in Polars from already-established exact diffs. Never change remaining counts. No `speculative:` prefix on the text.
 
-They may be used as **filters/explanations**, not as accept actions. A tag is only worth showing when it names something the user can act on with `a`, `=`, or `m`.
+An insight is allowed only if it names a next keystroke on **that** screen. Roster sentinel columns point at `=`. Pair/cell transform tags point at pair-only `m` (this pair). `=` stays sentinel; `:` stays name regex.
 
-### 10.1 On matched-key cell mismatches
+### 10.1 Roster (comparable-column rows)
 
-- Equal if trim
-- Equal if case-fold
-- Equal if trim+case
-- Both numeric-looking and equal as numbers (`1` vs `1.0`)
-- Invisible/odd whitespace (NBSP, tabs, trailing space)
-- **Same calendar date** (see §10.4)
-- **Sentinel** on A only, B only, or both: that side is one constant on **all comparable (shared-key) rows** of the column. Display the side and the value, e.g. `sentinel A=0`, `sentinel B=""`, `sentinel both A=x B=y`. Not a token list. Hint for the `=` draft (and for `m` when both sides are a pair). Never an accept path by itself.
-- Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top-pair %` column; a specific pair is accepted with `a` / `m`.
+Replace the packed `speculative` string. Keep `pending`, **`top-pair %`**, `equal`, `cat`. Draft / `status` (`v`) unchanged.
 
-### 10.2 On extras
+**Sentinel value columns** (existing definition: a side is a sentinel iff it is one unique value on all comparable shared-key rows). Hide a header if no **pending** comparable row has that kind.
 
-- Name would pair if trim/case
-- Near-miss names (`cust_id` vs `customer_id`)
+| Header | Cell |
+|---|---|
+| `sent A` | `format_sentinel_value(sent_a)` when A is constant — e.g. `0`, `""` |
+| `sent B` | `format_sentinel_value(sent_b)` when B is constant |
+| `sent both` | `A=x B=y` only when both sides are constants |
 
-### 10.3 On A-only / B-only keys
+A both-row fills `sent A`, `sent B`, and `sent both`. The header is the kind; the cell is the value. That is the `=` recipe.
 
-- Would match the other side if trim/case on the key strings
+**Check columns** (`y` / `n`). A check is `y` only if **every pending cell** in that column satisfies the predicate (`.all()`, not `.any()`). Hide the header if every pending row is `n`. Settled `v` rows may show empty/`n` under headers kept by pending rows.
+
+| Header | Predicate |
+|---|---|
+| `trim` | strip-equal |
+| `case` | lower-equal |
+| `trim+case` | strip then lower (not exclusive leftover) |
+| `num` | both parse as float, neither blank after strip, floats equal |
+| `ws` | NBSP / tab / CR / LF, or either side differs from strip |
+| `date` | `same_date_expr()` (see §10.4) |
+
+Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top-pair %` column.
+
+### 10.2 Pair / cell (this pair)
+
+Keep, per exact pair, from `cell_insights`:
+
+- `equal if trim`
+- `equal if case-fold`
+- `equal if trim+case` (exclusive leftover: only when strip+lower holds and neither trim-only nor case-only does)
+- `equal as numbers`
+- `same date` — same parsers as the roster `date` column
+
+Drop `invisible/odd whitespace` when trim already applies. A leftover-only whitespace tag does not name a keystroke — omit it. Do **not** add sentinel to `cell_insights` (sentinel is a column fact).
+
+### 10.3 A-only / B-only / extras
+
+Empty `speculative`. Always. No would-match / near-miss / name-would-pair columns. `i` is how you reach unmatched rows and mismatched columns.
 
 ### 10.4 Dates
 
-Try a fixed list:
+`DATE_FORMATS` and `_POLARS_DATE_FORMATS` stay in lockstep. Named-month tokens are SAS English abbreviations (`JAN`…`DEC`); parsing must accept that uppercase form without depending on locale.
 
-- `YYYY-MM-DD`
-- `YYYY-MM-DDTHH:MM:SS`
-- `M/D/YYYY`
-- `D/M/YYYY`
-- `YYYYMMDD`
+| Form | Example |
+|---|---|
+| ISO date | `2020-01-02` / `2024-01-15` |
+| ISO datetime | `2020-01-02T14:30:00` |
+| MMDDYY10. / DDMMYY10. | `01/15/2024` / `15/01/2024` |
+| compact YYYYMMDD | `20200102` |
+| DATE9. / DATE7. / DATE11. | `15JAN2024` / `15JAN24` / `15-JAN-2024` |
+| MMDDYY8. / DDMMYY8. | `01/15/24` / `15/01/24` |
+| MONYY7. / MONYY5. | `JAN2024` / `JAN24` (first of month) |
+| DATETIME19. / DATETIME16. | `15JAN2024:14:30:00` / `15JAN24:14:30:00` |
 
-Emit `same date` only when each side parses **unambiguously** to the same calendar date. If both US and EU parses are possible, emit **nothing**.
+Emit `same date` only when each side parses **unambiguously** to the same calendar date. Time-of-day is ignored once the calendar date is taken. **`01/02/2020` and `01/02/03` stay rejected** (US vs EU; 2-digit years collide). Two strings that parse to the same unambiguous calendar date count (`15JAN2024` vs `2024-01-15`).
 
 ### 10.5 Categorical statistic (not an accept path, not a layout switch)
 
@@ -456,7 +484,7 @@ A comparable column is treated as **categorical** when, among **pending** cells 
 
 That heuristic is a **roster statistic** (`cat` yes/no) only. Pair list layout is always the paged list (§9.6). Pair **counts** are exact. Pair **accept** is §9.6, not this section.
 
-Speculative chips may still annotate a pair (trim, same-date, …). Those labels must not be the accept target.
+Pair/cell tags may still annotate a pair (trim, same-date, …). Those labels must not be the accept target.
 
 These thresholds and the date format list in §10.4 are locked for v1.
 
@@ -606,7 +634,7 @@ If a later pair’s sheet is missing at advance time (renamed since preflight): 
 
 **Exit codes** stay **per loaded sheet** (§14). Unvisited later sheets are not remaining work of this process. Quit with current pending = 0 is exit `0` even if names remain in the set.
 
-**`u` / sheet advance.** Planned last-accept `u` (`improvements.md`) **should** treat a successful `S` as one last-accept unit (restore the previous sheet pair, its snapshots, and place). Until that `u` ships, undoing a sheet advance is **out of scope**. Today’s focused-grain `u` does not walk back a sheet.
+**`u` / sheet advance.** Last-accept `u` does **not** undo `S`. `advance_sheet` is a clean-slate reload (`__init__`) that drops the previous sheet’s snaps and place. Restoring one `S` would need a second engine snapshot store and fights that grain. Do not break `S`.
 
 ---
 
@@ -676,7 +704,8 @@ Columns on the roster:
 - **top-pair %**
 - equal count
 - categorical yes/no
-- compact speculative tags
+- optional `sent A` / `sent B` / `sent both` (values; hidden if unused on pending rows)
+- optional `trim` / `case` / `trim+case` / `num` / `ws` / `date` (`y` if every pending cell matches; hidden if all `n`)
 
 There is no separate **accepted-count** column next to a draft/accept checkbox. Pending columns show because they are pending; accepted columns are hidden unless `v`.
 
@@ -739,7 +768,7 @@ Each row: key columns + all other columns on that side, raw — comparable **and
 
 Reachable from the overview modal (`i` then Enter), or next lever. Same list either way.
 
-Headers that exist on one side only. Exact header + **Side** `A` or `B`; speculative near-misses as insight text. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
+Headers that exist on one side only. Exact header + **Side** `A` or `B`; empty `speculative`. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
 
 ### 15.6 Footer (always on)
 
@@ -772,7 +801,7 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 | `a` | Accept the **current selection**: roster column (stay on roster), pair (stay on pair list), cell (cell step), one unmatched key, one mismatched column. After the current row is removed/hidden, focus the item that was **below** it (or the new last remaining / empty). Do not jump to the top. Do not drill. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, ERROR, do not next-lever |
 | `A` | Accept **all** on this screen: entire column from the pair list / cell step with **no** pair draft, or **all unmatched on this side** (A-only/B-only **grid**). On the **roster**: ERROR (`A` is bulk; use `a` for the focused column / `y` for a column draft). On **extras**: same as `a` (one mismatched column; no bulk-all-extras). Refused while a pair draft is in flight. Refused on Accepted / Equal / All matched (switch to Pending). |
 | `y` | Confirm current draft; **ERROR `no draft to confirm`** if none. Pair-draft `y` then next lever. Column-draft `y` (`/` or `=`) stays on the roster and focuses the column that was **below** the last accepted drafted column (or the first remaining pending / empty). All-unchecked pair draft: ERROR, stay, draft live. After `/` or `=` the obvious next action is `y ACCEPT selected` |
-| `u` | Undo focused grain. After next lever, `u` undoes the last accepted grain (one last action). ERROR if nothing snapshotted for that grain (and no last grain). `U` undo entire column on the **pair list** only (ERROR elsewhere, including cell step where a pair draft is always in flight) |
+| `u` | Undo the last accept as **one unit** (pair `a`; column `A` or draft `y`; pair-only `m` on N columns reverses all N). ERROR if nothing has been accepted yet (same idea as `y` with no draft). Does not undo focused row when there is no last-accept memory. Does not undo `S`. `U` undo this column on the **pair list** only (inverse of `A`; ERROR elsewhere, including cell step where a pair draft is always in flight) |
 | `r` | Refresh (stay put; mark returned-to-pending) |
 | `.` | Repeat last pair as a new draft (§9.6); column detail only (pair list / cell step); refused if a draft is in flight; ERROR if last-pair column is gone |
 | `:` | Roster: regex **column draft**. `/` is a deprecated alias. There is no roster filter box. ERROR off roster |
@@ -781,7 +810,7 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 | `[` / `]` | Column-detail tabs: previous / next along Pending → Accepted → Equal → All matched. No wrap (`ERROR: first tab` / `ERROR: last tab`). Off column detail: `ERROR: column tabs are only on column detail`. Pair draft in flight: same refuse as a tab click. |
 | `i` | Overview modal (counts + unmatched rows / mismatched columns). Esc closes. ERROR is not a screen change |
 | `v` | Roster: toggle showing accepted / equal columns (default hidden). Footer hint. ERROR off roster |
-| `m` | Roster / pair list: same exact pair on selected columns. No live column draft: column picker, then grouped-union pair picker. Live `/` or `=` draft: skip the column picker; ON columns are the `m` targets. Footer hint. Refused while a **pair** draft is in flight. ERROR off roster / pair list |
+| `m` | Pair-only same exact pair. Pair list: apply this pair to the live `/` or `=` ON columns, or to every pending column that has it. Roster: pair picker only (union of those targets); no column picker. `/`, `=`, and Space already choose columns. Refused while a **pair** draft is in flight. ERROR off roster / pair list |
 | `c` | Context-column picker (column detail: pair list / cell step / non-Pending grids). ERROR off column detail |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
@@ -904,18 +933,18 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 | Fluency | Work is home (column roster of pending comparable columns); A import order; pair-first detail; unified `Enter`/`Esc`/`a`/`y`; overview is `i` modal; no jump list / `f` / `s` / `j` |
 | Deadline nav | After `a`, cursor goes to the former next-below item (or last remaining / empty), not the top and not a drill. Next lever still used after bulk `y` / pair-list `A` / unmatched `A`. `.` repeat pair; returned-to-pending marked in place (§15.9) |
 | Hard fail text | Raw keys, names, types, paths on stderr / in-TUI |
-| Insights | Speculative, view/filter only; date list locked; categorical 30/30/50 is a roster `cat` statistic only (pair list is always paged); no fuzzy keys; no accept-by-insight |
+| Insights | Roster sentinel + all-pending check columns; pair/cell per-pair tags; date list locked (§10.4); extras / unmatched empty; categorical 30/30/50 is a roster `cat` statistic only (pair list is always paged); no fuzzy keys; no accept-by-insight |
 | Context columns | Both-sides intersection only; per column; in memory |
 | Empty rows | Drop all-`""` rows after null cast |
 | Ragged CSV | Polars as-is: short rows padded with `""`; long rows `ComputeError`; no record-number copy |
 | Setup freeze | Paths/sheets/keys cannot change in-session; quit/relaunch |
 | Sources | Read-only in this TUI. No clipboard-out to edit files. User edits sources elsewhere, then refresh |
-| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. No roster filter box (`:` is regex draft; `/` alias). Immediate `a` column **in place**; roster `A` is ERROR; `:` `/` `=` behind glass; `m` same pair on columns |
-| Batch column accept | Independent regex `:` (or `/`) or exact-value sentinel `=`. Polars `=` gone; `=` drafts pending columns whose chosen side is that comparable-row constant (`a`/`b` pick the side). Draft all `[ON]`; banner `y ACCEPT selected`; `m` uses ON columns; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
+| Roster | Home screen of **pending comparable columns** (accepted / all-equal shared columns hidden by default; `v` shows them dim with status, pending then settled). A-only / B-only / mismatched columns are not column rows (`i` overview). Order: table A import order. No roster filter box (`:` is regex draft; `/` alias). Immediate `a` column **in place**; roster `A` is ERROR; `:` `/` `=` behind glass; pair-only `m` (union pair picker; no column picker) |
+| Batch column accept | Independent regex `:` (or `/`) or exact-value sentinel `=`. Polars `=` gone; `=` drafts pending columns whose chosen side is that comparable-row constant (`a`/`b` pick the side). Draft all `[ON]`; banner `y ACCEPT selected`; pair-only `m` uses ON columns; Space `[ON]`/`[off]`; `Esc` cancel; pending-only; zero-pending not drafted. Do not stack regex and sentinel into one draft |
 | Pair accept | Pair list is Pending view; `Enter` cell-step draft; `a` accepts the pair now; `Esc` back to pairs |
 | Launch | `python Reconcile.py`; `--keys` comma-separated; `--a-delim`/`--b-delim` optional on `.csv` (default comma), **required** on other delimited sides; `--a-encoding`/`--b-encoding` optional (default `utf8`); `--a`/`--b`/`--keys` required; CLI paths may be relative, stored absolute |
 | Detail | Pair list then cells (always paged list; pane has full strings); Accepted/Equal/All matched behind glass; named tabs via `[` / `]` (no `1`–`4`); `a` accepts the current selection on every screen |
-| Keybindings | One map (§15.7). `Esc` always one layer. `a` = accept selection. Roster `A` ERROR. `:` regex (`/` alias). `[` / `]` column tabs. `v` = show/hide accepted columns. `m` = same pair on selected columns. `?` = help modal. No `f`/`s`/`j` and no roster filter box |
+| Keybindings | One map (§15.7). `Esc` always one layer. `a` = accept selection. Roster `A` ERROR. `:` regex (`/` alias). `[` / `]` column tabs. `v` = show/hide accepted columns. `m` = pair-only same pair. `u` = last accept as one unit. `?` = help modal. No `f`/`s`/`j` and no roster filter box |
 | Paging | 100 rows from Polars; order raw key tuple |
 | A-only / B-only grid | Keys + all other columns on that side, including that side’s extras |
 | Extra columns | Exact header + Side `A` or `B`; name is never prefixed |

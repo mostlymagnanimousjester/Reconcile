@@ -16,7 +16,6 @@ from reconcile.insights import (
     CONTEXT_VALUE_SEP,
     context_group_header,
     context_header,
-    extra_insights,
     format_context_tuple,
 )
 
@@ -478,20 +477,15 @@ def extras_rows(eng: Engine) -> list[dict[str, Any]]:
     ]
     # Order: exact name (working rule). Spec §18: exact name. Mix sides by name then side.
     all_extras.sort(key=lambda x: (x[1], x[0]))
-    others = {"A": list(eng.b.headers), "B": list(eng.a.headers)}
-    tags_map = eng._extra_tags
     for side, name in all_extras:
         pending = (side, name) in eng.pending_extras
-        tags = tags_map.get((side, name))
-        if tags is None:
-            tags = extra_insights(name, others[side])
         rows.append(
             {
                 "side": side,
                 "name": name,
                 "pending": 1 if pending else 0,
                 "accepted": 0 if pending else 1,
-                "speculative": tags[:3],
+                "speculative": [],
                 "returned": (side, name) in eng.returned_extras,
             }
         )
