@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from reconcile.compare import _empty_df, _empty_mismatch_schema
 from reconcile.insights import (
+    CONTEXT_GROUP_MEMBER_SEP,
     CONTEXT_TOP_N,
     CONTEXT_TRUNCATION_MARK,
+    CONTEXT_TUPLE_SEP,
     CONTEXT_VALUE_SEP,
+    context_group_header,
+    context_header,
     extra_insights,
+    format_context_tuple,
 )
 
 if TYPE_CHECKING:
@@ -44,11 +50,7 @@ def _page(frame: pl.DataFrame, page: int) -> tuple[list[dict[str, Any]], int, in
 
 
 def _attach_context(eng: Engine, chunk: pl.DataFrame, column: str) -> pl.DataFrame:
-    names = [
-        n
-        for n in eng.context_columns.get(column, [])
-        if n in eng.context_pool and n != column
-    ]
+    names = _context_attach_names(eng, column)
     if not names or chunk.is_empty() or eng.matched_a.is_empty():
         return chunk
     needed = chunk.select(eng.keys).unique()
@@ -117,12 +119,75 @@ def page_index_for_pair(
     return i // page_size, i % page_size
 
 
-def _context_names(eng: Engine, column: str) -> list[str]:
+def context_singles(eng: Engine, column: str) -> list[str]:
+    """Standalone context columns: selected/on without requiring a group."""
     return [
         n
         for n in eng.context_columns.get(column, [])
         if n in eng.context_pool and n != column
     ]
+
+
+def _context_names(eng: Engine, column: str) -> list[str]:
+    return context_singles(eng, column)
+
+
+def context_group_list(eng: Engine, column: str) -> list[tuple[int, list[str]]]:
+    """Non-empty groups 0–9; members in table A import order (context_pool)."""
+    raw = eng.context_groups.get(column) or {}
+    out: list[tuple[int, list[str]]] = []
+    for gid in range(10):
+        members = raw.get(gid, [])
+        if not members:
+            continue
+        wanted = set(members)
+        names = [n for n in eng.context_pool if n in wanted and n != column]
+        if names:
+            out.append((gid, names))
+    return out
+
+
+def _context_attach_names(eng: Engine, column: str) -> list[str]:
+    """Columns whose A/B values must be joined for singles or groups."""
+    seen: list[str] = []
+    for n in context_singles(eng, column):
+        if n not in seen:
+            seen.append(n)
+    for _, members in context_group_list(eng, column):
+        for n in members:
+            if n not in seen:
+                seen.append(n)
+    return seen
+
+
+@dataclass(frozen=True)
+class ContextView:
+    header: str
+    pair_key: str
+    members: list[str]
+    group_id: int | None = None
+
+
+def context_views(eng: Engine, column: str) -> list[ContextView]:
+    """Pair-list / cell-grid columns: singles first, then non-empty groups 0–9."""
+    views: list[ContextView] = []
+    for n in context_singles(eng, column):
+        views.append(ContextView(context_header(n), f"{n}__ctx", [n], None))
+    for gid, members in context_group_list(eng, column):
+        views.append(
+            ContextView(context_group_header(gid, members), f"g{gid}__gctx", members, gid)
+        )
+    return views
+
+
+def _ctx_side_expr(members: list[str], side: str, *, as_tuple: bool) -> pl.Expr:
+    if not as_tuple:
+        return pl.col(f"{members[0]}__ctx_{side}").fill_null("").cast(pl.Utf8)
+    parts = []
+    for m in members:
+        raw = pl.col(f"{m}__ctx_{side}").fill_null("").cast(pl.Utf8)
+        parts.append(pl.when(raw == "").then(pl.lit("(empty)")).otherwise(raw))
+    return pl.concat_str(parts, separator=CONTEXT_TUPLE_SEP)
 
 
 def _attach_pair_context_summaries(
@@ -132,12 +197,13 @@ def _attach_pair_context_summaries(
 
     Count is how many pending cells (keys) of this pair carry that value on
     either side. A value on both A and B of the same row counts once.
-    Call after the pair-list slice. One summary column per context name.
+    Call after the pair-list slice. One summary column per standalone context
+    name and per non-empty group (group value = member tuple).
     """
-    names = _context_names(eng, column)
-    if not names:
+    views = context_views(eng, column)
+    if not views:
         return pair_chunk
-    empty_cols = [pl.lit("").alias(f"{n}__ctx") for n in names]
+    empty_cols = [pl.lit("").alias(v.pair_key) for v in views]
     if pair_chunk.is_empty() or eng.matched_a.is_empty() or eng.pending_cells.is_empty():
         return pair_chunk.with_columns(empty_cols)
     scoped = eng.pending_cells.filter(pl.col("column") == column).join(
@@ -150,18 +216,19 @@ def _attach_pair_context_summaries(
     scoped = _attach_context(eng, scoped, column)
     key_cols = list(eng.keys)
     parts: list[pl.DataFrame] = []
-    for name in names:
+    for view in views:
+        as_tuple = view.group_id is not None
         for side in ("a", "b"):
-            col = f"{name}__ctx_{side}"
-            if col not in scoped.columns:
+            needed = [f"{m}__ctx_{side}" for m in view.members]
+            if any(c not in scoped.columns for c in needed):
                 continue
             parts.append(
                 scoped.select(
                     "val_a",
                     "val_b",
                     *key_cols,
-                    pl.lit(name).alias("_ctx"),
-                    pl.col(col).fill_null("").cast(pl.Utf8).alias("_val"),
+                    pl.lit(view.pair_key).alias("_ctx"),
+                    _ctx_side_expr(view.members, side, as_tuple=as_tuple).alias("_val"),
                 )
             )
     if not parts:
@@ -206,12 +273,12 @@ def _attach_pair_context_summaries(
         )
     )
     out = pair_chunk
-    for name in names:
-        one = summarized.filter(pl.col("_ctx") == name).select(
-            "val_a", "val_b", pl.col("_summary").alias(f"{name}__ctx")
+    for view in views:
+        one = summarized.filter(pl.col("_ctx") == view.pair_key).select(
+            "val_a", "val_b", pl.col("_summary").alias(view.pair_key)
         )
         out = out.join(one, on=["val_a", "val_b"], how="left").with_columns(
-            pl.col(f"{name}__ctx").fill_null("")
+            pl.col(view.pair_key).fill_null("")
         )
     return out
 
@@ -434,26 +501,38 @@ def extras_rows(eng: Engine) -> list[dict[str, Any]]:
 def context_values(
     eng: Engine, key: tuple[str, ...] | None, column: str
 ) -> list[tuple[str, str, str]]:
-    names = [n for n in eng.context_columns.get(column, []) if n in eng.context_pool and n != column]
-    if not names:
+    singles = context_singles(eng, column)
+    groups = context_group_list(eng, column)
+    if not singles and not groups:
         return []
+    labels: list[str] = list(singles)
+    labels.extend(f"g{gid} {CONTEXT_GROUP_MEMBER_SEP.join(members)}" for gid, members in groups)
     if not key or len(key) != len(eng.keys):
         return []
     filt = None
     for kname, kval in zip(eng.keys, key):
         expr = pl.col(kname) == kval
         filt = expr if filt is None else (filt & expr)
-    out: list[tuple[str, str, str]] = []
     if eng.matched_a.is_empty():
-        return [(n, "", "") for n in names]
+        return [(label, "", "") for label in labels]
     ra = eng.matched_a.filter(filt)
     rb = eng.matched_b.filter(filt)
     if ra.is_empty():
-        return [(n, "", "") for n in names]
+        return [(label, "", "") for label in labels]
     rec_a = ra.row(0, named=True)
     rec_b = rb.row(0, named=True)
-    for n in names:
+    out: list[tuple[str, str, str]] = []
+    for n in singles:
         out.append((n, str(rec_a.get(n, "")), str(rec_b.get(n, ""))))
+    for gid, members in groups:
+        label = f"g{gid} {CONTEXT_GROUP_MEMBER_SEP.join(members)}"
+        out.append(
+            (
+                label,
+                format_context_tuple([str(rec_a.get(m, "")) for m in members]),
+                format_context_tuple([str(rec_b.get(m, "")) for m in members]),
+            )
+        )
     return out
 
 

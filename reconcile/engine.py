@@ -121,6 +121,8 @@ class Engine:
         self.unmatched_snaps_b: pl.DataFrame | None = None
         self.extra_snaps: list[ExtraSnap] = []
         self.context_columns: dict[str, list[str]] = {}
+        # focus column → {group id 0-9 → member columns in table A import order}
+        self.context_groups: dict[str, dict[int, list[str]]] = {}
         self.column_draft: set[str] = set()
         self.pair_draft_col: str | None = None
         self.pair_draft_va: str | None = None
@@ -300,6 +302,15 @@ class Engine:
         self, key: tuple[str, ...] | None, column: str
     ) -> list[tuple[str, str, str]]:
         return pages_mod.context_values(self, key, column)
+
+    def context_singles(self, column: str) -> list[str]:
+        return pages_mod.context_singles(self, column)
+
+    def context_group_list(self, column: str) -> list[tuple[int, list[str]]]:
+        return pages_mod.context_group_list(self, column)
+
+    def context_views(self, column: str) -> list[pages_mod.ContextView]:
+        return pages_mod.context_views(self, column)
 
     def first_pending_key_in_pair(
         self, column: str, val_a: str, val_b: str

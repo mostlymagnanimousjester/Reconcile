@@ -266,6 +266,26 @@ def test_golden_pair_page_context_flag_region(tmp_path: Path):
     ]
 
 
+def test_golden_pair_page_context_group_tuple(tmp_path: Path):
+    eng = _engine(
+        tmp_path,
+        "id,val,Flag,Region\n"
+        "1,Y,red,east\n2,Y,red,east\n3,Y,blue,west\n4,Y,green,west\n",
+        "id,val,Flag,Region\n"
+        "1,Yes,red,east\n2,Yes,red,east\n3,Yes,blue,west\n4,Yes,green,west\n",
+    )
+    eng.context_groups["val"] = {0: ["Flag", "Region"]}
+    recs, _, _ = eng.pair_page("val", 0)
+    assert recs == [
+        {
+            "val_a": "Y",
+            "val_b": "Yes",
+            "n": 4,
+            "g0__gctx": "red|east 2 | blue|west 1 | green|west 1",
+        }
+    ]
+
+
 def test_golden_returned_matrix_matches_per_pair(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n2,Y\n3,N\n")

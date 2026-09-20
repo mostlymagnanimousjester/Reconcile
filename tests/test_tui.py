@@ -135,6 +135,9 @@ def test_help_says_exact_sentinel_not_polars_selector():
 def test_help_xor_and_no_digit_tab_keys():
     assert "column XOR pair" in HELP
     assert "No keys 1–4" in HELP or "No keys 1-4" in HELP
+    assert "0-9" in HELP
+    assert "context picker" in HELP.lower() or "CONTEXT PICKER" in HELP
+    assert "this page" in HELP.lower()
     xor = next(line for line in HELP.splitlines() if "At most one draft" in line)
     assert "/" in xor
     assert "=" in xor
@@ -2588,5 +2591,279 @@ def test_pair_list_context_columns_are_labeled_and_separate(tmp_path: Path):
             assert "Flag" in pane
             assert "Region" in pane
             assert pane.index("Flag") != pane.index("Region")
+
+    asyncio.run(_run())
+
+
+def _group_fixture(tmp_path: Path) -> Engine:
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    rows_a = ["id,val,Flag,Region,Zone"]
+    rows_b = ["id,val,Flag,Region,Zone"]
+    # 8 unique Flag+Region tuples; two pairs of 2, six singles → top-5 + …
+    data = [
+        ("1", "red", "east", "N"),
+        ("2", "red", "east", "N"),
+        ("3", "blue", "west", "S"),
+        ("4", "blue", "west", "S"),
+        ("5", "green", "west", "S"),
+        ("6", "orange", "east", "N"),
+        ("7", "pink", "east", "N"),
+        ("8", "purple", "west", "S"),
+        ("9", "yellow", "east", "N"),
+        ("10", "brown", "west", "S"),
+    ]
+    for i, flag, region, zone in data:
+        rows_a.append(f"{i},Y,{flag},{region},{zone}")
+        rows_b.append(f"{i},Yes,{flag},{region},{zone}")
+    write_csv(pa, "\n".join(rows_a) + "\n")
+    write_csv(pb, "\n".join(rows_b) + "\n")
+    return Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+
+
+def test_pair_list_context_group_pair_and_triplet_top5(tmp_path: Path):
+    eng = _group_fixture(tmp_path)
+    eng.context_columns["val"] = ["Flag"]
+    eng.context_groups["val"] = {
+        0: ["Flag", "Region"],
+        1: ["Flag", "Region", "Zone"],
+        5: [],
+    }
+    recs, _, _ = eng.pair_page("val", 0)
+    rec = recs[0]
+    assert rec["Flag__ctx"].startswith("blue 2 | red 2")
+    assert rec["Flag__ctx"].endswith("…")
+    assert rec["g0__gctx"] == (
+        "blue|west 2 | red|east 2 | brown|west 1 | green|west 1 | orange|east 1 …"
+    )
+    assert rec["g1__gctx"] == (
+        "blue|west|S 2 | red|east|N 2 | brown|west|S 1 | green|west|S 1 | orange|east|N 1 …"
+    )
+    assert "g5__gctx" not in rec
+    assert "pink|east" not in rec["g0__gctx"]
+    views = eng.context_views("val")
+    headers = [v.header for v in views]
+    assert "ctx:Flag" in headers
+    assert "ctx:g0 Flag+Region" in headers
+    assert "ctx:g1 Flag+Region+Zone" in headers
+    assert not any(v.header.startswith("ctx:g5") for v in views)
+
+
+def test_empty_context_group_omitted_and_single_still_works(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,val,Flag,Region\n1,Y,red,east\n2,Y,blue,west\n",
+    )
+    write_csv(
+        pb,
+        "id,val,Flag,Region\n1,Yes,red,east\n2,Yes,blue,west\n",
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["Flag"]
+    eng.context_groups["val"] = {3: []}
+    recs, _, _ = eng.pair_page("val", 0)
+    rec = recs[0]
+    assert rec["Flag__ctx"] == "blue 1 | red 1"
+    assert "g3__gctx" not in rec
+    assert [v.header for v in eng.context_views("val")] == ["ctx:Flag"]
+
+
+def test_same_column_in_two_groups_counts_independently(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,val,Flag,Region,Zone\n1,Y,red,east,N\n2,Y,red,west,S\n",
+    )
+    write_csv(
+        pb,
+        "id,val,Flag,Region,Zone\n1,Yes,red,east,N\n2,Yes,red,west,S\n",
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_groups["val"] = {0: ["Flag", "Region"], 2: ["Flag", "Zone"]}
+    recs, _, _ = eng.pair_page("val", 0)
+    rec = recs[0]
+    assert rec["g0__gctx"] == "red|east 1 | red|west 1"
+    assert rec["g2__gctx"] == "red|N 1 | red|S 1"
+
+
+def test_pair_ctx_cache_invalidates_when_groups_change(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        "id,val,Flag,Region\n1,Y,red,east\n2,Y,blue,west\n",
+    )
+    write_csv(
+        pb,
+        "id,val,Flag,Region\n1,Yes,red,east\n2,Yes,blue,west\n",
+    )
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["Flag"]
+    first, _, _ = eng.pair_page("val", 0)
+    assert "g0__gctx" not in first[0]
+    assert "val" in eng._pair_ctx_by_col
+    eng.context_groups["val"] = {0: ["Flag", "Region"]}
+    stale, _, _ = eng.pair_page("val", 0)
+    assert "g0__gctx" not in stale[0]
+    eng._pair_ctx_by_col.pop("val", None)
+    fresh, _, _ = eng.pair_page("val", 0)
+    assert fresh[0]["g0__gctx"] == "blue|west 1 | red|east 1"
+
+
+def test_cell_step_group_context_is_per_row_tuple(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,Flag,Region\n1,Y,red,east\n")
+    write_csv(pb, "id,val,Flag,Region\n1,Yes,blue,west\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    eng.context_columns["val"] = ["Flag"]
+    eng.context_groups["val"] = {0: ["Flag", "Region"]}
+    recs, _, _ = eng.pair_cells_page("val", "Y", "Yes", 0)
+    rec = recs[0]
+    assert rec["Flag__ctx_a"] == "red"
+    assert rec["Flag__ctx_b"] == "blue"
+    assert rec["Region__ctx_a"] == "east"
+    assert rec["Region__ctx_b"] == "west"
+    assert eng.context_values(("1",), "val") == [
+        ("Flag", "red", "blue"),
+        ("g0 Flag+Region", "red|east", "blue|west"),
+    ]
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("1",)
+            app.render_all()
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "ctx:Flag" in labels
+            assert "ctx:g0 Flag+Region" in labels
+            g_i = labels.index("ctx:g0 Flag+Region")
+            assert str(table.get_row_at(0)[g_i]) == "A|red|east  B|blue|west"
+            pane = str(app.query_one("#pane").render())
+            assert "g0 Flag+Region" in pane
+            assert "A|red|east" in pane
+            assert "B|blue|west" in pane
+
+    asyncio.run(_run())
+
+
+def test_context_modal_0_9_toggles_group_membership(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag,Region\n1,Y,red,east\n")
+    write_csv(pb, "id,Status,Flag,Region\n1,Yes,blue,west\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("Status", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "Status"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ContextModal)
+            assert modal.names[0] == "Flag"
+            await pilot.press("0")
+            await pilot.pause()
+            await pilot.press("2")
+            await pilot.pause()
+            assert "Flag" in modal.groups[0]
+            assert "Flag" in modal.groups[2]
+            table = modal.query_one("#ctx")
+            assert "0 · 2" in str(table.get_row_at(0)[1])
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("0")
+            await pilot.pause()
+            assert "Region" in modal.groups[0]
+            assert "Flag" in modal.groups[0]
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not isinstance(app.screen, ContextModal)
+            assert app.engine.context_columns.get("Status") == []
+            assert app.engine.context_groups["Status"][0] == ["Flag", "Region"]
+            assert app.engine.context_groups["Status"][2] == ["Flag"]
+            assert 1 not in app.engine.context_groups["Status"]
+            assert "Status" not in app.engine._pair_ctx_by_col
+            recs, _, _ = app.engine.pair_page("Status", 0)
+            assert recs[0]["g0__gctx"] == "blue|west 1 | red|east 1"
+            assert recs[0]["g2__gctx"] == "blue 1 | red 1"
+            assert "Flag__ctx" not in recs[0]
+
+    asyncio.run(_run())
+
+
+def test_context_modal_space_and_groups_together(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag,Region\n1,Y,red,east\n")
+    write_csv(pb, "id,Status,Flag,Region\n1,Yes,red,east\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "Status"
+            app.render_all()
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, ContextModal)
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("0")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("0")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.engine.context_columns["Status"] == ["Flag"]
+            assert app.engine.context_groups["Status"][0] == ["Flag", "Region"]
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "ctx:Flag" in labels
+            assert "ctx:g0 Flag+Region" in labels
+            assert labels.index("ctx:Flag") < labels.index("ctx:g0 Flag+Region")
+
+    asyncio.run(_run())
+
+
+def test_digits_on_pair_list_do_not_set_context_groups(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,Flag\n1,Y,red\n")
+    write_csv(pb, "id,val,Flag\n1,Yes,blue\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            await pilot.press("0")
+            await pilot.pause()
+            await pilot.press("9")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert not app.engine.context_groups.get("val")
+            assert not isinstance(app.screen, ContextModal)
 
     asyncio.run(_run())

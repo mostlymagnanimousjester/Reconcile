@@ -21,6 +21,8 @@ _WS_RE = re.compile(r"[\u00a0\t\r\n]")
 CONTEXT_TOP_N = 5
 CONTEXT_VALUE_SEP = " | "
 CONTEXT_TRUNCATION_MARK = " …"
+CONTEXT_TUPLE_SEP = "|"
+CONTEXT_GROUP_MEMBER_SEP = "+"
 
 
 def context_header(name: str) -> str:
@@ -28,10 +30,20 @@ def context_header(name: str) -> str:
     return f"ctx:{name}"
 
 
+def context_group_header(gid: int, members: list[str]) -> str:
+    """Dedicated pair/cell table header for one context group."""
+    return f"ctx:g{gid} {CONTEXT_GROUP_MEMBER_SEP.join(members)}"
+
+
 def format_context_value(value: str, count: int) -> str:
     """One unique context value with its pair-row count."""
     label = value if value else "(empty)"
     return f"{label} {count}"
+
+
+def format_context_tuple(parts: list[str]) -> str:
+    """One group's tuple: member values in stable order, empty as (empty)."""
+    return CONTEXT_TUPLE_SEP.join(p if p else "(empty)" for p in parts)
 
 _EMPTY_SENTINELS = pl.DataFrame(
     {"column": [], "sent_a": [], "sent_b": []},
