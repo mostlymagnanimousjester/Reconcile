@@ -697,7 +697,7 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 | `Esc` | Back: close modal → cancel roster/cell-step draft → parent screen (pair list / A-only / B-only / extras → roster). Roster `Esc` stays (overview is `i`, not a screen). On pair list / detail, a **column** draft stays live (`Esc` is back, not cancel) |
 | `Space` | Toggle focused **column** row in the current column draft (`[ON]` / `[off]`); ERROR if no column draft (cheap) |
 | `a` | Accept the **current selection**: roster column (stay on roster), pair (stay on pair list), cell (cell step), one unmatched key, one mismatched column. After the current row is removed/hidden, focus the item that was **below** it (or the new last remaining / empty). Do not jump to the top. Do not drill. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, ERROR, do not next-lever |
-| `A` | Accept **all** on this screen: entire column from the pair list / cell step with **no** pair draft, or **all unmatched on this side** (A-only/B-only **grid**). Same as `a` on the roster (selection is one column). Refused while a pair draft is in flight. Refused on Accepted / Equal / All matched (switch to Pending). 0-pending roster column: stay |
+| `A` | Accept **all** on this screen: entire column from the pair list / cell step with **no** pair draft, or **all unmatched on this side** (A-only/B-only **grid**). On the **roster**: ERROR (`A` is bulk; use `a` for the focused column / `y` for a column draft). On **extras**: same as `a` (one mismatched column; no bulk-all-extras). Refused while a pair draft is in flight. Refused on Accepted / Equal / All matched (switch to Pending). |
 | `y` | Confirm current draft; no-op if none. Pair-draft `y` then next lever. Column-draft `y` (`/` or `=`) stays on the roster and focuses the column that was **below** the last accepted drafted column (or the first remaining pending / empty). All-unchecked pair draft: ERROR, stay, draft live. After `/` or `=` the obvious next action is `y ACCEPT selected` |
 | `u` | Undo focused grain. After next lever, `u` undoes the last accepted grain (one last action). ERROR if nothing snapshotted for that grain (and no last grain). `U` undo entire column on the **pair list** only (ERROR elsewhere, including cell step where a pair draft is always in flight) |
 | `r` | Refresh (stay put; mark returned-to-pending) |
@@ -749,7 +749,7 @@ Palette: dark background; foreground default, bright white, yellow, orange/amber
    - `extra` → mismatched-column list, that header focused (ready for `a`)
 3. Else the roster (including pending total 0).
 
-**Roster `a` / roster `A` does not next-lever.** It accepts the focused column, hides it (unless `v`), and stays on the roster with the column that was **below** focused (or the new last remaining / empty).
+**Roster `a` does not next-lever.** It accepts the focused column, hides it (unless `v`), and stays on the roster with the column that was **below** focused (or the new last remaining / empty). **Roster `A` is ERROR** (not bulk-all-columns; not a clone of `a`).
 
 **Pair-list `a` and extras `a` do not next-lever.** They stay on that screen and move selection to the item that was below (or the new last remaining / empty).
 

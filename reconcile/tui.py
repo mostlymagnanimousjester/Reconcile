@@ -1934,22 +1934,9 @@ class ReconcileApp(App[int]):
             if e.column_draft and p.screen in ("pair_list", "cell_step"):
                 raise InTuiError("ERROR: confirm or cancel the column draft first")
             if p.screen == "roster":
-                row = self._focused_roster()
-                if not row:
-                    return
-                if row.kind != "column":
-                    raise InTuiError("ERROR: column roster accepts columns only")
-                if row.pending == 0:
-                    raise InTuiError("ERROR: no pending cells in this column")
-                old_names = [
-                    r.name
-                    for r in e.column_roster(
-                        p.roster_filter, include_settled=self.show_accepted_columns
-                    )
-                ]
-                n = e.accept_column(row.name)
-                e.remember_grain(("column", row.name), n)
-                self._stay_on_roster_after_column(row.name, old_names)
+                raise InTuiError(
+                    "ERROR: A is bulk accept on pair list or unmatched keys; on the roster use a"
+                )
             elif p.screen in ("pair_list", "cell_step"):
                 if p.column:
                     n_pend = e.pending_cells.filter(pl.col("column") == p.column).height

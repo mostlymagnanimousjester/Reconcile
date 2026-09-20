@@ -408,6 +408,28 @@ def test_roster_a_stays_on_roster_after_accepting_one_of_two(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_roster_A_errors_does_not_accept(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pending = app.engine.pending_cells_n()
+            app.query_one("#grid").focus()
+            await pilot.press("A")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == pending
+            assert app.tui_error and "on the roster use a" in app.tui_error
+            assert next(r for r in app.engine.roster() if r.name == "Status").pending > 0
+
+    asyncio.run(_run())
+
+
 def test_roster_A_on_extra_accepts_like_a(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val,cust\n1,a,1\n")
