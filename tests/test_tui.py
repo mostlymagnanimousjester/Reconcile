@@ -1415,6 +1415,31 @@ def test_regex_modal_unfocused_a_does_not_accept(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_colon_opens_regex_modal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status\n1,Y\n")
+    write_csv(pb, "id,Status\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("colon")
+            await pilot.pause()
+            assert isinstance(app.screen, RegexModal)
+            app.screen.query_one("#pat").value = "Status"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not isinstance(app.screen, RegexModal)
+            assert app.place.screen == "roster"
+            assert app.engine.column_draft == {"Status"}
+
+    asyncio.run(_run())
+
+
 def test_regex_modal_enter_runs(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n")
