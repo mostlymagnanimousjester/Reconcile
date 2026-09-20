@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from textual.containers import ScrollableContainer
 from textual.widgets import Button, Input, Static
 
 from reconcile.engine import Engine, Place
@@ -232,6 +233,7 @@ def test_help_says_exact_sentinel_not_polars_selector():
     assert "Polars selector" not in HELP
     assert "exact sentinel" in HELP
     assert "regex column draft" in HELP
+    assert "a/b side" in HELP or "a A or b B" in HELP
 
 
 def test_help_xor_and_no_digit_tab_keys():
@@ -240,9 +242,13 @@ def test_help_xor_and_no_digit_tab_keys():
     assert "0-9" in HELP
     assert "context picker" in HELP.lower() or "CONTEXT PICKER" in HELP
     assert "this page" in HELP.lower()
+    assert ":" in HELP
+    assert "[" in HELP
+    assert "]" in HELP
     xor = next(line for line in HELP.splitlines() if "At most one draft" in line)
     assert "/" in xor
     assert "=" in xor
+    assert ":" in xor
     lower = HELP.lower()
     assert "1 pending" not in lower
     assert "2 accepted" not in lower
@@ -266,6 +272,9 @@ def test_help_power_user_grain():
     assert "v      roster" in HELP or "v shows" in HELP.lower() or "show/hide accepted" in HELP.lower()
     assert "in place" in HELP.lower()
     assert "same exact pair" in HELP.lower() or "m      accept" in HELP
+    assert "same as a (one column)" not in HELP
+    assert "Roster A is ERROR" in HELP or "on the roster use a" in HELP
+    assert "no draft to confirm" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -1298,6 +1307,28 @@ def test_help_modal_not_footer_cheat_sheet(tmp_path: Path):
             await pilot.pause()
             assert not isinstance(app.screen, HelpModal)
             assert app.place.screen == "roster"
+
+    asyncio.run(_run())
+
+
+def test_help_scrolls_with_down(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test(size=(80, 20)) as pilot:
+            await pilot.pause()
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert isinstance(app.screen, HelpModal)
+            scroll = app.screen.query_one("#help-scroll", ScrollableContainer)
+            before = scroll.scroll_offset.y
+            await pilot.press("down")
+            await pilot.pause()
+            assert scroll.scroll_offset.y > before
 
     asyncio.run(_run())
 

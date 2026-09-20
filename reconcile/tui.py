@@ -9,7 +9,7 @@ import polars as pl
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
@@ -17,28 +17,31 @@ from reconcile.engine import Engine, InTuiError, Place, RosterRow
 from reconcile.insights import format_context_tuple
 
 HELP = """\
-KEYS  (? this help · Esc closes)
+KEYS  (? this help · Esc closes · Up/Down/PgUp/PgDn scroll)
 
 EVERYWHERE
 Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
-Esc    back (close modal → cancel roster/cell-step draft → parent screen)
+Esc    one layer (close modal with no draft change → cancel pair draft → child screen to roster and cancel column draft)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
-A      accept all on this screen (entire column from pair list; all unmatched keys on this side)
+A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
 u      undo last accept, then focused grain
 r      refresh (re-read live files; last good state on failure)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 ?      this help
 q      quit (discards unconfirmed draft)
+n / p  page (ERROR if unpaged / at end). Digits 0-9 do nothing except inside c
 
 ROSTER (column roster, table A import order)
 a      accept this column in place (selection moves below; does not drill)
-A      same as a (one column)
+A      ERROR (A is bulk accept on pair list or unmatched keys; on the roster use a)
 v      show/hide accepted and equal columns (default hidden)
 m      same exact pair on columns
-/      regex column draft (comparable names; not a view filter)
-=      exact sentinel (side A|B, comparable-row constant)
-Space  toggle focused column in the live column draft (ON / off)
-y      confirm the live column draft; land on roster (next-below / first pending)
+:      regex column draft (comparable names; not a view filter). / is a deprecated alias
+=      exact sentinel (a/b side, then type the constant, Enter Run)
+Space  toggle focused column in the live column draft (ON / off). ERROR if no draft
+y      confirm the live column draft; land on roster (next-below / first pending). ERROR if no draft to confirm
+[ / ]  ERROR (column tabs are only on column detail)
+. / c  ERROR
 n / p  ERROR (no pages)
 
 PAIR LIST (Pending tab)
@@ -46,37 +49,42 @@ Enter  cell step (pair draft of those exact strings)
 a      accept this pair (selection moves below)
 A      accept entire column
 m      same exact pair on columns
-c      context-column picker (Space standalone; 0-9 groups on that page)
+c      context-column picker (Space standalone; 0-9 groups only on that page)
 U      undo entire column (pair list only; refused while a pair draft is in flight)
 n / p  next / previous page
 .      last pair: cell-step if already on that column's pair list; else that pair (column detail only)
-Esc    roster
+[ / ]  next / previous named tab (no wrap)
+Esc    roster and cancel a live column draft
+Footer chrome here: . repeat · u undo (full list is this help)
 
 CELL STEP
 a      accept this cell (selection moves below)
 Space  toggle focused cell in the pair draft (ON / off)
-y      confirm still-checked cells, then next lever
-c      context-column picker (Space standalone; 0-9 groups on that page)
+y      confirm still-checked cells, then next lever. ERROR if no draft to confirm
+c      context-column picker (Space standalone; 0-9 groups only on that page)
 n / p  page
+[ / ]  ERROR (pair draft in flight)
 Esc    back to pair list (cancels the pair draft)
 
 UNMATCHED KEYS / MISMATCHED COLUMNS  (open from i)
 a      accept this key / extra (selection moves below)
-A      accept all unmatched on this side, then next lever
+A      unmatched: all on this side, then next lever. extras: one extra (same as a; no bulk-all-extras)
 n / p  page (keys)
-Esc    roster
+[ / ]  ERROR (column tabs are only on column detail)
+Esc    roster (cancels a live column draft)
 
 DRAFTS
-At most one draft: column XOR pair cells (column: roster / regex, = sentinel; pair: cell step).
-After / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
+At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel; pair: cell step).
+After : / or =, selected columns show ON; y ACCEPT selected, Space select/deselect, Esc cancel.
 After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
-After / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
+After : / or =, m skips the column picker and uses the live ON columns (Space still toggles ON/off).
 m opens a two-step modal: pick columns, then one exact pair, apply to selected columns that have it.
+y with no draft: ERROR no draft to confirm.
 
 TABS / PLACE
-Named tabs (Pending / Accepted / Equal / All matched). No keys 1–4.
-Tab switch is refused while a pair draft is in flight (Esc cancels).
+Named tabs (Pending / Accepted / Equal / All matched). ] next tab · [ previous tab. No keys 1–4.
+Tab switch is refused while a pair draft is in flight (Esc cancels the pair draft).
 U is pair-list only. . is column detail only.
 The column roster lists pending comparable columns in table A import order.
 v shows accepted/equal columns dim (pending section, then settled), not as remaining work.
@@ -89,6 +97,7 @@ This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
 The speculative column shows insight text only (no speculative: prefix). Insights never change remaining counts.
 Sentinel means that side is one constant on all comparable (shared-key) rows: sentinel A=0, sentinel B="", sentinel both A=x B=y.
+Sentinel modal: a A or b B picks the side, then type the exact string, Enter Run.
 Context columns (c) are dedicated labeled columns (ctx:Name). Groups are ctx:gN A+B (tuple of members). Pair list: top-5 unique values or tuples with pair-row counts (foo 12 | bar 4 …).
 
 CONTEXT PICKER (c on column detail only)
@@ -208,10 +217,12 @@ DataTable > .datatable--cursor {
 #modal Input {
     margin: 1 0;
 }
-#help {
+#help-scroll {
     height: auto;
     max-height: 36;
-    overflow-y: auto;
+}
+#help {
+    height: auto;
     padding: 1;
 }
 .dim {
@@ -294,12 +305,37 @@ def _diff_text(label: str, value: str, other: str, first: int) -> Text:
 
 
 class HelpModal(ModalScreen[None]):
-    BINDINGS = [Binding("escape", "close", "Close"), Binding("question_mark", "close", "Close")]
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close"),
+        Binding("up", "scroll_up", show=False),
+        Binding("down", "scroll_down", show=False),
+        Binding("pageup", "page_up", show=False),
+        Binding("pagedown", "page_down", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal"):
-            yield Static(HELP, id="help")
-            yield Static("Esc closes", classes="dim")
+            yield ScrollableContainer(Static(HELP, id="help"), id="help-scroll")
+            yield Static("Esc closes · Up/Down/PgUp/PgDn scroll", classes="dim")
+
+    def on_mount(self) -> None:
+        self.query_one("#help-scroll", ScrollableContainer).focus()
+
+    def _help_scroll(self) -> ScrollableContainer:
+        return self.query_one("#help-scroll", ScrollableContainer)
+
+    def action_scroll_up(self) -> None:
+        self._help_scroll().scroll_up()
+
+    def action_scroll_down(self) -> None:
+        self._help_scroll().scroll_down()
+
+    def action_page_up(self) -> None:
+        self._help_scroll().scroll_page_up()
+
+    def action_page_down(self) -> None:
+        self._help_scroll().scroll_page_down()
 
     def action_close(self) -> None:
         self.dismiss(None)
