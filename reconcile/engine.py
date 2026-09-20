@@ -110,6 +110,7 @@ from reconcile import compare as compare_mod  # noqa: E402
 from reconcile import pages as pages_mod  # noqa: E402
 from reconcile import roster as roster_mod  # noqa: E402
 from reconcile import snaps as snaps_mod  # noqa: E402
+from reconcile import suggest as suggest_mod  # noqa: E402
 from reconcile.compare import _empty_df  # noqa: E402
 from reconcile.snaps import _empty_cell_snaps  # noqa: E402
 
@@ -355,6 +356,9 @@ class Engine:
 
     def extras_rows(self) -> list[dict[str, Any]]:
         return pages_mod.extras_rows(self)
+
+    def suggest_extras(self) -> list[dict[str, Any]]:
+        return suggest_mod.suggest_extras(self)
 
     def context_values(
         self, key: tuple[str, ...] | None, column: str

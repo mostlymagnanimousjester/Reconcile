@@ -218,9 +218,9 @@ Sides are always **A** and **B**, matching `--a` / `--b`. The TUI chrome uses up
 | A-only / B-only row grid | Headers are exact names. The screen *is* the side; extras of that side appear as additional columns with those exact headers | Row snapshot on that side |
 | Exact-value sentinel scan | **One side** (`A` or `B`) plus one exact raw string. Drafts pending comparable columns where that side is a **sentinel**: a single unique value on all comparable (shared-key) rows, equal to the typed string. A-only / B-only keys are not comparable and do not participate. Not a name prefix. Not a hardcoded token list. Both sides may be sentinels with different constants; `.all()` on pending cells is not the definition |
 
-The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two roster rows (`kind` `extra`) and two rows on **Schema extras**, each with its `Side`.
+The same exact name cannot be an extra on both sides (that would be intersection, hence comparable). Two extras with different names, one on A and one on B, stay two roster rows (`kind` `extra`) and two rows on **Mismatched columns**, each with its `Side`.
 
-Speculative near-misses on extras may *suggest* that `cust_id` (Side `A`) is like `customer_id` (Side `B`). That does not rename or re-pair them.
+**Suggest** on the extras screen may show that `cust_id` (Side `A`) and `Cust ID` (Side `B`) are the same name after strip / case / separators / token sort. That is a rename recipe for the workbook, then `r`. It does not rename or re-pair them in the TUI.
 
 Missing **key** column on either side: hard fail.
 
@@ -262,7 +262,7 @@ Remaining work is the **pending** set. The job is “done” when pending count 
 | Accept same pair on columns | Pair-only `m`. Pair list: apply **this pair** to the live column-draft ON columns, or to every pending column that still has it. Roster: pair picker only (grouped union of those same targets); no column picker. `/`, `=`, and Space already choose columns. Same grain identity as pair accept (exact strings, not fuzzy). Stay on the current screen; selection follows the below/last-remaining rule when the focused row vanishes. One last-accept unit for `u` |
 | Accept one unmatched key | Snapshot `(side, key, row snapshot)`. On the unmatched-key grid, then the next pending key in that grid (not next lever) |
 | Accept all unmatched keys on a side | Bulk snapshot of current A-only or B-only keys. Immediate from the roster row or `A` on that grid. Then **next lever** |
-| Accept one extra column | Snapshot `(side, column name)`. Immediate from Schema extras. Stay on that list; selection moves to the extra that was **below** (or the new last remaining / empty). Does **not** next-lever |
+| Accept one extra column | Snapshot `(side, column name)`. Immediate from Mismatched columns. Stay on that list; selection moves to the extra that was **below** (or the new last remaining / empty). Does **not** next-lever |
 | Undo | That snapshot returns to pending (same session) |
 
 Accept entire column is available immediately from the **roster** (on a comparable-column row) and from **column detail** (one column, no draft).
@@ -455,7 +455,7 @@ Drop `invisible/odd whitespace` when trim already applies. A leftover-only white
 
 ### 10.3 A-only / B-only / extras
 
-Empty `speculative`. Always. No would-match / near-miss / name-would-pair columns. `i` is how you reach unmatched rows and mismatched columns.
+Empty `speculative`. Always. No would-match / near-miss / name-would-pair columns. `i` is how you reach unmatched rows and mismatched columns. Deterministic **Suggest** recipes (strip / case / separators / token sort) live below the extras lists on that screen only — not as extras-row tags.
 
 ### 10.4 Dates
 
@@ -513,7 +513,7 @@ Python may hold **only**:
 5. zip ser/de once per export/open
 6. two-string `cell_insights` / `first_diff` for paint
 7. name regex on comparable names
-8. extra-name near-miss on headers
+8. extra-name Suggest recipes on headers (schema-sized; preview may Polars-compare those two columns)
 9. one HardFail `.row(0)` (duplicate-key identity)
 
 Anything else that `to_dicts()`s a full frame on a hot path is a defect. The TUI must **not** convert full frames to Python objects.
@@ -521,7 +521,7 @@ Anything else that `to_dicts()`s a full frame on a hot path is a defect. The TUI
 - Batch sentinel scan (§9.5) runs **in Polars** from comparable (shared-key) cells: per column, a side is a sentinel iff `n_unique == 1` on that side. `=` drafts pending columns whose `sent_a` / `sent_b` equals the typed string. Do not use a Polars `=` selector. Pending-pair lists (§9.6) are a Polars `group_by` of exact `valA`, `valB`. Do not pull full columns into Python to test predicates.
 - Cell/key lists are paged at **100**. Roster is schema-sized (one row per comparable column plus unmatched/extra remaining-work rows) and may be materialized **once per snapshot apply**.
 
-Kernel split (facade still `reconcile.engine.Engine`; TUI imports the facade, not compare internals): `compare.py` (join / unpivot), `snaps.py` (accept/undo tables), `pages.py` (slice then materialize), `roster.py` (cache / next lever). Do not split load / delimited / excel / cli. Keep `insights.py`.
+Kernel split (facade still `reconcile.engine.Engine`; TUI imports the facade, not compare internals): `compare.py` (join / unpivot), `snaps.py` (accept/undo tables), `pages.py` (slice then materialize), `roster.py` (cache / next lever), `suggest.py` (extras rename recipes). Do not split load / delimited / excel / cli. Keep `insights.py`.
 
 ---
 
@@ -769,6 +769,8 @@ Each row: key columns + all other columns on that side, raw — comparable **and
 Reachable from the overview modal (`i` then Enter), or next lever. Same list either way.
 
 Headers that exist on one side only. Exact header + **Side** `A` or `B`; empty `speculative`. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
+
+**Suggest** (this screen only, below the A-not-B / B-not-A list): deterministic rename recipes for the source files (strip, case, `_`/` `/`-` as one separator class, token sort). Each row is extra A name, extra B name, why (which normalizers fired), and preview (shared inner-join keys that would compare; pending `!=` count, null→`""`). Collisions: show every recipe; the tool never picks. Omit the block when none hit. Header-only scoring; do not `to_dicts()` tall value frames to score names. Not a mapping — the TUI does not bind or rename. Copy the target exact header, rename it in the workbook, `r`. `a` still accepts the focused extra, not a suggestion. Suggest is not focusable (`#grid` stays the navigator). Not on OverviewModal, not on the roster, not a new `place.screen`.
 
 ### 15.6 Footer (always on)
 

@@ -39,3 +39,21 @@ Roster `speculative` is gone on comparable-column rows. Full contract: [REQUIREM
 **A-only / B-only / extras:** empty `speculative`. `unmatched_key_insights`, `extra_insights`, and `_unmatched_side_tags` are deleted.
 
 **Non-goals (still):** no ML, no near-miss, no `speculative:` prefix, no accept-by-insight-group. `=` stays sentinel, `:` stays name regex.
+
+## Suggest extras (shipped)
+
+A **rename recipe for the source files**, then `r`. The TUI does **not** bind, map, or rename headers. `a` on an extra still means “this extra is fine,” not “pair these two.”
+
+**Where (extras screen only).** The A-not-B / B-not-A names live on `place.screen == "extras"` — `App._extras` / `_fill_extras` in `reconcile/tui.py`. Title: **Mismatched columns**. Data: `engine.extras_a` / `engine.extras_b` (`compare.py`), painted as one `#grid` (`side`, `name`, `pending`, `speculative`). Opened from `i` (`OverviewModal` “Mismatched columns” → extras) or next-lever. `OverviewModal` is counts + three jump entries only — **do not** put Suggest there. Not the roster. Not a new `place.screen`.
+
+Put the Suggest block in the same `_extras()` `Vertical`, **below** that extras table (below the A-not-B and B-not-A names). If you split `#grid` into two lists, Suggest still sits under both. `_refill_work`’s extras branch must refresh the block, not only `#grid`.
+
+**A row** is one extra A name, one extra B name, **why**, **preview**. Why is only these deterministic normalizers (stack as needed; name the ones that fired): strip, case, `_`/` `/`-` as one separator class, token sort (split on that class, sort). No Levenshtein. No `near-miss`. Do not revive `extra_insights` or extras-row `speculative` tags.
+
+**Preview:** pretend those two headers were already the same comparable name. Report shared (inner-join) keys that would compare, and pending cell count (raw `!=` on those keys, null→`""`).
+
+**Collisions:** if two recipes claim the same extra, show both. The tool never picks. The file decides.
+
+**Action:** copy/see the target exact header, rename it in the workbook, `r`. Then it is a normal comparable — or it isn’t, and you look again. No apply-in-tool. No clipboard-into-source (the TUI still never writes the workbooks).
+
+**Empty:** omit the block when no recipe hits. Header-only; schema-sized. Do not `to_dicts()` the value frames to score names.
