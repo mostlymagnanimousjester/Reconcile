@@ -2798,8 +2798,8 @@ def test_context_modal_0_9_toggles_group_membership(tmp_path: Path):
             assert 1 not in app.engine.context_groups["Status"]
             assert "Status" not in app.engine._pair_ctx_by_col
             recs, _, _ = app.engine.pair_page("Status", 0)
-            assert recs[0]["g0__gctx"] == "red|east 1"
-            assert recs[0]["g2__gctx"] == "red 1"
+            assert recs[0]["g0__gctx"] == "blue|west 1 | red|east 1"
+            assert recs[0]["g2__gctx"] == "blue 1 | red 1"
             assert "Flag__ctx" not in recs[0]
 
     asyncio.run(_run())
