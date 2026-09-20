@@ -24,6 +24,7 @@ Enter  drill (roster column → pair list, pair → cell step, modal Run / overv
 Esc    one layer (close modal with no draft change → cancel pair draft → child screen to roster and cancel column draft)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
 A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
+S      next sheet when launched with -sheets and remaining work is 0 (no draft). Else ERROR. Does not steal A or [ / ]
 u      undo last accept, then focused grain
 r      refresh (re-read live files; last good state on failure)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
@@ -844,6 +845,7 @@ class ReconcileApp(App[int]):
         Binding("space", "toggle", "Toggle", show=False),
         Binding("a", "accept", "Accept", show=False),
         Binding("A", "accept_all", "Accept all", show=False),
+        Binding("S", "next_sheet", "Next sheet", show=False),
         Binding("y", "confirm", "Confirm", show=False),
         Binding("u", "undo", "Undo", show=False),
         Binding("U", "undo_column", "Undo column", show=False),
@@ -1018,6 +1020,11 @@ class ReconcileApp(App[int]):
         if p.screen == "pair_list":
             bits.append(". repeat")
             bits.append("u undo")
+        if e.sheet_set:
+            name = e.sheet_set[e.sheet_index]
+            bits.append(f"sheet {e.sheet_index + 1}/{len(e.sheet_set)} {name}")
+            if e.sheet_remaining_work() == 0:
+                bits.append("S next sheet")
         bits.append("? help")
         footer.update(" · ".join(bits))
 
@@ -1944,6 +1951,22 @@ class ReconcileApp(App[int]):
             return
         self.render_all()
         self.set_focus_work()
+
+    def action_next_sheet(self) -> None:
+        def _run() -> None:
+            try:
+                self.engine.advance_sheet()
+                self.place = Place()
+                self.pair_draft_unchecked = set()
+                self.show_accepted_columns = False
+                self._mounted_screen = None
+                self.set_error(None)
+            except InTuiError as exc:
+                self.set_error(exc.message)
+            self.render_all()
+            self.set_focus_work()
+
+        self._run_busy(_run)
 
     def action_accept_all(self) -> None:
         e = self.engine

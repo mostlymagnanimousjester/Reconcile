@@ -11,6 +11,19 @@ from reconcile.delimited import abs_path, stringify_and_drop_empty_rows
 from reconcile.errors import HardFail
 
 
+def list_excel_sheets(path: str | Path) -> list[str]:
+    """Workbook sheet names. Does not data-load any sheet."""
+    path = abs_path(path)
+    p = Path(path)
+    if not p.is_file():
+        raise HardFail(f"Missing path: {path}")
+    try:
+        reader = fastexcel.read_excel(path)
+    except Exception as exc:
+        raise HardFail(f"Failed to open Excel workbook {path}: {exc}") from exc
+    return list(reader.sheet_names)
+
+
 def load_excel(path: str | Path, sheet_name: str) -> pl.DataFrame:
     """Load an Excel sheet as a Utf8 Polars frame. No Python list dump."""
     path = abs_path(path)

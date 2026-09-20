@@ -514,8 +514,9 @@ python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding wind
 |---|---|
 | `--a PATH` | Side A file. May be relative to cwd; **absolute path stored** in memory |
 | `--b PATH` | Side B file (same path rule) |
-| `--a-sheet NAME` | Required if A is `.xlsx`/`.xlsm` |
-| `--b-sheet NAME` | Required if B is `.xlsx`/`.xlsm` |
+| `--a-sheet NAME` | Single-pair Excel path. Required if A is `.xlsx`/`.xlsm` and `-sheets` is not used. May differ from `--b-sheet`. |
+| `--b-sheet NAME` | Single-pair Excel path. Required if B is `.xlsx`/`.xlsm` and `-sheets` is not used. May differ from `--a-sheet`. |
+| `-sheets SET` | Multi-sheet Excel path (§12.1). Same expanded name in both workbooks, one pair at a time. Long form `--sheets`. Mutually exclusive with `--a-sheet` / `--b-sheet`. |
 | `--a-delim VALUE` | Delimiter for side A if it is a delimited file (§6.1). Defaults to comma when A is `.csv`. **Required** for other delimited extensions. Per-side so mixed jobs work. |
 | `--b-delim VALUE` | Delimiter for side B if it is a delimited file. Defaults to comma when B is `.csv`. **Required** for other delimited extensions. |
 | `--a-encoding VALUE` | Encoding for side A delimited file (§6.2). Default `utf8`. |
@@ -524,7 +525,7 @@ python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding wind
 
 Rules:
 
-- `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet flags required per Excel side. Delim flags **required** per non-`.csv` delimited side (§6.1); optional on `.csv` (default comma). Encoding flags optional (default `utf8`).
+- `--a`, `--b`, and `--keys` are required. `--keys` must contain at least one non-empty name. Sheet identity is one of two paths: `--a-sheet` / `--b-sheet` (single pair; names may differ), or `-sheets` (same-named sequence — §12.1). If `-sheets` is set, do **not** require `--a-sheet` / `--b-sheet`. Both together is a **hard fail**. Delim flags **required** per non-`.csv` delimited side (§6.1); optional on `.csv` (default comma). Encoding flags optional (default `utf8`).
 - Duplicate names inside `--keys`, or an empty segment (e.g. `id,,year`): hard fail.
 - Key name not on both sides: hard fail (stderr+exit at initial load).
 - Paths on `--a` and `--b` **may be relative to the invocation cwd**. Immediately resolve with the equivalent of `Path(p).expanduser().resolve()` (absolute, normalized) and **store only absolute paths** in in-memory job identity and TUI Overview. If a relative path does not exist, hard fail with the **resolved absolute path** in the error text.
@@ -534,6 +535,78 @@ Initial load/parse/schema/dup-key/unknown-delimiter/unknown-encoding/missing-del
 Once the TUI is up: errors stay in the TUI with last good state (§9.4). Stderr+exit only if Textual cannot start.
 
 Quit and relaunch to compare a different pair of sources or different keys.
+
+### 12.1 Excel sheet set: `-sheets`
+
+Two **valid** Excel sheet paths. They are mutually exclusive.
+
+**Single pair** (`--a-sheet` / `--b-sheet` remain valid). Names may differ per workbook:
+
+```powershell
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Foo --b-sheet Bar --keys id
+```
+
+**Same-named sequence** (`-sheets` / `--sheets`). One shared name set, one pair at a time. Does **not** replace or retire the single-pair flags:
+
+```powershell
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx -sheets data{1-4,7} --keys id
+```
+
+- If `-sheets` is set, do **not** require `--a-sheet` / `--b-sheet`.
+- If both `-sheets` and `--a-sheet` / `--b-sheet` are set: **hard fail** (mutually exclusive). One identity path per process.
+- `--a` and `--b` must both be `.xlsx` / `.xlsm`. Delimited or mixed jobs: **hard fail**. `-sheets` is not a CSV runner.
+- `--keys` is unchanged and applies to **every** pair in the set.
+- `-sheets` / `--sheets` is one flag, one `SET` value. Same expanded names on both workbooks (not a separate A-set and B-set).
+- Illegal with `--a-delim` / `--b-delim` / `--a-encoding` / `--b-encoding` (Excel sides).
+- Paths still follow §12 (cwd-relative allowed; store absolute).
+
+**Grammar** (one language; two forms). Surrounding spaces on the whole value and on each comma item are stripped, same as `--keys`. Commas inside a sheet name are not supported.
+
+| Form | When | Expansion |
+|---|---|---|
+| `PREFIX{ITEM,ITEM,…}` | Shared prefix + numeric suffixes | Each `ITEM` is a base-10 integer `N` or an inclusive range `start-end` (`start ≤ end`). Prefix may be empty. Emit the decimal suffix **without padding** (`01` → `1`; use the name-list form for zero-padded names). Concatenate `PREFIX` + suffix in **written order** (ranges count up; the set is not sorted). |
+| `NAME,NAME,…` | Exact sheet names, no shared prefix | Each item is a full sheet name. **No** range expansion (`1-4,7` is the two names `1-4` and `7`). A name must not contain `{` or `}`. One name is legal (degenerate set). |
+
+Examples:
+
+| `-sheets` value | Expanded names (A and B) |
+|---|---|
+| `data{1-4,7}` | `data1`, `data2`, `data3`, `data4`, `data7` |
+| `{1,2,3}` | `1`, `2`, `3` |
+| `Jan,Feb,Mar` | `Jan`, `Feb`, `Mar` |
+| `data1,data2` | `data1`, `data2` |
+
+Hard fail at parse (stderr + exit `2`, before TUI), with the flag and the raw `SET`:
+
+- empty value; empty item; braces that are not exactly one `{…}` suffix; an item inside braces that is not `N` or `start-end`; `start > end`; non-integer endpoints; `{data1,data2}` (not integers — use `data1,data2`); duplicate names after expansion (same rule as duplicate `--keys`)
+
+**Presence.** Every expanded name is **presumed present in both workbooks**. At initial load, check the workbook sheet lists (do not data-load later sheets). A name missing on either side: **hard fail**, refuse to start **that pair** (and refuse to start the job if it is the first pair or a preflight miss): path, sheet name, available sheets if fastexcel provides them — same identifiers as today’s missing `--a-sheet`. Hidden sheets are usable only if named in the set.
+
+**Load.** Only the **first** expanded pair is data-loaded at startup. Same TUI as today’s one A/B compare (as if `--a-sheet` / `--b-sheet` were that first shared name). Later pairs are not in memory. Identity freezes `--a` / `--b` / `--keys` / the expanded name list. The current index is session place. `r` re-reads the **current** pair only.
+
+**Advance (`S` — next sheet).** Dedicated key. Does **not** steal today’s `A`.
+
+| Key | Today (unchanged) | `-sheets` when remaining work on **this sheet** is 0 |
+|---|---|---|
+| `A` | Bulk on **this screen**: entire column on the pair list / cell step (no pair draft); all unmatched keys on this side. Roster `A` is ERROR. Extras `A` is one extra. | Same. `A` never means next sheet — including on an empty roster. |
+| `]` | Next column-detail tab. Off detail: ERROR. | Same. Not next sheet. |
+| `S` | Unused (`s` reserved; no `f` / `s` / `j` in v1). | **Next sheet** only. |
+
+`S` is legal only when **all** of these hold:
+
+1. This process was launched with `-sheets` and there is a next name in the frozen list.
+2. Remaining work on the **current** sheet is 0: pending comparable columns + unmatched rows (A-only + B-only) + mismatched columns (extras) are all 0. Mid-column / mid-unmatched `S` is ERROR (do not advance with leftover cells, keys, or extras).
+3. No draft in flight (column or pair). Refuse like `A` during a pair draft: confirm or cancel first.
+
+On success: data-load that next same-named pair as the new compare; drop the previous sheet’s in-memory snapshots / drafts / `last_pair` / context; **reset place to the roster** (home). Clean slate per sheet (no leftover snaps). Footer shows `sheet i/n` plus the current name, and `S next sheet` when remaining work is 0. HELP / `?` documents `S`.
+
+If a later pair’s sheet is missing at advance time (renamed since preflight): **refuse to start that pair** — in-TUI ERROR with path / name / available sheets; **keep the last good sheet**. Do not unload it.
+
+**Last sheet.** `S` does not invent a name. Stay; in-TUI ERROR `no next sheet`. `q` quits.
+
+**Exit codes** stay **per loaded sheet** (§14). Unvisited later sheets are not remaining work of this process. Quit with current pending = 0 is exit `0` even if names remain in the set.
+
+**`u` / sheet advance.** Planned last-accept `u` (`improvements.md`) **should** treat a successful `S` as one last-accept unit (restore the previous sheet pair, its snapshots, and place). Until that `u` ships, undoing a sheet advance is **out of scope**. Today’s focused-grain `u` does not walk back a sheet.
 
 ---
 
@@ -712,9 +785,10 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 | `c` | Context-column picker (column detail: pair list / cell step / non-Pending grids). ERROR off column detail |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
+| `S` | Next sheet when launched with `-sheets` and remaining work on this sheet is 0 and no draft (§12.1). Else ERROR (`remaining work`, `no next sheet`, or `S is next sheet only when launched with -sheets`). Does not steal `A` or `[` / `]`. |
 | `?` | Help modal (bindings grouped by screen). Esc closes. Footer does not dump the full key list |
 
-No `f`, `s`, or `j`.
+No `f` or `j` in v1. Lowercase `s` stays unused. `S` is next sheet (§12.1).
 
 View-filter tabs on detail stay named tabs (Pending / Accepted / Equal / All matched). `[` / `]` step them. There are no digit keys `1`–`4`. Pending is pair list; the others are cell grids. Tab switch while a pair draft is in flight is refused (error; draft is not cleared). `Esc` cancels the pair draft.
 
@@ -805,6 +879,7 @@ Hard-fail and in-TUI error text must include **raw identifiers** so the user can
 1. Schema-extras list sort (exact name is the working rule).
 2. Windows terminal host beyond PowerShell (Windows Terminal vs conhost) if that matters in practice.
 3. UTF-16 delimited files (e.g. Excel “Unicode Text”) are **not** specified; v1 default is UTF-8 with optional `windows-1252` / lossy overrides.
+4. `-sheets` sequential same-named Excel pairs (§12.1). Shipped. Still two sheets compared at a time. `--a-sheet` / `--b-sheet` remain the single-pair path.
 
 ---
 
