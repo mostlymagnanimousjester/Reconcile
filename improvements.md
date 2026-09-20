@@ -3,6 +3,21 @@
 - **`m` is pair-only.** Drop the column-picker. `/`, `=`, and Space already choose columns. On the pair list, `m` applies **this pair** to the live column draft, or to every pending column that has that pair. On the roster, keep only the pair-picker (the union), not a column-picker. Purpose: `""` → `0` (and similar) without a two-step wizard. Inspection tabs (Accepted / Equal / All matched) stay — they are optional and useful when assessing pending.
 - **`u` always undoes the last accept, as one unit.** After a pair `a`, `u` restores that pair. After column `A` or draft `y`, `u` restores those columns. After pair-only `m` applies e.g. `""` → `0` on eight columns, `u` reverses that apply on all eight — not eight undos, and not the pair under the cursor. If nothing has been accepted yet, `u` errors (same idea as `y` with no draft).
 - **`U` stays “undo this column”** on the pair list only — the inverse of `A`. It does not depend on what you did last. That is the only other undo. Drop the extra meaning where `u` undoes the focused row when there is no “last bulk” memory.
+- **`-sheets` (planned CLI).** Sequential same-named Excel sheet pairs. Full usage contract: [REQUIREMENTS.md §12.1](REQUIREMENTS.md). Short form below. Not implemented. Do not add argparse, HELP, or a sheet runner in the same change as a spec-only edit. When last-accept `u` ships, a successful next-sheet `S` is one last-accept unit (restore the previous sheet pair + snapshots + place). Until then, undoing a sheet advance is out of scope.
+
+## Planned CLI: `-sheets`
+
+One switch, two Excel workbooks, one shared name set. Operand order matches today’s Excel job (`--a` / `--b` / sheet / `--keys`):
+
+```powershell
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx -sheets data{1-4,7} --keys id
+```
+
+`-sheets` / `--sheets` replaces `--a-sheet` / `--b-sheet`. Both sides must be `.xlsx` / `.xlsm`. Not CSV. Each expanded name must exist in **both** workbooks; missing name = HardFail / refuse to start that pair.
+
+**Grammar:** braces = prefix + integer items (`N` or inclusive `start-end`), no padding (`data{1-4,7}` → `data1`…`data4`, `data7`). No braces = exact comma list (`Jan,Feb` or `data1,data2`). `{data1,data2}` is illegal (items are not integers).
+
+**Load / advance:** first pair only at startup (same TUI as one A/B compare). **`S` next sheet** when current remaining work is 0 (pending columns + unmatched + extras); reset place to roster. `A` stays bulk on **this screen** (pair list / unmatched); roster `A` stays ERROR. `]` stays tabs. Last sheet: `S` → `no next sheet` ERROR, no invented name. Exit codes stay per loaded sheet.
 
 ## Actionable insights
 
