@@ -275,6 +275,8 @@ def test_help_power_user_grain():
     assert "same as a (one column)" not in HELP
     assert "Roster A is ERROR" in HELP or "on the roster use a" in HELP
     assert "no draft to confirm" in HELP
+    assert "next sheet" in HELP
+    assert "-sheets" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):

@@ -158,6 +158,8 @@ class Engine:
         self._pair_ctx_by_col: dict[str, pl.DataFrame] = {}
         self._equal_by_col: dict[str, pl.DataFrame] = {}
         self._all_matched_by_col: dict[str, pl.DataFrame] = {}
+        self.sheet_set: list[str] | None = None
+        self.sheet_index: int = 0
         self._rebuild()
 
     # --- construction ---
@@ -174,7 +176,19 @@ class Engine:
         b_delim: str | None = None,
         a_encoding: str | None = None,
         b_encoding: str | None = None,
+        sheet_set: list[str] | None = None,
+        sheet_index: int = 0,
     ) -> Engine:
+        if sheet_set:
+            from reconcile.delimited import abs_path
+            from reconcile.sheets import require_sheets_present
+
+            a_path = abs_path(a_path)
+            b_path = abs_path(b_path)
+            require_sheets_present(a_path, sheet_set)
+            require_sheets_present(b_path, sheet_set)
+            name = sheet_set[sheet_index]
+            a_sheet = b_sheet = name
         side_a = load_side(
             a_path, a_sheet, "A", delimiter=a_delim, encoding=a_encoding
         )
@@ -182,7 +196,45 @@ class Engine:
             b_path, b_sheet, "B", delimiter=b_delim, encoding=b_encoding
         )
         eng = cls(side_a, side_b, keys)
+        if sheet_set:
+            eng.sheet_set = list(sheet_set)
+            eng.sheet_index = sheet_index
         return eng
+
+    def sheet_remaining_work(self) -> int:
+        """Pending columns + unmatched rows + extras (the S gate)."""
+        return (
+            self.pending_columns_n()
+            + self.unmatched_rows_n()
+            + self.pending_extras_n()
+        )
+
+    def advance_sheet(self) -> None:
+        """Load the next same-named pair. Clean slate; keep last good on failure."""
+        if self.sheet_set is None:
+            raise InTuiError(
+                "ERROR: S is next sheet only when launched with -sheets"
+            )
+        if self.draft_in_flight():
+            if self.pair_draft_col is not None:
+                raise InTuiError("ERROR: confirm or cancel the pair draft first")
+            raise InTuiError("ERROR: confirm or cancel the current draft first")
+        if self.sheet_remaining_work() != 0:
+            raise InTuiError("ERROR: remaining work on this sheet is not 0")
+        if self.sheet_index >= len(self.sheet_set) - 1:
+            raise InTuiError("ERROR: no next sheet")
+        next_name = self.sheet_set[self.sheet_index + 1]
+        try:
+            side_a = load_side(self.a.path, next_name, "A")
+            side_b = load_side(self.b.path, next_name, "B")
+        except HardFail as exc:
+            raise InTuiError(f"ERROR: {exc.message}") from exc
+        keys = self.keys
+        sheet_set = self.sheet_set
+        next_index = self.sheet_index + 1
+        self.__init__(side_a, side_b, keys)
+        self.sheet_set = sheet_set
+        self.sheet_index = next_index
 
     def _rebuild(self) -> None:
         compare_mod.rebuild_frames(self)

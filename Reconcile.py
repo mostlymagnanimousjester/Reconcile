@@ -5,6 +5,8 @@ User-facing command (PowerShell / POSIX):
 
     python Reconcile.py --a PATH.csv --b PATH.csv --keys id,year
     python Reconcile.py --a PATH.csv --b PATH.csv --a-delim tilde --keys id
+    python Reconcile.py --a PATH.xlsx --b PATH.xlsx --a-sheet Foo --b-sheet Bar --keys id
+    python Reconcile.py --a PATH.xlsx --b PATH.xlsx -sheets data{1-4,7} --keys id
     python Reconcile.py --a PATH --b PATH --a-delim pipe --b-delim tilde --keys id
     python Reconcile.py --a PATH.csv --b PATH.csv --a-encoding windows-1252 --keys id
 """

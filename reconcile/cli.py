@@ -14,6 +14,8 @@ from reconcile.delimited import (
 )
 from reconcile.engine import Engine, InTuiError, Place
 from reconcile.errors import HardFail
+from reconcile.load import is_excel_path
+from reconcile.sheets import expand_sheets
 
 
 def parse_keys(raw: str) -> list[str]:
@@ -41,8 +43,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--a", dest="a", help="Side A file")
     p.add_argument("--b", dest="b", help="Side B file")
-    p.add_argument("--a-sheet", dest="a_sheet", help="Sheet name if A is .xlsx/.xlsm")
-    p.add_argument("--b-sheet", dest="b_sheet", help="Sheet name if B is .xlsx/.xlsm")
+    p.add_argument(
+        "--a-sheet",
+        dest="a_sheet",
+        help="Sheet name if A is .xlsx/.xlsm (single-pair path; mutually exclusive with -sheets)",
+    )
+    p.add_argument(
+        "--b-sheet",
+        dest="b_sheet",
+        help="Sheet name if B is .xlsx/.xlsm (single-pair path; mutually exclusive with -sheets)",
+    )
+    p.add_argument(
+        "-sheets",
+        "--sheets",
+        dest="sheets",
+        metavar="SET",
+        help=(
+            "Same-named Excel sheet sequence (data{1-4,7} or Jan,Feb). "
+            "Mutually exclusive with --a-sheet / --b-sheet."
+        ),
+    )
     p.add_argument(
         "--keys",
         dest="keys",
@@ -89,6 +109,13 @@ def engine_from_args(ns: argparse.Namespace) -> tuple[Engine, Place]:
     if not ns.a or not ns.b or not ns.keys:
         raise HardFail("--a, --b, and --keys are required")
     keys = parse_keys(ns.keys)
+    sheets_raw = getattr(ns, "sheets", None)
+    a_sheet = ns.a_sheet
+    b_sheet = ns.b_sheet
+    if sheets_raw is not None and (a_sheet is not None or b_sheet is not None):
+        raise HardFail(
+            "-sheets / --sheets is mutually exclusive with --a-sheet / --b-sheet"
+        )
     a_delim = parse_delimiter(ns.a_delim, "--a-delim") if ns.a_delim is not None else None
     b_delim = parse_delimiter(ns.b_delim, "--b-delim") if ns.b_delim is not None else None
     a_encoding = (
@@ -101,16 +128,25 @@ def engine_from_args(ns: argparse.Namespace) -> tuple[Engine, Place]:
         if ns.b_encoding is not None
         else None
     )
+    sheet_set: list[str] | None = None
+    if sheets_raw is not None:
+        if not is_excel_path(ns.a) or not is_excel_path(ns.b):
+            raise HardFail("-sheets requires two Excel workbooks (.xlsx / .xlsm)")
+        if any(v is not None for v in (ns.a_delim, ns.b_delim, ns.a_encoding, ns.b_encoding)):
+            raise HardFail("-sheets is illegal with delimiter or encoding flags")
+        sheet_set = expand_sheets(sheets_raw)
+        a_sheet = b_sheet = None
     return Engine.from_paths(
         ns.a,
         ns.b,
         keys,
-        ns.a_sheet,
-        ns.b_sheet,
+        a_sheet,
+        b_sheet,
         a_delim=a_delim,
         b_delim=b_delim,
         a_encoding=a_encoding,
         b_encoding=b_encoding,
+        sheet_set=sheet_set,
     ), Place()
 
 
