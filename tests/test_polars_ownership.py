@@ -29,6 +29,7 @@ KERNEL_FILES = (
     "reconcile/snaps.py",
     "reconcile/pages.py",
     "reconcile/roster.py",
+    "reconcile/suggest.py",
 )
 
 MATERIALIZE_ATTRS = frozenset(

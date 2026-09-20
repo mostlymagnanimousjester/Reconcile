@@ -16,6 +16,7 @@ from textual.widgets import Button, DataTable, Input, Static
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
 from reconcile.insights import format_context_tuple
 from reconcile.roster import roster_visible_insight_headers
+from reconcile.suggest import format_preview, format_why
 
 HELP = """\
 KEYS  (? this help · Esc closes · Up/Down/PgUp/PgDn scroll)
@@ -74,6 +75,8 @@ A      unmatched: all on this side, then next lever. extras: one extra (same as 
 n / p  page (keys)
 [ / ]  ERROR (column tabs are only on column detail)
 Esc    roster (cancels a live column draft)
+Suggest (extras only, below the A-not-B / B-not-A lists): rename recipe then r.
+Not a mapping. a accepts the focused extra, not a suggestion. Suggest is not focusable (#grid stays the navigator).
 
 DRAFTS
 At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel; pair: cell step).
@@ -180,6 +183,18 @@ Button.-primary, Button.primary {
 DataTable {
     height: 1fr;
     padding: 0 1;
+}
+#suggest-block {
+    height: auto;
+}
+#suggest-title {
+    text-style: bold;
+    color: #ffe27a;
+    padding: 0 1;
+}
+#suggest {
+    height: auto;
+    max-height: 16;
 }
 DataTable > .datatable--cursor {
     background: #d45a24;
@@ -1146,6 +1161,7 @@ class ReconcileApp(App[int]):
             return
         if screen == "extras":
             self._fill_extras(table)
+            self._refill_suggest()
             return
         self._remount_work()
         self._mounted_screen = self._work_layout_key()
@@ -1584,13 +1600,55 @@ class ReconcileApp(App[int]):
     def _extras(self) -> Vertical:
         table: DataTable = DataTable(cursor_type="row", id="grid")
         self._fill_extras(table)
-        return Vertical(
+        children: list[Any] = [
             Static(
                 f"Mismatched columns  pending {self.engine.pending_extras_n()}  (header on one side only)",
                 id="col-title",
             ),
             table,
+        ]
+        suggest = self._suggest_block()
+        if suggest is not None:
+            children.append(suggest)
+        return Vertical(*children)
+
+    def _suggest_block(self, rows: list[dict[str, Any]] | None = None) -> Vertical | None:
+        rows = self.engine.suggest_extras() if rows is None else rows
+        if not rows:
+            return None
+        table: DataTable = DataTable(cursor_type="row", id="suggest", can_focus=False)
+        self._fill_suggest(table, rows)
+        return Vertical(
+            Static(
+                "Suggest  rename in the workbook, then r  "
+                "(not a mapping; #grid stays the navigator)",
+                id="suggest-title",
+            ),
+            table,
+            id="suggest-block",
         )
+
+    def _fill_suggest(
+        self, table: DataTable, rows: list[dict[str, Any]] | None = None
+    ) -> None:
+        self._sync_columns(table, ["A", "B", "why", "preview"])
+        rows = self.engine.suggest_extras() if rows is None else rows
+        for rec in rows:
+            table.add_row(
+                rec["name_a"],
+                rec["name_b"],
+                format_why(rec["why"]),
+                format_preview(rec["shared"], rec["pending"]),
+            )
+
+    def _refill_suggest(self) -> None:
+        rows = self.engine.suggest_extras()
+        have = bool(self.query("#suggest-block"))
+        if bool(rows) != have:
+            self._remount_work()
+            return
+        if rows:
+            self._fill_suggest(self.query_one("#suggest", DataTable), rows)
 
     def _fill_extras(self, table: DataTable) -> None:
         self._sync_columns(table, ["side", "name", "pending", "speculative"])

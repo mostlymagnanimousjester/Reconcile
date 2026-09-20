@@ -40,7 +40,7 @@ Roster `speculative` is gone on comparable-column rows. Full contract: [REQUIREM
 
 **Non-goals (still):** no ML, no near-miss, no `speculative:` prefix, no accept-by-insight-group. `=` stays sentinel, `:` stays name regex.
 
-## Suggest extras (planned)
+## Suggest extras (shipped)
 
 A **rename recipe for the source files**, then `r`. The TUI does **not** bind, map, or rename headers. `a` on an extra still means “this extra is fine,” not “pair these two.”
 
