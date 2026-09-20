@@ -77,8 +77,17 @@ class RosterRow:
     accepted: int
     equal: str
     categorical: str
-    speculative: str
+    speculative: str = ""
     returned: bool = False
+    sent_a: str = ""
+    sent_b: str = ""
+    sent_both: str = ""
+    trim: str = ""
+    case: str = ""
+    trim_case: str = ""
+    num: str = ""
+    ws: str = ""
+    date: str = ""
 
 
 @dataclass
@@ -306,9 +315,6 @@ class Engine:
 
     def is_categorical(self, column: str) -> bool:
         return roster_mod.is_categorical(self, column)
-
-    def _unmatched_side_tags(self, side: str) -> str:
-        return roster_mod._unmatched_side_tags(self, side)
 
     # --- pair list ---
 

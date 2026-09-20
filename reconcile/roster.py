@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.engine import Place, RosterRow
-from reconcile.insights import extra_insights, format_sentinel_insight, same_date_expr
+from reconcile.insights import format_sentinel_both, format_sentinel_value, same_date_expr
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -88,12 +88,12 @@ def _roster_agg_maps(
     pending_lf = eng.pending_cells.lazy()
     stats_lf = pending_lf.group_by("column").agg(
         pl.len().alias("pending"),
-        (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).any().alias("trim"),
-        (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).any().alias("case"),
+        (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).all().alias("trim"),
+        (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).all().alias("case"),
         (
             pl.col("val_a").str.strip_chars().str.to_lowercase()
             == pl.col("val_b").str.strip_chars().str.to_lowercase()
-        ).any().alias("both"),
+        ).all().alias("both"),
         (
             pl.col("val_a").cast(pl.Float64, strict=False).is_not_null()
             & pl.col("val_b").cast(pl.Float64, strict=False).is_not_null()
@@ -103,14 +103,14 @@ def _roster_agg_maps(
                 pl.col("val_a").cast(pl.Float64, strict=False)
                 == pl.col("val_b").cast(pl.Float64, strict=False)
             )
-        ).any().alias("numeric"),
+        ).all().alias("numeric"),
         (
             pl.col("val_a").str.contains(r"[\u00a0\t\r\n]")
             | pl.col("val_b").str.contains(r"[\u00a0\t\r\n]")
             | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
             | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
-        ).any().alias("ws"),
-        same_date_expr().any().alias("same_date"),
+        ).all().alias("ws"),
+        same_date_expr().all().alias("same_date"),
         pl.col("val_a").n_unique().alias("n_a"),
         pl.col("val_b").n_unique().alias("n_b"),
     )
@@ -189,23 +189,43 @@ def _roster_agg_maps(
     return pending_by_col, accepted_by_col, top_pair, col_stats
 
 
-def _unmatched_side_tags(eng: Engine, side: str) -> str:
-    pending = eng.pending_a_only if side == "A" else eng.pending_b_only
-    other = eng.pending_b_only if side == "A" else eng.pending_a_only
-    if pending.is_empty() or other.is_empty():
-        return ""
-    left = pending.select(eng.keys)
-    right = other.select(eng.keys)
-    trim_cols = [pl.col(k).str.strip_chars().alias(k) for k in eng.keys]
-    if not left.select(trim_cols).join(right.select(trim_cols), on=eng.keys, how="inner").is_empty():
-        return "would match if trim"
-    case_cols = [pl.col(k).str.to_lowercase().alias(k) for k in eng.keys]
-    if not left.select(case_cols).join(right.select(case_cols), on=eng.keys, how="inner").is_empty():
-        return "would match if case-fold"
-    fold_cols = [pl.col(k).str.strip_chars().str.to_lowercase().alias(k) for k in eng.keys]
-    if not left.select(fold_cols).join(right.select(fold_cols), on=eng.keys, how="inner").is_empty():
-        return "would match if trim/case"
-    return ""
+SENTINEL_COLS = (
+    ("sent A", "sent_a"),
+    ("sent B", "sent_b"),
+    ("sent both", "sent_both"),
+)
+CHECK_COLS = (
+    ("trim", "trim"),
+    ("case", "case"),
+    ("trim+case", "trim_case"),
+    ("num", "num"),
+    ("ws", "ws"),
+    ("date", "date"),
+)
+
+
+def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str]]:
+    """Headers kept by pending comparable rows only (not settled / A-only / extras)."""
+    pending = [r for r in rows if r.kind == "column" and r.pending > 0]
+    visible: list[tuple[str, str]] = []
+    for header, attr in SENTINEL_COLS:
+        if any(getattr(r, attr) for r in pending):
+            visible.append((header, attr))
+    for header, attr in CHECK_COLS:
+        if any(getattr(r, attr) == "y" for r in pending):
+            visible.append((header, attr))
+    return visible
+
+
+def _yn(flag: bool) -> str:
+    return "y" if flag else "n"
+
+
+def _sentinel_cells(sent_a: str | None, sent_b: str | None) -> tuple[str, str, str]:
+    a = format_sentinel_value(sent_a) if sent_a is not None else ""
+    b = format_sentinel_value(sent_b) if sent_b is not None else ""
+    both = format_sentinel_both(sent_a, sent_b) if sent_a is not None and sent_b is not None else ""
+    return a, b, both
 
 
 def _sentinel_map(eng: Engine) -> dict[str, tuple[str | None, str | None]]:
@@ -236,9 +256,11 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
         conc = (top_pair.get(col, 0) / pend) if pend else 0.0
         pct = f"{conc * 100:.0f}%" if pend else "—"
         st = col_stats.get(col)
+        raw_a, raw_b = sentinels.get(col, (None, None))
+        cell_a, cell_b, cell_both = _sentinel_cells(raw_a, raw_b)
         if not pend or st is None:
             cat = "—"
-            tags = ""
+            yn_trim = yn_case = yn_both = yn_num = yn_ws = yn_date = "n" if pend == 0 else ""
         else:
             n_a, n_b = int(st["n_a"]), int(st["n_b"])
             if n_a > 30 or n_b > 30:
@@ -246,24 +268,12 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
             else:
                 n_ab = int(st["n_ab"])
                 cat = "yes" if n_ab <= 50 else "no"
-            tag_bits: list[str] = []
-            sent_a, sent_b = sentinels.get(col, (None, None))
-            sent = format_sentinel_insight(sent_a, sent_b)
-            if sent:
-                tag_bits.append(sent)
-            if st["trim"]:
-                tag_bits.append("equal if trim")
-            if st["case"]:
-                tag_bits.append("equal if case-fold")
-            if st["both"] and not st["trim"] and not st["case"]:
-                tag_bits.append("equal if trim+case")
-            if st["numeric"]:
-                tag_bits.append("equal as numbers")
-            if st["ws"]:
-                tag_bits.append("invisible/odd whitespace")
-            if st["same_date"]:
-                tag_bits.append("same date")
-            tags = ", ".join(tag_bits[:3])
+            yn_trim = _yn(bool(st["trim"]))
+            yn_case = _yn(bool(st["case"]))
+            yn_both = _yn(bool(st["both"]))
+            yn_num = _yn(bool(st["numeric"]))
+            yn_ws = _yn(bool(st["ws"]))
+            yn_date = _yn(bool(st["same_date"]))
         equal = str(matched_n - mismatch_n.get(col, 0))
         rows.append(
             RosterRow(
@@ -276,8 +286,17 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 accepted=acc,
                 equal=equal,
                 categorical=cat,
-                speculative=tags,
+                speculative="",
                 returned=col in eng._returned_columns,
+                sent_a=cell_a,
+                sent_b=cell_b,
+                sent_both=cell_both,
+                trim=yn_trim,
+                case=yn_case,
+                trim_case=yn_both,
+                num=yn_num,
+                ws=yn_ws,
+                date=yn_date,
             )
         )
     if eng.a_only.height > 0:
@@ -292,7 +311,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 accepted=eng.accepted_a_only.height,
                 equal="—",
                 categorical="—",
-                speculative=_unmatched_side_tags(eng, "A"),
+                speculative="",
                 returned=eng.side_has_returned("A"),
             )
         )
@@ -308,22 +327,15 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 accepted=eng.accepted_b_only.height,
                 equal="—",
                 categorical="—",
-                speculative=_unmatched_side_tags(eng, "B"),
+                speculative="",
                 returned=eng.side_has_returned("B"),
             )
         )
     all_extras = [("A", n) for n in eng.extras_a] + [("B", n) for n in eng.extras_b]
-    other_a = list(eng.b.headers)
-    other_b = list(eng.a.headers)
-    extra_tags: dict[tuple[str, str], list[str]] = {}
-    for side, name in all_extras:
-        others = other_a if side == "A" else other_b
-        extra_tags[(side, name)] = extra_insights(name, others)
-    eng._extra_tags = extra_tags
+    eng._extra_tags = {}
     for side, name in all_extras:
         pend = 1 if (side, name) in eng.pending_extras else 0
         acc = 1 if (side, name) in eng.accepted_extras else 0
-        tags = extra_tags[(side, name)]
         rows.append(
             RosterRow(
                 kind="extra",
@@ -335,7 +347,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 accepted=acc,
                 equal="—",
                 categorical="—",
-                speculative=", ".join(tags[:2]),
+                speculative="",
                 returned=(side, name) in eng.returned_extras,
             )
         )

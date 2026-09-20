@@ -2601,8 +2601,6 @@ def test_multi_column_pair_accept_empty_to_zero(tmp_path: Path):
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, MultiPairModal)
-            modal.action_ok()
-            await pilot.pause()
             assert modal.phase == "pairs"
             pairs = modal._pairs
             idx = next(
@@ -2764,9 +2762,12 @@ def test_roster_speculative_column_has_no_prefix(tmp_path: Path):
             await pilot.pause()
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            spec_i = labels.index("speculative")
-            shown = str(table.get_row_at(0)[spec_i])
-            assert "sentinel A=0" in shown
+            assert "speculative" not in labels
+            assert "sent A" in labels
+            assert "sent B" not in labels
+            sent_i = labels.index("sent A")
+            shown = str(table.get_row_at(0)[sent_i])
+            assert shown == "0"
             assert "speculative:" not in shown
             assert "shared value pattern" not in shown
 
@@ -2849,6 +2850,60 @@ def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
             assert any(r["val_a"] == "0" and r["val_b"] == "x" for r in mixed)
             leftover = [r.name for r in app.engine.visible_column_roster()]
             assert leftover == ["mixed"]
+
+    asyncio.run(_run())
+
+
+def test_pair_list_m_applies_this_pair_without_column_picker(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,qty,amt,note\n1,,,x\n2,,,y\n")
+    write_csv(pb, "id,qty,amt,note\n1,0,0,x\n2,0,0,z\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "qty"
+            app.place.pair_val_a = ""
+            app.place.pair_val_b = "0"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_multi_pair()
+            await pilot.pause()
+            assert not isinstance(app.screen, MultiPairModal)
+            assert next(r for r in app.engine.roster() if r.name == "qty").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "amt").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "note").pending == 1
+            assert app.engine.last_grain is not None
+            assert app.engine.last_grain[0] == "pairs"
+            app.action_undo()
+            await pilot.pause()
+            assert next(r for r in app.engine.roster() if r.name == "qty").pending == 2
+            assert next(r for r in app.engine.roster() if r.name == "amt").pending == 2
+            assert next(r for r in app.engine.roster() if r.name == "note").pending == 1
+            assert app.engine.last_grain is None
+
+    asyncio.run(_run())
+
+
+def test_u_errors_when_nothing_accepted(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.engine.last_grain is None
+            app.action_undo()
+            await pilot.pause()
+            assert app.tui_error and "nothing accepted to undo" in app.tui_error
+            assert app.engine.pending_cells_n() == 1
 
     asyncio.run(_run())
 

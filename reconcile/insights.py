@@ -2,21 +2,56 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
-from difflib import SequenceMatcher
 
 import polars as pl
 
+# Python and Polars lists stay in lockstep. %b forms are SAS English months
+# (JAN…DEC). Parsing substitutes those tokens for numbers so %b is not
+# locale-dependent (do not rely on French/German strptime / Polars %b).
 DATE_FORMATS = (
     "%Y-%m-%d",
     "%Y-%m-%dT%H:%M:%S",
     "%m/%d/%Y",
     "%d/%m/%Y",
     "%Y%m%d",
+    "%d%b%Y",
+    "%d%b%y",
+    "%d-%b-%Y",
+    "%m/%d/%y",
+    "%d/%m/%y",
+    "%b%Y",
+    "%b%y",
+    "%d%b%Y:%H:%M:%S",
+    "%d%b%y:%H:%M:%S",
 )
 
-_WS_RE = re.compile(r"[\u00a0\t\r\n]")
+_POLARS_DATE_FORMATS = DATE_FORMATS
+
+_SAS_MONTH_NUM = {
+    "JAN": "01",
+    "FEB": "02",
+    "MAR": "03",
+    "APR": "04",
+    "MAY": "05",
+    "JUN": "06",
+    "JUL": "07",
+    "AUG": "08",
+    "SEP": "09",
+    "OCT": "10",
+    "NOV": "11",
+    "DEC": "12",
+}
+
+_FMT_B_TO_NUMERIC = {
+    "%d%b%Y": "%d%m%Y",
+    "%d%b%y": "%d%m%y",
+    "%d-%b-%Y": "%d-%m-%Y",
+    "%b%Y": "%m%Y",
+    "%b%y": "%m%y",
+    "%d%b%Y:%H:%M:%S": "%d%m%Y:%H:%M:%S",
+    "%d%b%y:%H:%M:%S": "%d%m%y:%H:%M:%S",
+}
 
 CONTEXT_TOP_N = 5
 CONTEXT_VALUE_SEP = " | "
@@ -59,21 +94,65 @@ def first_diff(a: str, b: str) -> int:
     return n
 
 
-_POLARS_DATE_FORMATS = (
-    "%Y-%m-%d",
-    "%Y-%m-%dT%H:%M:%S",
-    "%m/%d/%Y",
-    "%d/%m/%Y",
-    "%Y%m%d",
-)
+def _format_width(fmt: str) -> int:
+    """Character width of a numeric/literal date format (no locale %b)."""
+    widths = {"Y": 4, "y": 2, "m": 2, "d": 2, "H": 2, "M": 2, "S": 2}
+    n = 0
+    i = 0
+    while i < len(fmt):
+        if fmt[i] == "%" and i + 1 < len(fmt) and fmt[i + 1] in widths:
+            n += widths[fmt[i + 1]]
+            i += 2
+        else:
+            n += 1
+            i += 1
+    return n
+
+
+def _with_sas_months(s: str) -> str:
+    """Replace English 3-letter month tokens with 01–12 (any case)."""
+    out: list[str] = []
+    i = 0
+    upper = s.upper()
+    while i < len(s):
+        trip = upper[i : i + 3]
+        num = _SAS_MONTH_NUM.get(trip)
+        if num is not None:
+            out.append(num)
+            i += 3
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def _sas_month_normalized_expr(col: str) -> pl.Expr:
+    expr = pl.col(col)
+    for name, num in _SAS_MONTH_NUM.items():
+        expr = expr.str.replace(name, num, literal=True)
+        expr = expr.str.replace(name.title(), num, literal=True)
+        expr = expr.str.replace(name.lower(), num, literal=True)
+    return expr
 
 
 def unambiguous_date_expr(col: str) -> pl.Expr:
     """Polars equivalent of parse_unambiguous_date: one unique calendar date or null."""
-    parsed = [
-        pl.col(col).str.to_datetime(fmt, strict=False).dt.date()
-        for fmt in _POLARS_DATE_FORMATS
-    ]
+    raw = pl.col(col)
+    named = _sas_month_normalized_expr(col)
+    parsed = []
+    for fmt in _POLARS_DATE_FORMATS:
+        if "%b" in fmt:
+            num_fmt = _FMT_B_TO_NUMERIC[fmt]
+            src = named
+        else:
+            num_fmt = fmt
+            src = raw
+        width = _format_width(num_fmt)
+        parsed.append(
+            pl.when(src.str.len_chars() == width)
+            .then(src.str.to_datetime(num_fmt, strict=False).dt.date())
+            .otherwise(pl.lit(None))
+        )
     lst = pl.concat_list(parsed).list.drop_nulls().list.unique()
     return pl.when(lst.list.len() == 1).then(lst.list.first()).otherwise(pl.lit(None))
 
@@ -86,9 +165,14 @@ def same_date_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
 
 def parse_unambiguous_date(s: str):
     found: list = []
+    normalized = _with_sas_months(s)
     for fmt in DATE_FORMATS:
+        target = normalized if "%b" in fmt else s
+        parse_fmt = _FMT_B_TO_NUMERIC.get(fmt, fmt)
+        if len(target) != _format_width(parse_fmt):
+            continue
         try:
-            dt = datetime.strptime(s, fmt)
+            dt = datetime.strptime(target, parse_fmt)
         except ValueError:
             continue
         found.append(dt.date())
@@ -105,6 +189,11 @@ def format_sentinel_value(value: str) -> str:
     if value.strip() != value or any(ch in value for ch in ' ="\''):
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return value
+
+
+def format_sentinel_both(value_a: str, value_b: str) -> str:
+    """Roster `sent both` cell: A=x B=y using format_sentinel_value on each side."""
+    return f"A={format_sentinel_value(value_a)} B={format_sentinel_value(value_b)}"
 
 
 def format_sentinel_insight(value_a: str | None, value_b: str | None) -> str | None:
@@ -187,13 +276,6 @@ def cell_insights(val_a: str, val_b: str) -> list[str]:
         tags.append("equal if trim+case")
     if _numeric_equal(val_a, val_b):
         tags.append("equal as numbers")
-    if (
-        _WS_RE.search(val_a)
-        or _WS_RE.search(val_b)
-        or val_a != val_a.strip()
-        or val_b != val_b.strip()
-    ):
-        tags.append("invisible/odd whitespace")
     da = parse_unambiguous_date(val_a)
     db = parse_unambiguous_date(val_b)
     if da is not None and db is not None and da == db:
@@ -210,48 +292,6 @@ def _numeric_equal(a: str, b: str) -> bool:
     if a.strip() == "" or b.strip() == "":
         return False
     return fa == fb
-
-
-def extra_insights(name: str, other_names: list[str]) -> list[str]:
-    tags: list[str] = []
-    for other in other_names:
-        if name == other:
-            continue
-        if name.strip() == other.strip() and name != other:
-            tags.append("name would pair if trim")
-        elif name.lower() == other.lower() and name != other:
-            tags.append("name would pair if case")
-        elif name.strip().lower() == other.strip().lower():
-            tags.append("name would pair if trim/case")
-        else:
-            ratio = SequenceMatcher(None, name.lower(), other.lower()).ratio()
-            if ratio >= 0.72 or name.lower() in other.lower() or other.lower() in name.lower():
-                tags.append(f"near-miss {other!r}")
-    # unique, keep order
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in tags:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out[:3]
-
-
-def unmatched_key_insights(
-    key: tuple[str, ...], other_keys: list[tuple[str, ...]]
-) -> list[str]:
-    tags: list[str] = []
-    folded = tuple(p.strip().lower() for p in key)
-    for other in other_keys:
-        if tuple(p.strip().lower() for p in other) == folded and other != key:
-            if tuple(p.strip() for p in key) == tuple(p.strip() for p in other):
-                tags.append("would match if trim")
-            elif tuple(p.lower() for p in key) == tuple(p.lower() for p in other):
-                tags.append("would match if case-fold")
-            else:
-                tags.append("would match if trim/case")
-            break
-    return tags
 
 
 def is_categorical_pending(pending_a: list[str], pending_b: list[str]) -> bool:

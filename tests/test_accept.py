@@ -417,6 +417,24 @@ def test_confirm_pair_draft_all_unchecked_stays(tmp_path: Path):
     assert eng.pending_cells_n() == pending
 
 
+def test_undo_last_grain_after_pair_across_columns(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,qty,amt,note\n1,,,x\n2,,,y\n")
+    write_csv(pb, "id,qty,amt,note\n1,0,0,x\n2,0,0,z\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    n = eng.accept_pair_across_columns(["qty", "amt", "note"], "", "0")
+    eng.remember_grain(("pairs", "", "0", "qty", "amt", "note"), n)
+    assert next(r for r in eng.roster() if r.name == "qty").pending == 0
+    assert next(r for r in eng.roster() if r.name == "amt").pending == 0
+    assert next(r for r in eng.roster() if r.name == "note").pending == 1
+    undone = eng.undo_last_grain()
+    assert undone == 4
+    assert eng.last_grain is None
+    assert next(r for r in eng.roster() if r.name == "qty").pending == 2
+    assert next(r for r in eng.roster() if r.name == "amt").pending == 2
+    assert next(r for r in eng.roster() if r.name == "note").pending == 1
+
+
 def test_undo_last_grain_after_pair_accept(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,Status,Flag\n1,Y,1\n")
