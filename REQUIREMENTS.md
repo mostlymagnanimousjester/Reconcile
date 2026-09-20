@@ -49,7 +49,7 @@ Compare is **exact raw text**.
 
 **Speculative insights** (§10) may *describe* why two unequal strings look related. They must never change the contract, remaining-diff counts, or pairing.
 
-Roster insights are per-column cells (`sent A` / `sent B` / `sent both` values; `trim` / `case` / `trim+case` / `num` / `ws` / `date` as `y`/`n`). Pair/cell pages still use a `speculative` column for **this pair**. Show the insight text only; do not prefix tags with `speculative:`.
+Roster insights are per-column cells (`const A` / `const B` / `const both` values; `trim` / `case` / `trim+case` / `num` / `ws` / `date` as `y`/`n`). Pair/cell pages still use a `hints` column for **this pair**. Show the insight text only; do not prefix tags with `speculative:`. Shorten pair/cell tags to the roster words (`trim`, `case`, `trim+case`, `num`, `date`) where they align.
 
 ---
 
@@ -290,7 +290,7 @@ All reconcile state lives in memory for this process only. There is no export/re
 
 Refresh is manual.
 
-On success: recompute counts and pages; show a short **delta in the footer** (e.g. pending `40→12`, accepted `10→8`, `3 returned to pending`). **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the roster.
+On success: recompute counts and pages; show a short **delta in the footer** on its own line (e.g. remaining work `40→12`, accepted `10→8`, `3 returned to pending`). **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the roster.
 
 Do **not** open a jump-list overlay. Rows that **returned to pending** are marked in the lists already on screen (reverse video / standout, red-lens safe §15.8) until the next successful refresh replaces the set.
 
@@ -416,17 +416,17 @@ An insight is allowed only if it names a next keystroke on **that** screen. Rost
 
 ### 10.1 Roster (comparable-column rows)
 
-Replace the packed `speculative` string. Keep `pending`, **`top-pair %`**, `equal`, `cat`. Draft / `status` (`v`) unchanged.
+Replace the packed `speculative` string. Keep `pending`, **`top pair %`**, `equal rows`, `categorical`. Draft / `status` (`v`) unchanged.
 
 **Sentinel value columns** (existing definition: a side is a sentinel iff it is one unique value on all comparable shared-key rows). Hide a header if no **pending** comparable row has that kind.
 
 | Header | Cell |
 |---|---|
-| `sent A` | `format_sentinel_value(sent_a)` when A is constant — e.g. `0`, `""` |
-| `sent B` | `format_sentinel_value(sent_b)` when B is constant |
-| `sent both` | `A=x B=y` only when both sides are constants |
+| `const A` | `format_sentinel_value(sent_a)` when A is constant — e.g. `0`, `""` |
+| `const B` | `format_sentinel_value(sent_b)` when B is constant |
+| `const both` | `A=x B=y` only when both sides are constants |
 
-A both-row fills `sent A`, `sent B`, and `sent both`. The header is the kind; the cell is the value. That is the `=` recipe.
+A both-row fills `const A`, `const B`, and `const both`. The header is the kind; the cell is the value. That is the `=` recipe.
 
 **Check columns** (`y` / `n`). A check is `y` only if **every pending cell** in that column satisfies the predicate (`.all()`, not `.any()`). Hide the header if every pending row is `n`. Settled `v` rows may show empty/`n` under headers kept by pending rows.
 
@@ -439,17 +439,17 @@ A both-row fills `sent A`, `sent B`, and `sent both`. The header is the kind; th
 | `ws` | NBSP / tab / CR / LF, or either side differs from strip |
 | `date` | `same_date_expr()` (see §10.4) |
 
-Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top-pair %` column.
+Do **not** emit a vague `shared value pattern` tag. Concentration is the roster `top pair %` column.
 
 ### 10.2 Pair / cell (this pair)
 
-Keep, per exact pair, from `cell_insights`:
+Keep, per exact pair, from `cell_insights` (roster words in the `hints` column):
 
-- `equal if trim`
-- `equal if case-fold`
-- `equal if trim+case` (exclusive leftover: only when strip+lower holds and neither trim-only nor case-only does)
-- `equal as numbers`
-- `same date` — same parsers as the roster `date` column
+- `trim`
+- `case`
+- `trim+case` (exclusive leftover: only when strip+lower holds and neither trim-only nor case-only does)
+- `num`
+- `date` — same parsers as the roster `date` column
 
 Drop `invisible/odd whitespace` when trim already applies. A leftover-only whitespace tag does not name a keystroke — omit it. Do **not** add sentinel to `cell_insights` (sentinel is a column fact).
 
@@ -482,7 +482,7 @@ A comparable column is treated as **categorical** when, among **pending** cells 
 - `nunique(B) ≤ 30`, and
 - `nunique(A ∪ B) ≤ 50`
 
-That heuristic is a **roster statistic** (`cat` yes/no) only. Pair list layout is always the paged list (§9.6). Pair **counts** are exact. Pair **accept** is §9.6, not this section.
+That heuristic is a **roster statistic** (`categorical` yes/no) only. Pair list layout is always the paged list (§9.6). Pair **counts** are exact. Pair **accept** is §9.6, not this section.
 
 Pair/cell tags may still annotate a pair (trim, same-date, …). Those labels must not be the accept target.
 
@@ -671,11 +671,11 @@ Quiet counts and job identity. **Not a `place.screen`.** Open with `i` from any 
 Shows:
 
 - Frozen job identity (absolute paths, sheets, keys, encoding/delimiter)
-- Exact remaining counts (pending vs accepted): pending columns, A-only keys, B-only keys, mismatched columns (headers on one side only), mismatched cells, **remaining work items** (the grain sum used for exit `0`)
+- Exact remaining counts (pending vs accepted): lead with the three footer nouns (pending columns, unmatched keys, mismatched columns), then A-only / B-only / mismatched-cell counts, and **total remaining** (the grain sum used for exit `0`)
 - Entry points: **A-only keys**, **B-only keys**, **Mismatched columns** (`Enter` opens that list)
 - Speculative chips only as secondary, in the `speculative` column (insight text, no `speculative:` prefix)
 
-`a` / `A` on Overview: in-TUI ERROR (not remaining work), not a silent no-op. `n` / `p` ERROR (no pages).
+`a` / `A` on Overview: in-TUI ERROR (`overview is counts only — open a list with Enter, accept on that screen`), not a silent no-op. `n` / `p` ERROR (no pages).
 
 No separate biggest-lever widget. The roster’s first **pending column** (A import order) is that lever.
 
@@ -834,7 +834,7 @@ The TUI is used with **maximally blue-blocking glasses (red lenses)**. Blue, cya
 | Equal / not a diff | Dimmer than accepted | — |
 | Drafted / checked | **Reverse video** (fg/bg swap) and/or underline | Orange/amber underline |
 | Focused row | Reverse or a `>` glyph in the gutter, not a blue bar | — |
-| Speculative chips | Dim; column named `speculative`; insight text only (no `speculative:` prefix); optional italic | No blue |
+| Speculative chips | Dim; column named `hints`; insight text only (no `speculative:` prefix); optional italic | No blue |
 | Top roster row (the lever) | Bold + underline | Yellow |
 | Returned-to-pending | Reverse/standout in the existing list; not a new screen | Orange/amber or yellow |
 | First-difference | Reverse/standout on the disagreeing characters | Yellow/white, not blue |

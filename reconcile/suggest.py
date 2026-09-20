@@ -83,7 +83,7 @@ def format_why(why: list[str]) -> str:
 
 
 def format_preview(shared: int, pending: int) -> str:
-    return f"{shared} shared, {pending} pending"
+    return f"{shared} / {pending}"
 
 
 def suggest_extras(eng: Engine) -> list[dict[str, Any]]:

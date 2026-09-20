@@ -190,9 +190,9 @@ def _roster_agg_maps(
 
 
 SENTINEL_COLS = (
-    ("sent A", "sent_a"),
-    ("sent B", "sent_b"),
-    ("sent both", "sent_both"),
+    ("const A", "sent_a"),
+    ("const B", "sent_b"),
+    ("const both", "sent_both"),
 )
 CHECK_COLS = (
     ("trim", "trim"),

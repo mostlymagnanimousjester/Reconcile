@@ -4,9 +4,9 @@ import pytest
 
 from reconcile.engine import Engine, InTuiError
 from reconcile.insights import (
-    CONTEXT_TRUNCATION_MARK,
     cell_insights,
     context_group_header,
+    format_context_truncation,
     format_context_tuple,
     format_sentinel_both,
     format_sentinel_insight,
@@ -30,16 +30,16 @@ def test_format_top_uniques_keeps_five_and_marks_truncation():
         + ["yellow"]
     )
     text = format_top_uniques(values)
-    assert text == f"red 5 | blue 4 | green 3 | orange 2 | pink 2{CONTEXT_TRUNCATION_MARK}"
+    assert text == f"red×5 | blue×4 | green×3 | orange×2 | pink×2{format_context_truncation(2)}"
     assert "purple" not in text
     assert "yellow" not in text
-    assert format_top_uniques(["a", "a", "b"]) == "a 2 | b 1"
-    assert format_top_uniques(["", "x", ""]) == "(empty) 2 | x 1"
+    assert format_top_uniques(["a", "a", "b"]) == "a×2 | b×1"
+    assert format_top_uniques(["", "x", ""]) == "(empty)×2 | x×1"
     tuples = ["red|east"] * 3 + ["blue|west"] * 2 + ["green|west"]
-    assert format_top_uniques(tuples) == "red|east 3 | blue|west 2 | green|west 1"
+    assert format_top_uniques(tuples) == "red|east×3 | blue|west×2 | green|west×1"
     assert format_context_tuple(["red", "east"]) == "red|east"
     assert format_context_tuple(["", "west"]) == "(empty)|west"
-    assert context_group_header(0, ["Flag", "Region"]) == "ctx:g0 Flag+Region"
+    assert context_group_header(0, ["Flag", "Region"]) == "g0 Flag+Region"
 
 
 def test_format_sentinel_insight_shows_side_and_value():
@@ -68,9 +68,9 @@ def test_trim_case_numeric_whitespace():
     assert any("trim" in t for t in tags)
     assert not any("whitespace" in t for t in tags)
     tags = cell_insights("Yes", "yes")
-    assert any("case-fold" in t for t in tags)
+    assert "case" in tags
     tags = cell_insights("1", "1.0")
-    assert any("numbers" in t for t in tags)
+    assert "num" in tags
     tags = cell_insights("a\u00a0", "a")
     assert any("trim" in t for t in tags)
     assert not any("whitespace" in t for t in tags)
@@ -79,21 +79,21 @@ def test_trim_case_numeric_whitespace():
 def test_same_date_unambiguous():
     tags = cell_insights("2020-01-02", "01/02/2020")
     # 01/02/2020 is US Jan 2 AND EU 1 Feb → ambiguous → no same date
-    assert not any("same date" in t for t in tags)
+    assert "date" not in tags
     tags = cell_insights("2020-01-02", "20200102")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("2020-01-01", "01/01/2020")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("15JAN2024", "2024-01-15")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("15JAN24", "20240115")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("15-JAN-2024", "2024-01-15")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("JAN2024", "2024-01-01")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
     tags = cell_insights("15JAN2024:14:30:00", "2024-01-15T14:30:00")
-    assert any("same date" in t for t in tags)
+    assert "date" in tags
 
 
 def test_ambiguous_us_eu_emits_nothing_for_date():
@@ -158,9 +158,9 @@ def test_roster_speculation_flags_sentinel_on_a_b_or_both(tmp_path: Path):
     assert by_name["plain"].sent_a == ""
     assert by_name["plain"].sent_b == ""
     headers = {h for h, _ in roster_visible_insight_headers(eng.column_roster())}
-    assert "sent A" in headers
-    assert "sent B" in headers
-    assert "sent both" in headers
+    assert "const A" in headers
+    assert "const B" in headers
+    assert "const both" in headers
 
     pb2 = tmp_path / "b_only.csv"
     pa2 = tmp_path / "a_only_b.csv"
@@ -168,9 +168,9 @@ def test_roster_speculation_flags_sentinel_on_a_b_or_both(tmp_path: Path):
     write_csv(pb2, "id,only_b\n1,\n2,\n")
     eng_b = Engine.from_paths(str(pa2), str(pb2), ["id"], a_delim=",", b_delim=",")
     hide = {h for h, _ in roster_visible_insight_headers(eng_b.column_roster())}
-    assert "sent B" in hide
-    assert "sent A" not in hide
-    assert "sent both" not in hide
+    assert "const B" in hide
+    assert "const A" not in hide
+    assert "const both" not in hide
 
 
 def test_sentinel_uses_comparable_rows_not_unmatched_keys(tmp_path: Path):

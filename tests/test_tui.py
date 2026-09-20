@@ -267,7 +267,7 @@ def test_help_power_user_grain():
     assert "column roster" in HELP.lower()
     assert "refused while a pair draft" in HELP
     assert "undo last accept" in HELP
-    assert "y ACCEPT selected" in HELP
+    assert "y accept" in HELP
     assert "current selection" in HELP.lower()
     assert "v      roster" in HELP or "v shows" in HELP.lower() or "show/hide accepted" in HELP.lower()
     assert "in place" in HELP.lower()
@@ -345,8 +345,8 @@ def test_cell_step_footer_shows_pair_draft_not_column_n(tmp_path: Path):
             app.render_all()
             await pilot.pause()
             banner = str(app.query_one("#banner").render())
-            assert "draft 2" in banner
-            assert "y confirm" in banner
+            assert "draft 2 cells" in banner
+            assert "y accept" in banner
             footer = str(app.query_one("#footer").render())
             assert "? help" in footer
             assert "U column" not in footer
@@ -1219,7 +1219,7 @@ def test_cell_step_footer_does_not_advertise_U(tmp_path: Path):
             footer = str(app.query_one("#footer").render())
             assert "U column" not in footer
             banner = str(app.query_one("#banner").render())
-            assert "y confirm" in banner
+            assert "y accept" in banner
 
     asyncio.run(_run())
 
@@ -2203,10 +2203,10 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             app.render_all()
             await pilot.pause()
             banner = str(app.query_one("#banner").render())
-            assert "ACCEPT" in banner
-            assert "select/deselect" in banner
+            assert "y accept" in banner
+            assert "Space toggle" in banner
             footer = str(app.query_one("#footer").render())
-            assert "y ACCEPT selected" not in footer
+            assert "y accept" not in footer
             assert "a grain" not in footer
             table = app.query_one("#grid")
             marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
@@ -2232,7 +2232,7 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             await pilot.pause()
             assert "mixed" not in app.engine.column_draft
             banner = str(app.query_one("#banner").render())
-            assert "y ACCEPT selected" in banner
+            assert "y accept" in banner
 
     asyncio.run(_run())
 
@@ -2251,7 +2251,9 @@ def test_overview_enter_opens_a_only(tmp_path: Path):
             assert vis == []
             table = app.query_one("#grid")
             shown = str(table.get_row_at(0)[0])
-            assert "i overview" in shown
+            assert "No pending columns" in shown
+            pane = str(app.query_one("#pane").render())
+            assert "i opens" in pane
             app.action_overview()
             await pilot.pause()
             modal = app.screen
@@ -2438,7 +2440,7 @@ def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
             assert "pending columns 1" in footer
-            assert "unmatched rows 2" in footer
+            assert "unmatched keys 2" in footer
             assert "mismatched columns 1" in footer
             assert "cells " not in footer
             assert "extras " not in footer
@@ -2679,13 +2681,13 @@ def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
     recs, _, _ = eng.pair_page("val", 0)
     y_yes = next(r for r in recs if r["val_a"] == "Y" and r["val_b"] == "Yes")
     ctx = y_yes["Flag__ctx"]
-    assert ctx.startswith("red 3 | blue 2 | green 1 | orange 1 | pink 1")
-    assert ctx.endswith("…")
+    assert ctx.startswith("red×3 | blue×2 | green×1 | orange×1 | pink×1")
+    assert ctx.endswith("+2 more")
     assert "purple" not in ctx
     assert "yellow" not in ctx
     n_yes = next(r for r in recs if r["val_a"] == "N" and r["val_b"] == "No")
-    assert n_yes["Flag__ctx"] == "z 2"
-    assert "…" not in n_yes["Flag__ctx"]
+    assert n_yes["Flag__ctx"] == "z×2"
+    assert "+2 more" not in n_yes["Flag__ctx"]
 
     app = ReconcileApp(eng)
 
@@ -2700,16 +2702,16 @@ def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
             await pilot.pause()
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            assert "ctx:Flag" in labels
-            assert "Flag" not in labels or labels.count("Flag") == 0
-            flag_i = labels.index("ctx:Flag")
+            assert "Flag" in labels
+            assert "ctx:Flag" not in labels
+            flag_i = labels.index("Flag")
             shown = str(table.get_row_at(0)[flag_i])
-            assert "red 3 | blue 2" in shown
-            assert shown.endswith("…")
+            assert "red×3 | blue×2" in shown
+            assert shown.endswith("+2 more")
             pane = str(app.query_one("#pane").render())
             assert "Flag" in pane
-            assert "red 3" in pane
-            assert "…" in pane
+            assert "red ×3" in pane
+            assert "+2 more" in pane
             app.action_context()
             await pilot.pause()
             assert isinstance(app.screen, ContextModal)
@@ -2763,9 +2765,9 @@ def test_roster_speculative_column_has_no_prefix(tmp_path: Path):
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
             assert "speculative" not in labels
-            assert "sent A" in labels
-            assert "sent B" not in labels
-            sent_i = labels.index("sent A")
+            assert "const A" in labels
+            assert "const B" not in labels
+            sent_i = labels.index("const A")
             shown = str(table.get_row_at(0)[sent_i])
             assert shown == "0"
             assert "speculative:" not in shown
@@ -2830,7 +2832,7 @@ def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
             await pilot.pause()
             assert app.engine.column_draft == {"s1", "s2"}
             banner = str(app.query_one("#banner").render())
-            assert "m same pair" in banner
+            assert "y accept" in banner
             app.query_one("#grid").focus()
             app.action_multi_pair()
             await pilot.pause()
@@ -2982,8 +2984,8 @@ def test_pair_list_context_columns_are_labeled_and_separate(tmp_path: Path):
     eng.context_columns["val"] = ["Flag", "Region"]
     recs, _, _ = eng.pair_page("val", 0)
     rec = recs[0]
-    assert rec["Flag__ctx"] == "red 2 | blue 1 | green 1"
-    assert rec["Region__ctx"] == "east 2 | west 2"
+    assert rec["Flag__ctx"] == "red×2 | blue×1 | green×1"
+    assert rec["Region__ctx"] == "east×2 | west×2"
     app = ReconcileApp(eng)
 
     async def _run() -> None:
@@ -2995,15 +2997,16 @@ def test_pair_list_context_columns_are_labeled_and_separate(tmp_path: Path):
             await pilot.pause()
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            assert "ctx:Flag" in labels
-            assert "ctx:Region" in labels
-            flag_i = labels.index("ctx:Flag")
-            region_i = labels.index("ctx:Region")
+            assert "Flag" in labels
+            assert "Region" in labels
+            assert "ctx:Flag" not in labels
+            flag_i = labels.index("Flag")
+            region_i = labels.index("Region")
             assert flag_i != region_i
             flag_cell = str(table.get_row_at(0)[flag_i])
             region_cell = str(table.get_row_at(0)[region_i])
-            assert "red 2" in flag_cell
-            assert "east 2" in region_cell
+            assert "red×2" in flag_cell
+            assert "east×2" in region_cell
             assert "east" not in flag_cell
             assert "red" not in region_cell
             pane = str(app.query_one("#pane").render())
@@ -3049,22 +3052,22 @@ def test_pair_list_context_group_pair_and_triplet_top5(tmp_path: Path):
     }
     recs, _, _ = eng.pair_page("val", 0)
     rec = recs[0]
-    assert rec["Flag__ctx"].startswith("blue 2 | red 2")
-    assert rec["Flag__ctx"].endswith("…")
+    assert rec["Flag__ctx"].startswith("blue×2 | red×2")
+    assert rec["Flag__ctx"].endswith("+3 more")
     assert rec["g0__gctx"] == (
-        "blue|west 2 | red|east 2 | brown|west 1 | green|west 1 | orange|east 1 …"
+        "blue|west×2 | red|east×2 | brown|west×1 | green|west×1 | orange|east×1 | +3 more"
     )
     assert rec["g1__gctx"] == (
-        "blue|west|S 2 | red|east|N 2 | brown|west|S 1 | green|west|S 1 | orange|east|N 1 …"
+        "blue|west|S×2 | red|east|N×2 | brown|west|S×1 | green|west|S×1 | orange|east|N×1 | +3 more"
     )
     assert "g5__gctx" not in rec
     assert "pink|east" not in rec["g0__gctx"]
     views = eng.context_views("val")
     headers = [v.header for v in views]
-    assert "ctx:Flag" in headers
-    assert "ctx:g0 Flag+Region" in headers
-    assert "ctx:g1 Flag+Region+Zone" in headers
-    assert not any(v.header.startswith("ctx:g5") for v in views)
+    assert "Flag" in headers
+    assert "g0 Flag+Region" in headers
+    assert "g1 Flag+Region+Zone" in headers
+    assert not any(v.header.startswith("g5") for v in views)
 
 
 def test_empty_context_group_omitted_and_single_still_works(tmp_path: Path):
@@ -3082,9 +3085,9 @@ def test_empty_context_group_omitted_and_single_still_works(tmp_path: Path):
     eng.context_groups["val"] = {3: []}
     recs, _, _ = eng.pair_page("val", 0)
     rec = recs[0]
-    assert rec["Flag__ctx"] == "blue 1 | red 1"
+    assert rec["Flag__ctx"] == "blue×1 | red×1"
     assert "g3__gctx" not in rec
-    assert [v.header for v in eng.context_views("val")] == ["ctx:Flag"]
+    assert [v.header for v in eng.context_views("val")] == ["Flag"]
 
 
 def test_same_column_in_two_groups_counts_independently(tmp_path: Path):
@@ -3101,8 +3104,8 @@ def test_same_column_in_two_groups_counts_independently(tmp_path: Path):
     eng.context_groups["val"] = {0: ["Flag", "Region"], 2: ["Flag", "Zone"]}
     recs, _, _ = eng.pair_page("val", 0)
     rec = recs[0]
-    assert rec["g0__gctx"] == "red|east 1 | red|west 1"
-    assert rec["g2__gctx"] == "red|N 1 | red|S 1"
+    assert rec["g0__gctx"] == "red|east×1 | red|west×1"
+    assert rec["g2__gctx"] == "red|N×1 | red|S×1"
 
 
 def test_pair_ctx_cache_invalidates_when_groups_change(tmp_path: Path):
@@ -3125,7 +3128,7 @@ def test_pair_ctx_cache_invalidates_when_groups_change(tmp_path: Path):
     assert "g0__gctx" not in stale[0]
     eng._pair_ctx_by_col.pop("val", None)
     fresh, _, _ = eng.pair_page("val", 0)
-    assert fresh[0]["g0__gctx"] == "blue|west 1 | red|east 1"
+    assert fresh[0]["g0__gctx"] == "blue|west×1 | red|east×1"
 
 
 def test_cell_step_group_context_is_per_row_tuple(tmp_path: Path):
@@ -3160,14 +3163,14 @@ def test_cell_step_group_context_is_per_row_tuple(tmp_path: Path):
             await pilot.pause()
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            assert "ctx:Flag" in labels
-            assert "ctx:g0 Flag+Region" in labels
-            g_i = labels.index("ctx:g0 Flag+Region")
-            assert str(table.get_row_at(0)[g_i]) == "A|red|east  B|blue|west"
+            assert "Flag" in labels
+            assert "g0 Flag+Region" in labels
+            g_i = labels.index("g0 Flag+Region")
+            assert str(table.get_row_at(0)[g_i]) == "A: red|east  B: blue|west"
             pane = str(app.query_one("#pane").render())
             assert "g0 Flag+Region" in pane
-            assert "A|red|east" in pane
-            assert "B|blue|west" in pane
+            assert "A: red|east" in pane
+            assert "B: blue|west" in pane
 
     asyncio.run(_run())
 
@@ -3217,8 +3220,8 @@ def test_context_modal_0_9_toggles_group_membership(tmp_path: Path):
             assert 1 not in app.engine.context_groups["Status"]
             assert "Status" not in app.engine._pair_ctx_by_col
             recs, _, _ = app.engine.pair_page("Status", 0)
-            assert recs[0]["g0__gctx"] == "blue|west 1 | red|east 1"
-            assert recs[0]["g2__gctx"] == "blue 1 | red 1"
+            assert recs[0]["g0__gctx"] == "blue|west×1 | red|east×1"
+            assert recs[0]["g2__gctx"] == "blue×1 | red×1"
             assert "Flag__ctx" not in recs[0]
 
     asyncio.run(_run())
@@ -3256,9 +3259,9 @@ def test_context_modal_space_and_groups_together(tmp_path: Path):
             assert app.engine.context_groups["Status"][0] == ["Flag", "Region"]
             table = app.query_one("#grid")
             labels = [str(col.label) for col in table.columns.values()]
-            assert "ctx:Flag" in labels
-            assert "ctx:g0 Flag+Region" in labels
-            assert labels.index("ctx:Flag") < labels.index("ctx:g0 Flag+Region")
+            assert "Flag" in labels
+            assert "g0 Flag+Region" in labels
+            assert labels.index("Flag") < labels.index("g0 Flag+Region")
 
     asyncio.run(_run())
 
