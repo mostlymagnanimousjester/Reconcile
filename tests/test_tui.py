@@ -291,8 +291,8 @@ def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
             assert app.engine.column_draft == {"Status", "Flag"}
             assert app.draft_in_flight() is True
             assert app.engine.draft_in_flight() is True
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "2 column" in banner
             pending_before = app.engine.pending_cells_n()
             app.action_drill()
             await pilot.pause()
@@ -307,9 +307,9 @@ def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
             await pilot.pause()
             assert app.engine.pending_cells_n() == pending_before
             assert app.engine.column_draft == {"Status", "Flag"}
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
-            assert "draft stays" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner or "2 column" in banner
+            assert "draft stays" not in str(app.query_one("#footer").render())
             assert app.place.screen != "cell_step"
 
     asyncio.run(_run())
@@ -334,9 +334,13 @@ def test_cell_step_footer_shows_pair_draft_not_column_n(tmp_path: Path):
             app.place.pair_val_b = "Yes"
             app.render_all()
             await pilot.pause()
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
+            assert "y confirm" in banner
             footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
-            assert "cell step" in footer
+            assert "? help" in footer
+            assert "U column" not in footer
+            assert "cell step" not in footer
 
     asyncio.run(_run())
 
@@ -1204,7 +1208,8 @@ def test_cell_step_footer_does_not_advertise_U(tmp_path: Path):
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
             assert "U column" not in footer
-            assert "cell step" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "y confirm" in banner
 
     asyncio.run(_run())
 
@@ -1229,16 +1234,41 @@ def test_cell_a_after_uncheck_draft_n_matches_remaining(tmp_path: Path):
             app.pair_draft_unchecked = {("1",)}
             app.render_all()
             await pilot.pause()
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
             app.query_one("#grid").focus()
             await pilot.press("a")
             await pilot.pause()
             assert ("1",) not in app.pair_draft_unchecked
             assert app.engine.pair_draft_height() == 2
-            footer = str(app.query_one("#footer").render())
-            assert "draft 2" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "draft 2" in banner
             assert app.engine.pending_cells_n() == 2
+
+    asyncio.run(_run())
+
+
+def test_pair_list_footer_has_repeat_and_undo_only(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "pair_list"
+            app.place.column = "val"
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert ". repeat" in footer
+            assert "u undo" in footer
+            assert "? help" in footer
+            assert "y ACCEPT" not in footer
+            assert "Enter" not in footer
+            assert "U column" not in footer
 
     asyncio.run(_run())
 
@@ -2144,7 +2174,7 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             assert "ACCEPT" in banner
             assert "select/deselect" in banner
             footer = str(app.query_one("#footer").render())
-            assert "y ACCEPT selected" in footer
+            assert "y ACCEPT selected" not in footer
             assert "a grain" not in footer
             table = app.query_one("#grid")
             marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
@@ -2169,8 +2199,8 @@ def test_sentinel_draft_makes_accept_and_toggle_obvious(tmp_path: Path):
             app.action_toggle()
             await pilot.pause()
             assert "mixed" not in app.engine.column_draft
-            footer = str(app.query_one("#footer").render())
-            assert "y ACCEPT selected" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "y ACCEPT selected" in banner
 
     asyncio.run(_run())
 
@@ -2766,8 +2796,8 @@ def test_sentinel_draft_m_uses_on_columns(tmp_path: Path):
             app.render_all()
             await pilot.pause()
             assert app.engine.column_draft == {"s1", "s2"}
-            footer = str(app.query_one("#footer").render())
-            assert "m same pair" in footer
+            banner = str(app.query_one("#banner").render())
+            assert "m same pair" in banner
             app.query_one("#grid").focus()
             app.action_multi_pair()
             await pilot.pause()

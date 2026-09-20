@@ -904,6 +904,13 @@ class ReconcileApp(App[int]):
             banner.remove_class("error")
             banner.add_class("draft")
             return
+        if self.engine.pair_draft_col is not None:
+            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
+            banner.update(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
+            banner.set_class(False, "hidden")
+            banner.remove_class("error")
+            banner.add_class("draft")
+            return
         banner.update("")
         banner.set_class(True, "hidden")
         banner.remove_class("error")
@@ -960,26 +967,6 @@ class ReconcileApp(App[int]):
         )
         footer = self.query_one("#footer", Static)
         footer.set_class(bool(self._busy_note), "busy")
-        # Live set only. Never show column-draft N on the cell step (pair XOR).
-        # Esc on pair list does not cancel a column draft — don't claim it does.
-        if p.screen == "cell_step" and e.pair_draft_col is not None:
-            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
-            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle  c context")
-        elif e.column_draft and p.screen == "roster":
-            bits.append(
-                f"draft {self._draft_n}  y ACCEPT selected  m same pair  Space select/deselect"
-            )
-        elif e.column_draft:
-            bits.append(
-                f"draft {self._draft_n}  y ACCEPT on roster  m same pair  Esc back (draft stays)"
-            )
-        elif e.pair_draft_col is not None:
-            n = max(0, self._draft_n - len(self.pair_draft_unchecked))
-            bits.append(f"draft {n}  y confirm  Esc cancel  Space toggle")
-        if p.screen == "pair_list":
-            bits.append("pair list")
-        elif p.screen == "cell_step":
-            bits.append("cell step")
         if p.page is not None and p.screen in {
             "pair_list",
             "cell_step",
@@ -992,15 +979,11 @@ class ReconcileApp(App[int]):
             bits.append(f"page {p.page + 1}/{self._page_count}")
         if e.last_refresh_delta:
             bits.append(e.last_refresh_delta.message)
-        if p.focused_key:
-            bits.append("key " + ", ".join(_display_text(x) for x in p.focused_key))
-        spec = ""
-        if p.screen in ("pair_list", "cell_step") and p.pair_val_a is not None:
-            tags = e.cell_insights(p.pair_val_a, p.pair_val_b or "")
-            if tags:
-                spec = "  " + ", ".join(tags)
+        if p.screen == "pair_list":
+            bits.append(". repeat")
+            bits.append("u undo")
         bits.append("? help")
-        footer.update(" · ".join(bits) + spec)
+        footer.update(" · ".join(bits))
 
     def _run_busy(self, work) -> None:
         """Paint 'working…' for a real wait, then run work after the next refresh.
