@@ -36,6 +36,8 @@ PowerShell:
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --keys id,year
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-delim tilde --keys id
 python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Sheet1 --b-sheet Sheet1 --keys id
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx --a-sheet Foo --b-sheet Bar --keys id
+python Reconcile.py --a C:\data\left.xlsx --b C:\data\right.xlsx -sheets data{1-4,7} --keys id
 python Reconcile.py --a C:\data\left.dat --b C:\data\right.txt --a-delim pipe --b-delim tilde --keys id
 python Reconcile.py --a C:\data\left.csv --b C:\data\right.csv --a-encoding windows-1252 --keys id
 ```
@@ -53,9 +55,12 @@ python Reconcile.py --a ./left.csv --b ./right.csv --a-encoding windows-1252 --k
 
 CLI paths (`--a`, `--b`) may be relative to the invocation cwd; they are resolved immediately and **only absolute paths** are stored in the in-memory job identity.
 
-Excel sides require `--a-sheet` / `--b-sheet`. Delimiter and encoding flags are illegal on Excel sides. Excel is loaded with fastexcel as string columns: stored/cached values as-is (formulas are not evaluated). Merged cells are allowed; secondary merge cells may be empty strings. A `.csv` side (extension case-insensitive) defaults to comma when `--a-delim` / `--b-delim` is omitted; the flag still overrides. Other delimited files (`.txt`, `.dat`, no extension, …) **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.txt`→tilde default. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). The resolved delimiter character (including the `.csv` comma default) is frozen in in-memory job identity and reused on refresh.
+Excel sides use one of two sheet paths (mutually exclusive):
 
-**Planned (not shipped):** `-sheets` / `--sheets` compares a set of **same-named** sheets across two Excel workbooks, one pair at a time (`data{1-4,7}` → `data1`…`data4`, `data7`; or a plain list `Jan,Feb`). Only the first pair loads; `S` advances when that sheet’s remaining work is 0. See [REQUIREMENTS.md §12.1](REQUIREMENTS.md) and [improvements.md](improvements.md). Do not pass `-sheets` today (unrecognized).
+- **Single pair:** `--a-sheet` / `--b-sheet` (required per Excel side). Names may differ (`--a-sheet Foo --b-sheet Bar`).
+- **Same-named sequence:** `-sheets` / `--sheets` (`data{1-4,7}` → `data1`…`data4`, `data7`; or a plain list `Jan,Feb`). Do **not** also pass `--a-sheet` / `--b-sheet`. Each expanded name must exist in both workbooks. Only the first pair loads; `S` advances when that sheet’s remaining work is 0 (pending columns + unmatched rows + extras) and no draft. See [REQUIREMENTS.md §12.1](REQUIREMENTS.md).
+
+Delimiter and encoding flags are illegal on Excel sides. Excel is loaded with fastexcel as string columns: stored/cached values as-is (formulas are not evaluated). Merged cells are allowed; secondary merge cells may be empty strings. A `.csv` side (extension case-insensitive) defaults to comma when `--a-delim` / `--b-delim` is omitted; the flag still overrides. Other delimited files (`.txt`, `.dat`, no extension, …) **require** `--a-delim` / `--b-delim` (`comma`, `tilde`, `pipe`, `tab`, or the literal character `,` `~` `|` / tab). No sniffing and no `.txt`→tilde default. Encoding defaults to UTF-8 (`utf8`); override with `--a-encoding` / `--b-encoding` (`utf8`, `windows-1252`; `utf8-lossy` / `windows-1252-lossy` as explicit opt-in). The resolved delimiter character (including the `.csv` comma default) is frozen in in-memory job identity and reused on refresh.
 
 ## In the TUI
 
