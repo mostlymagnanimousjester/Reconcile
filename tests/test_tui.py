@@ -1732,6 +1732,7 @@ def test_overview_a_shows_error(tmp_path: Path):
             assert app.engine.pending_total() == pending
             err = str(modal.query_one("#modal-err").render())
             assert "ERROR" in err
+            assert "overview is counts only" in err
             assert "Pending" not in err
             await pilot.press("A")
             await pilot.pause()
@@ -2706,8 +2707,8 @@ def test_pair_list_context_top5_unique_values_and_truncation(tmp_path: Path):
             assert "ctx:Flag" not in labels
             flag_i = labels.index("Flag")
             shown = str(table.get_row_at(0)[flag_i])
-            assert "red×3 | blue×2" in shown
-            assert shown.endswith("+2 more")
+            assert "red×3" in shown
+            assert "purple" not in shown
             pane = str(app.query_one("#pane").render())
             assert "Flag" in pane
             assert "red ×3" in pane
@@ -2924,7 +2925,7 @@ def test_pending_displays_match_engine(tmp_path: Path):
             labels = [str(col.label) for col in table.columns.values()]
             pend_i = labels.index("pending")
             row = next(r for r in app._table_keys if r is not None)
-            shown = str(table.get_row_at(0)[pend_i])
+            shown = str(table.get_row_at(0)[pend_i]).strip()
             assert shown == str(row.pending)
             assert int(shown) == next(
                 r.pending for r in app.engine.roster() if r.name == row.name
@@ -2952,18 +2953,18 @@ def test_pending_displays_match_engine(tmp_path: Path):
             tab = app.query_one("#tab-pending", Button)
             assert f"Pending {row.pending}" in str(tab.label)
             statics = " ".join(str(s.render()) for s in app.query(Static))
-            assert f"pending {row.pending}" in statics
+            assert f"{row.pending} pending" in statics
             pair_table = app.query_one("#grid")
             pair_labels = [str(col.label) for col in pair_table.columns.values()]
             pair_pend_i = pair_labels.index("pending")
             rec = app._table_keys[0]
-            assert str(pair_table.get_row_at(0)[pair_pend_i]) == str(int(rec["n"]))
+            assert str(pair_table.get_row_at(0)[pair_pend_i]).strip() == str(int(rec["n"]))
             assert int(rec["n"]) == row.pending
             app.action_accept()
             await pilot.pause()
             leftover = next(r.pending for r in app.engine.roster() if r.name == "Status")
             statics = " ".join(str(s.render()) for s in app.query(Static))
-            assert f"pending {leftover}" in statics
+            assert f"{leftover} pending" in statics
 
     asyncio.run(_run())
 

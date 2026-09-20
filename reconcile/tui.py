@@ -561,7 +561,7 @@ class OverviewModal(ModalScreen[str | None]):
 
     def action_refuse(self) -> None:
         self.query_one("#modal-err", Static).update(
-            "overview is counts only — open a list with Enter, accept on that screen"
+            "ERROR: overview is counts only — open a list with Enter, accept on that screen"
         )
 
     def action_no_pages(self) -> None:
