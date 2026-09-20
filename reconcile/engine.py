@@ -88,6 +88,15 @@ class RosterRow:
     num: str = ""
     ws: str = ""
     date: str = ""
+    money: str = ""
+    pct: str = ""
+    idpad: str = ""
+    bool: str = ""
+    acctneg: str = ""
+    xlsdate: str = ""
+    inws: str = ""
+    dash: str = ""
+    fold: str = ""
 
 
 @dataclass

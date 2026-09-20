@@ -8,7 +8,20 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from reconcile.engine import Place, RosterRow
-from reconcile.insights import format_sentinel_both, format_sentinel_value, same_date_expr
+from reconcile.insights import (
+    acctneg_expr,
+    bool_expr,
+    dash_expr,
+    fold_expr,
+    format_sentinel_both,
+    format_sentinel_value,
+    idpad_expr,
+    inws_expr,
+    money_expr,
+    pct_expr,
+    same_date_expr,
+    xlsdate_expr,
+)
 
 if TYPE_CHECKING:
     from reconcile.engine import Engine
@@ -111,6 +124,15 @@ def _roster_agg_maps(
             | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
         ).all().alias("ws"),
         same_date_expr().all().alias("same_date"),
+        money_expr().all().alias("money"),
+        pct_expr().all().alias("pct"),
+        idpad_expr().all().alias("idpad"),
+        bool_expr().all().alias("bool"),
+        acctneg_expr().all().alias("acctneg"),
+        xlsdate_expr().all().alias("xlsdate"),
+        inws_expr().all().alias("inws"),
+        dash_expr().all().alias("dash"),
+        fold_expr().all().alias("fold"),
         pl.col("val_a").n_unique().alias("n_a"),
         pl.col("val_b").n_unique().alias("n_b"),
     )
@@ -201,7 +223,17 @@ CHECK_COLS = (
     ("num", "num"),
     ("ws", "ws"),
     ("date", "date"),
+    ("money", "money"),
+    ("pct", "pct"),
+    ("idpad", "idpad"),
+    ("bool", "bool"),
+    ("acctneg", "acctneg"),
+    ("xlsdate", "xlsdate"),
+    ("inws", "inws"),
+    ("dash", "dash"),
+    ("fold", "fold"),
 )
+CHECK_HEADERS = {h for h, _ in CHECK_COLS}
 
 
 def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str]]:
@@ -260,7 +292,8 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
         cell_a, cell_b, cell_both = _sentinel_cells(raw_a, raw_b)
         if not pend or st is None:
             cat = "—"
-            yn_trim = yn_case = yn_both = yn_num = yn_ws = yn_date = "n" if pend == 0 else ""
+            blank = "n" if pend == 0 else ""
+            yn = {attr: blank for _, attr in CHECK_COLS}
         else:
             n_a, n_b = int(st["n_a"]), int(st["n_b"])
             if n_a > 30 or n_b > 30:
@@ -268,12 +301,23 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
             else:
                 n_ab = int(st["n_ab"])
                 cat = "yes" if n_ab <= 50 else "no"
-            yn_trim = _yn(bool(st["trim"]))
-            yn_case = _yn(bool(st["case"]))
-            yn_both = _yn(bool(st["both"]))
-            yn_num = _yn(bool(st["numeric"]))
-            yn_ws = _yn(bool(st["ws"]))
-            yn_date = _yn(bool(st["same_date"]))
+            yn = {
+                "trim": _yn(bool(st["trim"])),
+                "case": _yn(bool(st["case"])),
+                "trim_case": _yn(bool(st["both"])),
+                "num": _yn(bool(st["numeric"])),
+                "ws": _yn(bool(st["ws"])),
+                "date": _yn(bool(st["same_date"])),
+                "money": _yn(bool(st["money"])),
+                "pct": _yn(bool(st["pct"])),
+                "idpad": _yn(bool(st["idpad"])),
+                "bool": _yn(bool(st["bool"])),
+                "acctneg": _yn(bool(st["acctneg"])),
+                "xlsdate": _yn(bool(st["xlsdate"])),
+                "inws": _yn(bool(st["inws"])),
+                "dash": _yn(bool(st["dash"])),
+                "fold": _yn(bool(st["fold"])),
+            }
         equal = str(matched_n - mismatch_n.get(col, 0))
         rows.append(
             RosterRow(
@@ -291,12 +335,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
                 sent_a=cell_a,
                 sent_b=cell_b,
                 sent_both=cell_both,
-                trim=yn_trim,
-                case=yn_case,
-                trim_case=yn_both,
-                num=yn_num,
-                ws=yn_ws,
-                date=yn_date,
+                **yn,
             )
         )
     if eng.a_only.height > 0:
