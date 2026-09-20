@@ -1616,7 +1616,8 @@ class ReconcileApp(App[int]):
         rows = self.engine.suggest_extras() if rows is None else rows
         if not rows:
             return None
-        table: DataTable = DataTable(cursor_type="row", id="suggest", can_focus=False)
+        table: DataTable = DataTable(cursor_type="row", id="suggest")
+        table.can_focus = False
         self._fill_suggest(table, rows)
         return Vertical(
             Static(
