@@ -1,3 +1,5 @@
 # Planned simplifications
 
 - **`m` is pair-only.** Drop the column-picker. `/`, `=`, and Space already choose columns. On the pair list, `m` applies **this pair** to the live column draft, or to every pending column that has that pair. On the roster, keep only the pair-picker (the union), not a column-picker. Purpose: `""` → `0` (and similar) without a two-step wizard. Inspection tabs (Accepted / Equal / All matched) stay — they are optional and useful when assessing pending.
+- **`u` always undoes the last accept, as one unit.** After a pair `a`, `u` restores that pair. After column `A` or draft `y`, `u` restores those columns. After pair-only `m` applies e.g. `""` → `0` on eight columns, `u` reverses that apply on all eight — not eight undos, and not the pair under the cursor. If nothing has been accepted yet, `u` errors (same idea as `y` with no draft).
+- **`U` stays “undo this column”** on the pair list only — the inverse of `A`. It does not depend on what you did last. That is the only other undo. Drop the extra meaning where `u` undoes the focused row when there is no “last bulk” memory.
