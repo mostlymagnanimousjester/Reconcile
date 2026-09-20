@@ -828,6 +828,10 @@ class ReconcileApp(App[int]):
         Binding("/", "regex", "Regex", show=False),
         Binding("=", "sentinel", "Sentinel", show=False),
         Binding("?", "help", "Help", show=False),
+        Binding("left_square_bracket", "tab_prev", show=False),
+        Binding("right_square_bracket", "tab_next", show=False),
+        Binding("[", "tab_prev", show=False),
+        Binding("]", "tab_next", show=False),
     ]
 
     def __init__(self, engine: Engine, place: Place | None = None) -> None:
@@ -1299,10 +1303,11 @@ class ReconcileApp(App[int]):
             ("equal", "Equal"),
             ("all_matched", "All matched"),
         ]
-        buttons = [
-            Button(f"[{label}]" if key == current else label, id=f"tab-{key}")
-            for key, label in labels
-        ]
+        buttons = []
+        for key, label in labels:
+            btn = Button(f"[{label}]" if key == current else label, id=f"tab-{key}")
+            btn.can_focus = False
+            buttons.append(btn)
         return Horizontal(*buttons, id="tabs")
 
     def _column_pending_n(self, col: str) -> int:
@@ -2572,6 +2577,55 @@ class ReconcileApp(App[int]):
         if self.place.screen in ("a_only", "b_only", "extras"):
             self._render_pane()
 
+    _COLUMN_TABS = ("pending", "accepted", "equal", "all_matched")
+
+    def _column_detail_tab(self) -> str | None:
+        p = self.place
+        if not p.column:
+            return None
+        if p.screen == "pair_list":
+            return "pending"
+        if p.screen == "cell_step":
+            return p.view_tab or "pending"
+        if p.screen in ("accepted", "equal", "all_matched"):
+            return p.screen
+        return None
+
+    def _apply_column_tab(self, tab: str) -> None:
+        if tab == "pending":
+            self.place.view_tab = "pending"
+            self.place.screen = "pair_list"
+        else:
+            self.place.view_tab = tab
+            self.place.screen = tab
+
+    def action_tab_next(self) -> None:
+        self._step_column_tab(1)
+
+    def action_tab_prev(self) -> None:
+        self._step_column_tab(-1)
+
+    def _step_column_tab(self, delta: int) -> None:
+        tab = self._column_detail_tab()
+        if tab is None:
+            self.set_error("ERROR: column tabs are only on column detail")
+            return
+        if self.engine.pair_draft_col is not None:
+            self.set_error("ERROR: confirm or cancel the pair draft first")
+            return
+        idx = self._COLUMN_TABS.index(tab)
+        nxt = idx + delta
+        if nxt < 0:
+            self.set_error("ERROR: first tab")
+            return
+        if nxt >= len(self._COLUMN_TABS):
+            self.set_error("ERROR: last tab")
+            return
+        self.set_error(None)
+        self._apply_column_tab(self._COLUMN_TABS[nxt])
+        self.render_all()
+        self.set_focus_work()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         if not bid.startswith("tab-"):
@@ -2585,12 +2639,7 @@ class ReconcileApp(App[int]):
             event.stop()
             self._render_footer()
             return
-        if tab == "pending":
-            self.place.view_tab = "pending"
-            self.place.screen = "pair_list"
-        else:
-            self.place.view_tab = tab
-            self.place.screen = tab  # accepted / equal / all_matched
+        self._apply_column_tab(tab)
         event.stop()
         self.render_all()
         self.set_focus_work()

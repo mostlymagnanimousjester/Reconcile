@@ -126,6 +126,108 @@ def test_keys_1_to_4_do_not_switch_tabs(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_square_brackets_cycle_column_tabs(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "accepted"
+            assert app.place.view_tab == "accepted"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "equal"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "all_matched"
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "all_matched"
+            assert app.tui_error and "last tab" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "equal"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "accepted"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.view_tab == "pending"
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.tui_error and "first tab" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_square_brackets_error_on_roster(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.tui_error and "column tabs" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.tui_error and "column tabs" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_square_brackets_refused_during_pair_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            n = app.engine.start_pair_draft("val", "Y", "Yes")
+            assert n == 1
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.press("]")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.tui_error and "pair draft" in app.tui_error
+            await pilot.press("[")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.engine.pair_draft_col == "val"
+            assert app.tui_error and "pair draft" in app.tui_error
+
+    asyncio.run(_run())
+
+
 def test_help_says_exact_sentinel_not_polars_selector():
     assert "Polars selector" not in HELP
     assert "exact sentinel" in HELP
