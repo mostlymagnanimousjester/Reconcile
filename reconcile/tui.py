@@ -600,6 +600,9 @@ class ContextModal(ModalScreen[ContextPick | None]):
                 groups[gid] = ordered
         self.dismiss(ContextPick(singles=sorted(self.selected), groups=groups))
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+
 
 class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
     """Pick columns, then one exact pair; apply that pair to selected columns."""
@@ -844,13 +847,9 @@ class ReconcileApp(App[int]):
         return isinstance(self.screen, ModalScreen)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        # App enter/escape are priority=True so they otherwise steal every modal.
-        # Disabled bindings are skipped; the modal's Esc/Enter then run.
-        if action in {"drill", "back"} and self._modal_active():
-            return False
-        if action == "overview" and self._modal_active():
-            return False
-        if action == "multi_pair" and self._modal_active():
+        # A modal is a real layer: no app verb leaks through (accept/quit/regex/…).
+        # Disabled bindings are skipped; the modal's own keys then run.
+        if isinstance(self.screen, ModalScreen):
             return False
         if self._in_input() and action not in {"back", "drill"}:
             return False
