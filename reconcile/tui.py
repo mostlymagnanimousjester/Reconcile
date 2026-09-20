@@ -417,6 +417,10 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("enter", "ok", "Run", priority=True),
+        Binding("a", "side_a", show=False, priority=True),
+        Binding("A", "side_a", show=False, priority=True),
+        Binding("b", "side_b", show=False, priority=True),
+        Binding("B", "side_b", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -425,11 +429,15 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
                 "Sentinel = that side is one constant on all comparable (shared-key) rows. Choose exactly one side."
             )
             with Horizontal():
-                yield Button("A", id="side-a")
-                yield Button("B", id="side-b")
+                side_a = Button("A", id="side-a")
+                side_a.can_focus = False
+                yield side_a
+                side_b = Button("B", id="side-b")
+                side_b.can_focus = False
+                yield side_b
             yield Input(placeholder="exact string (empty is legal)", id="sentinel")
             yield Static(
-                "Enter Run · Esc cancel. After Run: y ACCEPT selected, Space select/deselect.",
+                "a A · b B · type sentinel · Enter Run · Esc cancel",
                 classes="dim",
             )
             yield Static("", id="modal-err", classes="error")
@@ -437,18 +445,29 @@ class SentinelModal(ModalScreen[tuple[str, str] | None]):
 
     def on_mount(self) -> None:
         self._side = None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"side_a", "side_b"} and isinstance(self.focused, Input):
+            return False
+        return True
+
+    def _set_side(self, side: str) -> None:
+        self._side = side
+        self.query_one("#side-a", Button).label = "[A]" if side == "A" else "A"
+        self.query_one("#side-b", Button).label = "[B]" if side == "B" else "B"
         self.query_one("#sentinel", Input).focus()
+
+    def action_side_a(self) -> None:
+        self._set_side("A")
+
+    def action_side_b(self) -> None:
+        self._set_side("B")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "side-a":
-            self._side = "A"
-            event.button.label = "[A]"
-            self.query_one("#side-b", Button).label = "B"
+            self._set_side("A")
         elif event.button.id == "side-b":
-            self._side = "B"
-            event.button.label = "[B]"
-            self.query_one("#side-a", Button).label = "A"
-        self.query_one("#sentinel", Input).focus()
+            self._set_side("B")
 
     def action_cancel(self) -> None:
         self.dismiss(None)

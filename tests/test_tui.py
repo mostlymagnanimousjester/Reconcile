@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 from reconcile.engine import Engine, Place
 from reconcile.tui import (
@@ -537,15 +537,78 @@ def test_tui_equals_opens_sentinel_modal_and_refuses_without_side(tmp_path: Path
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, SentinelModal)
+            assert not isinstance(app.focused, Input)
             modal.action_ok()
             await pilot.pause()
             assert isinstance(app.screen, SentinelModal)
             assert "ERROR" in str(modal.query_one("#modal-err").render())
             assert not app.draft_in_flight()
-            modal.action_cancel()
+            await pilot.press("a")
+            await pilot.pause()
+            assert modal._side == "A"
+            modal.query_one("#sentinel").value = "NA"
+            modal.action_ok()
             await pilot.pause()
             assert not isinstance(app.screen, SentinelModal)
-            assert not app.draft_in_flight()
+            assert app.engine.column_draft == {"s"}
+
+    asyncio.run(_run())
+
+
+def test_sentinel_b_selects_side_b(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s\n1,x\n2,y\n")
+    write_csv(pb, "id,s\n1,NA\n2,NA\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("equals")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, SentinelModal)
+            await pilot.press("b")
+            await pilot.pause()
+            assert modal._side == "B"
+            modal.query_one("#sentinel").value = "NA"
+            modal.action_ok()
+            await pilot.pause()
+            assert not isinstance(app.screen, SentinelModal)
+            assert app.engine.column_draft == {"s"}
+
+    asyncio.run(_run())
+
+
+def test_sentinel_input_letter_a_is_literal(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,s\n1,x\n2,y\n")
+    write_csv(pb, "id,s\n1,NA\n2,NA\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            await pilot.press("equals")
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, SentinelModal)
+            await pilot.press("b")
+            await pilot.pause()
+            assert modal._side == "B"
+            inp = modal.query_one("#sentinel")
+            assert app.focused is inp
+            await pilot.press("N", "A")
+            await pilot.pause()
+            assert inp.value == "NA"
+            assert modal._side == "B"
+            assert isinstance(app.screen, SentinelModal)
 
     asyncio.run(_run())
 
