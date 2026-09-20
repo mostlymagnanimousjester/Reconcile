@@ -2048,6 +2048,8 @@ class ReconcileApp(App[int]):
 
                 self._run_busy(_confirm_columns)
                 return
+            else:
+                raise InTuiError("ERROR: no draft to confirm")
             self.set_error(None)
         except InTuiError as exc:
             self.set_error(exc.message)
