@@ -1683,6 +1683,7 @@ class ReconcileApp(App[int]):
         elif self.engine.column_draft and p.screen == "roster":
             self.engine.column_draft = set()
         elif p.screen in ("pair_list", "a_only", "b_only", "extras", "accepted", "equal", "all_matched"):
+            self.engine.column_draft = set()
             self.place = Place(
                 screen="roster",
                 roster_filter=p.roster_filter,

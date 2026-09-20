@@ -1333,6 +1333,34 @@ def test_y_with_no_draft_errors(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_esc_from_pair_list_cancels_column_draft(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,Status,Flag\n1,Y,1\n")
+    write_csv(pb, "id,Status,Flag\n1,Yes,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("Status|Flag")
+            assert app.engine.column_draft == {"Status", "Flag"}
+            app.place.focused_name = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.engine.column_draft == {"Status", "Flag"}
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert not app.engine.column_draft
+
+    asyncio.run(_run())
+
+
 def test_regex_modal_escape_closes_without_app_back(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")
