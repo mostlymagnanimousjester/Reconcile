@@ -307,8 +307,7 @@ def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
             await pilot.pause()
             assert app.engine.pending_cells_n() == pending_before
             assert app.engine.column_draft == {"Status", "Flag"}
-            banner = str(app.query_one("#banner").render())
-            assert "draft 2" in banner or "2 column" in banner
+            assert app.tui_error and "column draft" in app.tui_error
             assert "draft stays" not in str(app.query_one("#footer").render())
             assert app.place.screen != "cell_step"
 
