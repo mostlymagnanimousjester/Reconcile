@@ -22,7 +22,7 @@ Both sides must be `.xlsx` / `.xlsm` for `-sheets`. Not CSV. Each expanded name 
 
 **Grammar:** braces = prefix + integer items (`N` or inclusive `start-end`), no padding (`data{1-4,7}` → `data1`…`data4`, `data7`). No braces = exact comma list (`Jan,Feb` or `data1,data2`). `{data1,data2}` is illegal (items are not integers).
 
-**Load / advance:** first pair only at startup (same TUI as one A/B compare). **`S` next sheet** when current remaining work is 0 (pending columns + unmatched + extras) and no draft; reset place to roster. `A` stays bulk on **this screen** (pair list / unmatched); roster `A` stays ERROR. `]` stays tabs. Last sheet: `S` → `no next sheet` ERROR, no invented name. Exit codes stay per loaded sheet.
+**Load / advance:** first pair only at startup (same TUI as one A/B compare). **`S` next sheet** when no draft. Remaining work 0 advances immediately. Remaining work > 0 opens a confirm: `y` or `S` leaves those differences unaccepted (not snapshotted); `Esc` stays. Reset place to roster. `A` stays bulk on **this screen** (pair list / unmatched); roster `A` stays ERROR. `]` stays tabs. Last sheet: `S` → `no next sheet` ERROR, no invented name. Exit codes stay per loaded sheet.
 
 ## Actionable insights (shipped)
 

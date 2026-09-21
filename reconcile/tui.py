@@ -26,7 +26,7 @@ Enter  drill (roster column → pair list, pair → cell step, modal Run / overv
 Esc    one layer (close modal with no draft change → cancel pair draft → child screen to roster and cancel column draft)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
 A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
-S      next sheet when launched with -sheets and remaining work is 0 (no draft). Else ERROR. Does not steal A or [ / ]
+S      next sheet when launched with -sheets and no draft. If differences remain, a confirm asks you to leave them unaccepted (y or S); Esc stays. Last sheet: ERROR no next sheet. Does not steal A or [ / ]
 u      undo last accept as one unit. ERROR if nothing accepted yet
 r      refresh (re-read live files; last good state on failure)
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
@@ -142,6 +142,9 @@ Screen {
     padding: 0 1;
     color: #fff3e0;
     background: #2c180e;
+}
+#pane.hidden {
+    display: none;
 }
 #footer {
     dock: bottom;
@@ -343,8 +346,7 @@ ROSTER_EMPTY_PENDING = "No pending columns — v or i"
 ROSTER_EMPTY_NONE = "No columns — i"
 ROSTER_EMPTY_PANE = (
     "v shows accepted and equal columns. "
-    "i opens unmatched keys and mismatched columns. "
-    "y = all pending cells; n = not all."
+    "i opens unmatched keys and mismatched columns."
 )
 
 
@@ -963,6 +965,50 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
         self.action_ok()
 
 
+class LeaveSheetModal(ModalScreen[bool]):
+    """Confirm leaving a sheet while differences are still pending.
+
+    This does not snapshot those differences. y or S leaves; Esc stays.
+    """
+
+    BINDINGS = [
+        Binding("escape", "stay", "Stay", priority=True),
+        Binding("y", "leave", "Leave", priority=True),
+        Binding("S", "leave", "Leave", priority=True),
+        Binding("enter", "leave", "Leave", priority=True),
+    ]
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__()
+        self.engine = engine
+
+    def compose(self) -> ComposeResult:
+        e = self.engine
+        names = e.sheet_set or []
+        cur = names[e.sheet_index] if names else ""
+        nxt = names[e.sheet_index + 1] if e.sheet_index + 1 < len(names) else ""
+        lines = [
+            "Leave this sheet with differences unaccepted?",
+            "",
+            f"pending columns {e.pending_columns_n()}",
+            f"unmatched keys {e.unmatched_rows_n()}",
+            f"mismatched columns {e.pending_extras_n()}",
+            "",
+            f"{cur} → {nxt}",
+            "",
+            "These differences are not accepted. The next sheet starts clean.",
+            "y or S leaves. Esc stays.",
+        ]
+        with Vertical(id="modal"):
+            yield Static("\n".join(lines), id="leave-body")
+
+    def action_stay(self) -> None:
+        self.dismiss(False)
+
+    def action_leave(self) -> None:
+        self.dismiss(True)
+
+
 class ReconcileApp(App[int]):
     CSS = CSS
     TITLE = "Reconcile"
@@ -1146,7 +1192,8 @@ class ReconcileApp(App[int]):
         if e.sheet_set:
             name = e.sheet_set[e.sheet_index]
             hints.append(f"sheet {e.sheet_index + 1}/{len(e.sheet_set)} {name}")
-            if e.sheet_remaining_work() == 0:
+            has_next = e.sheet_index < len(e.sheet_set) - 1
+            if e.sheet_remaining_work() == 0 or has_next:
                 hints.append("S next sheet")
         hints.append("? help")
         line1 = f"{' · '.join(counts)}  |  {' · '.join(hints)}"
@@ -1184,9 +1231,14 @@ class ReconcileApp(App[int]):
         else:
             _go()
 
+    def _set_pane(self, content: Text | str) -> None:
+        pane = self.query_one("#pane", Static)
+        plain = content.plain if isinstance(content, Text) else str(content)
+        pane.update(content)
+        pane.set_class(not plain.strip(), "hidden")
+
     def _render_pane(self) -> None:
         p = self.place
-        pane = self.query_one("#pane", Static)
         pair = None
         if p.screen == "cell_step" and p.pair_val_a is not None:
             pair = (p.pair_val_a, p.pair_val_b or "")
@@ -1224,7 +1276,7 @@ class ReconcileApp(App[int]):
                         else:
                             t.append(f"\n\n{view.header}\n")
                         t.append("\n".join(_context_summary_lines(summary)))
-            pane.update(t)
+            self._set_pane(t)
         elif p.screen in ("a_only", "b_only"):
             rec = self._focused_rec()
             if rec:
@@ -1233,9 +1285,9 @@ class ReconcileApp(App[int]):
                     if str(name).startswith("_"):
                         continue
                     t.append(f"{name}: {_display_text(str(val))}\n")
-                pane.update(t)
+                self._set_pane(t)
             else:
-                pane.update("")
+                self._set_pane("")
         elif p.screen == "extras":
             rec = self._focused_rec()
             if rec:
@@ -1247,15 +1299,17 @@ class ReconcileApp(App[int]):
                 if spec:
                     line = _speculative_line(spec)
                     t.append(f"\n{line}", style="dim")
-                pane.update(t)
+                self._set_pane(t)
             else:
-                pane.update("")
+                self._set_pane("")
         elif p.screen == "roster":
             rows = self._roster_column_rows()
             if not rows:
-                pane.update(ROSTER_EMPTY_PANE)
+                self._set_pane(ROSTER_EMPTY_PANE)
             else:
                 row = self._focused_roster()
+                if row is None and self._table_keys and isinstance(self._table_keys[0], RosterRow):
+                    row = self._table_keys[0]
                 t = Text()
                 if row:
                     if row.sent_a:
@@ -1264,10 +1318,9 @@ class ReconcileApp(App[int]):
                         t.append(f"const B: {row.sent_b}\n")
                     if row.sent_both:
                         t.append(f"const both: {row.sent_both}\n")
-                t.append("y = all pending cells; n = not all")
-                pane.update(t)
+                self._set_pane(t)
         else:
-            pane.update("")
+            self._set_pane("")
 
     def _work_body(self):
         screen = self.place.screen
@@ -2249,9 +2302,37 @@ class ReconcileApp(App[int]):
         self.set_focus_work()
 
     def action_next_sheet(self) -> None:
+        e = self.engine
+        try:
+            if e.sheet_set is None:
+                raise InTuiError(
+                    "ERROR: S is next sheet only when launched with -sheets"
+                )
+            if e.draft_in_flight():
+                if e.pair_draft_col is not None:
+                    raise InTuiError("ERROR: confirm or cancel the pair draft first")
+                raise InTuiError("ERROR: confirm or cancel the current draft first")
+            if e.sheet_index >= len(e.sheet_set) - 1:
+                raise InTuiError("ERROR: no next sheet")
+            if e.sheet_remaining_work() != 0:
+                self.set_error(None)
+                self.push_screen(LeaveSheetModal(e), self._after_leave_sheet)
+                return
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            self._paint_banner()
+            return
+        self._advance_loaded_sheet(leave_unaccepted=False)
+
+    def _after_leave_sheet(self, leave: bool | None) -> None:
+        if not leave:
+            return
+        self._advance_loaded_sheet(leave_unaccepted=True)
+
+    def _advance_loaded_sheet(self, *, leave_unaccepted: bool) -> None:
         def _run() -> None:
             try:
-                self.engine.advance_sheet()
+                self.engine.advance_sheet(leave_unaccepted=leave_unaccepted)
                 self.place = Place()
                 self.pair_draft_unchecked = set()
                 self.show_accepted_columns = False

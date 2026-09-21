@@ -286,6 +286,43 @@ def test_help_power_user_grain():
     assert "focused check" in HELP
 
 
+def test_roster_pane_hides_yn_legend(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n2,b\n")
+    write_csv(pb, "id,val\n1,c\n2,d\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = app.query_one("#pane")
+            assert pane.has_class("hidden")
+            assert "y = all pending" not in str(pane.render())
+
+    asyncio.run(_run())
+
+
+def test_roster_pane_keeps_sentinel_value(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,0\n2,0\n")
+    write_csv(pb, "id,val\n1,1\n2,2\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = app.query_one("#pane")
+            assert not pane.has_class("hidden")
+            text = str(pane.render())
+            assert "const A:" in text
+            assert "0" in text
+            assert "y = all pending" not in text
+
+    asyncio.run(_run())
+
+
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
     """Engine owns the column draft. Pair Enter/y while it is live must not snapshot columns."""
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"

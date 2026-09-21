@@ -7,7 +7,7 @@ from reconcile.cli import build_parser, engine_from_args, main
 from reconcile.engine import Engine, InTuiError, Place
 from reconcile.errors import HardFail
 from reconcile.sheets import expand_sheets
-from reconcile.tui import HELP, ReconcileApp
+from reconcile.tui import HELP, LeaveSheetModal, ReconcileApp
 from tests.xlsxutil import write_xlsx, write_xlsx_sheets
 
 
@@ -234,6 +234,11 @@ def test_s_refused_when_pending(tmp_path: Path):
         eng.advance_sheet()
     assert eng.a.sheet == "data1"
     assert eng.pending_cells_n() == 1
+    eng.advance_sheet(leave_unaccepted=True)
+    assert eng.a.sheet == "data2"
+    assert eng.sheet_index == 1
+    assert eng.cell_snaps.height == 0
+    assert eng.pending_cells_n() == 0
 
 
 def test_s_refused_when_draft(tmp_path: Path):
@@ -378,10 +383,14 @@ def test_tui_s_refused_when_pending_roster_a_and_tabs_unchanged(tmp_path: Path):
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
             assert "sheet 1/2 data1" in footer
-            assert "S next sheet" not in footer
+            assert "S next sheet" in footer
             app.action_next_sheet()
             await pilot.pause()
-            assert app.tui_error and "remaining work" in app.tui_error
+            assert isinstance(app.screen, LeaveSheetModal)
+            assert app.engine.a.sheet == "data1"
+            app.screen.action_stay()
+            await pilot.pause()
+            assert not isinstance(app.screen, LeaveSheetModal)
             assert app.engine.a.sheet == "data1"
             app.query_one("#grid").focus()
             app.action_accept_all()
@@ -395,5 +404,76 @@ def test_tui_s_refused_when_pending_roster_a_and_tabs_unchanged(tmp_path: Path):
             await pilot.pause()
             assert app.place.screen == "accepted"
             assert app.engine.a.sheet == "data1"
+
+    asyncio.run(_run())
+
+
+def test_tui_s_leave_unaccepted_then_next_sheet(tmp_path: Path):
+    a = tmp_path / "left.xlsx"
+    b = tmp_path / "right.xlsx"
+    write_xlsx_sheets(
+        a,
+        {
+            "data1": [["id", "val"], ["1", "Y"]],
+            "data2": [["id", "val"], ["1", "same"]],
+        },
+    )
+    write_xlsx_sheets(
+        b,
+        {
+            "data1": [["id", "val"], ["1", "Yes"]],
+            "data2": [["id", "val"], ["1", "same"]],
+        },
+    )
+    eng = Engine.from_paths(str(a), str(b), ["id"], sheet_set=["data1", "data2"])
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.engine.pending_cells_n() == 1
+            await pilot.press("S")
+            await pilot.pause()
+            assert isinstance(app.screen, LeaveSheetModal)
+            body = str(app.screen.query_one("#leave-body").render())
+            assert "unaccepted" in body
+            assert "pending columns 1" in body
+            assert "data1 → data2" in body
+            await pilot.press("y")
+            await pilot.pause()
+            assert not isinstance(app.screen, LeaveSheetModal)
+            assert app.engine.a.sheet == "data2"
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == 0
+            assert app.engine.cell_snaps.height == 0
+            assert app.tui_error is None
+
+    asyncio.run(_run())
+
+
+def test_tui_s_last_sheet_with_pending_is_no_next(tmp_path: Path):
+    a = tmp_path / "left.xlsx"
+    b = tmp_path / "right.xlsx"
+    write_xlsx_sheets(
+        a,
+        {"only": [["id", "val"], ["1", "Y"]]},
+    )
+    write_xlsx_sheets(
+        b,
+        {"only": [["id", "val"], ["1", "Yes"]]},
+    )
+    eng = Engine.from_paths(str(a), str(b), ["id"], sheet_set=["only"])
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            assert "S next sheet" not in footer
+            app.action_next_sheet()
+            await pilot.pause()
+            assert not isinstance(app.screen, LeaveSheetModal)
+            assert app.tui_error and "no next sheet" in app.tui_error
+            assert app.engine.a.sheet == "only"
 
     asyncio.run(_run())
