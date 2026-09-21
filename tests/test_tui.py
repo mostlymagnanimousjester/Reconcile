@@ -297,8 +297,12 @@ def test_roster_pane_hides_yn_legend(tmp_path: Path):
         async with app.run_test() as pilot:
             await pilot.pause()
             pane = app.query_one("#pane")
-            assert pane.has_class("hidden")
-            assert "y = all pending" not in str(pane.render())
+            assert not pane.has_class("hidden")
+            text = str(pane.render())
+            assert "y = all pending" not in text
+            assert "A:" in text and "a" in text
+            assert "B:" in text and "c" in text
+            assert "1 pending" in text
 
     asyncio.run(_run())
 
@@ -319,6 +323,86 @@ def test_roster_pane_keeps_sentinel_value(tmp_path: Path):
             assert "const A:" in text
             assert "0" in text
             assert "y = all pending" not in text
+            assert "1 pending" in text
+
+    asyncio.run(_run())
+
+
+def test_roster_pane_largest_pair_enter_keeps_list_order(tmp_path: Path):
+    """Largest pending pair is in the pane; Enter focuses it; list order stays count desc."""
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,aa\n2,aa\n3,aa\n4,zz\n")
+    write_csv(pb, "id,val\n1,AA\n2,AA\n3,AA\n4,ZZ\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert eng.top_pending_pair("val") == ("aa", "AA", 3)
+    assert eng.pair_groups("val").to_dicts() == [
+        {"val_a": "aa", "val_b": "AA", "n": 3},
+        {"val_a": "zz", "val_b": "ZZ", "n": 1},
+    ]
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "A:" in pane and "aa" in pane
+            assert "B:" in pane and "AA" in pane
+            assert "3 pending" in pane
+            assert "zz" not in pane
+            assert "largest pending pair" in HELP
+            app.query_one("#grid").focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.pair_val_a == "aa"
+            assert app.place.pair_val_b == "AA"
+            assert app.place.page == 0
+            table = app.query_one("#grid")
+            assert table.cursor_row == 0
+            assert app._table_keys[0]["val_a"] == "aa"
+            assert app._table_keys[0]["val_b"] == "AA"
+            assert app._table_keys[1]["val_a"] == "zz"
+            assert app._table_keys[1]["n"] == 1
+            assert eng.pair_groups("val").to_dicts() == [
+                {"val_a": "aa", "val_b": "AA", "n": 3},
+                {"val_a": "zz", "val_b": "ZZ", "n": 1},
+            ]
+
+    asyncio.run(_run())
+
+
+def test_roster_pane_follows_column_and_a_accepts_in_place(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,alpha,beta\n1,aa,ww\n2,aa,yy\n3,aa,zz\n4,zz,xx\n")
+    write_csv(pb, "id,alpha,beta\n1,AA,WW\n2,AA,YY\n3,AA,ZZ\n4,ZZ,XX\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert eng.top_pending_pair("alpha") == ("aa", "AA", 3)
+    assert eng.top_pending_pair("beta") == ("ww", "WW", 1)
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "aa" in pane and "3 pending" in pane
+            await pilot.press("down")
+            await pilot.pause()
+            row = app._focused_roster()
+            assert row is not None and row.name == "beta"
+            pane = str(app.query_one("#pane").render())
+            assert "ww" in pane
+            assert "WW" in pane
+            assert "1 pending" in pane
+            assert "3 pending" not in pane
+            pending_before = app.engine.pending_cells_n()
+            await pilot.press("a")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == pending_before - 4
+            assert next(r for r in app.engine.roster() if r.name == "beta").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "alpha").pending == 4
 
     asyncio.run(_run())
 

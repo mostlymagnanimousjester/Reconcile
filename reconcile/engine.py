@@ -335,6 +335,10 @@ class Engine:
     def pair_groups(self, column: str) -> pl.DataFrame:
         return compare_mod.pair_groups(self, column)
 
+    def top_pending_pair(self, column: str) -> tuple[str, str, int] | None:
+        """Largest pending exact pair: (val_a, val_b, count). List order is unchanged."""
+        return self._top_pair.get(column)
+
     def pair_page(self, column: str, page: int) -> tuple[list[dict[str, Any]], int, int]:
         return pages_mod.pair_page(self, column, page)
 

@@ -1,5 +1,7 @@
 # Shipped simplifications
 
+- **Roster pane shows the largest pending pair (shipped).** Focused column: raw `A` / `B` and that pair’s pending count, above the footer, plus any const values. `Enter` opens the pair list on that pair. Pair-list order stays count desc, then `valA`, `valB`. Roster `a` still accepts the column.
+
 - **`m` is pair-only (shipped).** No column-picker. `/`, `=`, and Space already choose columns. On the pair list, `m` applies **this pair** to the live column draft, or to every pending column that has that pair. On the roster, only the pair-picker (the union). Purpose: `""` → `0` (and similar) without a two-step wizard. Inspection tabs (Accepted / Equal / All matched) stay.
 - **`u` always undoes the last accept, as one unit (shipped).** After a pair `a`, `u` restores that pair. After column `A` or draft `y`, `u` restores those columns. After pair-only `m` applies e.g. `""` → `0` on eight columns, `u` reverses that apply on all eight. If nothing has been accepted yet, `u` errors (same idea as `y` with no draft).
 - **`U` stays “undo this column”** on the pair list only — the inverse of `A`. That is the only other undo. `u` does not fall back to the focused row.

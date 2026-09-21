@@ -709,7 +709,7 @@ A-only keys, B-only keys, and mismatched columns **must not** appear on this tab
 
 One row per pending comparable column (`kind` `column`, pending > 0), plus settled comparable columns when `v` is on. `name` is the exact header. Pending count is mismatched cells in that column.
 
-**Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**.
+**Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**. The roster pane above the footer shows that pair’s raw A and B strings and its pending count for the focused column, plus any `const A` / `const B` / `const both` values. The pane is hidden when the focused column has no pending pair and no sentinel. `Enter` opens the pair list on that pair. Pair-list order stays count desc, then `valA`, `valB`. `a` on the roster still accepts the whole column.
 
 **One order (not a key):** table A import order (`eng.comparable` / original A headers, keys excluded). No pending/concentration sort and no sort-cycle. When `v` is on, keep two visual sections (pending, then accepted/equal); each section is still A import order.
 
@@ -820,7 +820,7 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 
 | Key | Meaning |
 |---|---|
-| `Enter` | Drill: roster column → pair list; pair → cell step (draft); overview-modal entry → that list; modal → Run |
+| `Enter` | Drill: roster column → pair list focused on that column’s largest pending pair; pair → cell step (draft); overview-modal entry → that list; modal → Run |
 | `Esc` | Back one layer: close modal (no draft change) → cancel pair draft and return to pair list → any other child screen (pair list / Accepted / Equal / All matched / A-only / B-only / extras) back to roster **and cancel a live column draft**. Roster `Esc` with a column draft cancels it; roster idle stays (overview is `i`, not a screen). |
 | `Space` | Toggle focused **column** row in the current column draft (`[ON]` / `[off]`); ERROR if no column draft (cheap) |
 | `a` | Accept the **current selection**: roster column (stay on roster), pair (stay on pair list), cell (cell step), one unmatched key, one mismatched column. After the current row is removed/hidden, focus the item that was **below** it (or the new last remaining / empty). Do not jump to the top. Do not drill. ERROR on Accepted / Equal / All matched. 0-pending roster column: stay, ERROR, do not next-lever |

@@ -22,7 +22,7 @@ HELP = """\
 KEYS  (? this help · Esc closes · Up/Down/PgUp/PgDn scroll)
 
 EVERYWHERE
-Enter  drill (roster column → pair list, pair → cell step, modal Run / overview entry)
+Enter  drill (roster column → pair list on that column's largest pending pair; pair → cell step; modal Run / overview entry)
 Esc    one layer (close modal with no draft change → cancel pair draft → child screen to roster and cancel column draft)
 a      accept the current selection (roster column / pair / cell / unmatched key / extra)
 A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
@@ -36,6 +36,7 @@ n / p  page (ERROR if unpaged / at end). Digits 0-9 do nothing except inside c
 
 ROSTER (column roster, table A import order)
 a      accept this column in place (selection moves below; does not drill)
+Pane   largest pending pair (A, B, count) for the focused column. Enter opens that pair. a still accepts the column.
 v      show/hide accepted and equal columns (default hidden)
 m      pick one same exact pair (union of live draft ON columns, or every pending column). No column picker
 :      regex column draft (comparable names; not a view filter). / is a deprecated alias
@@ -1318,6 +1319,13 @@ class ReconcileApp(App[int]):
                         t.append(f"const B: {row.sent_b}\n")
                     if row.sent_both:
                         t.append(f"const both: {row.sent_both}\n")
+                    if row.pending > 0:
+                        top = self.engine.top_pending_pair(row.name)
+                        if top:
+                            va, vb, n = top
+                            t.append(f"A: {_display_text(va)}\n")
+                            t.append(f"B: {_display_text(vb)}\n")
+                            t.append(f"{n} pending")
                 self._set_pane(t)
         else:
             self._set_pane("")
@@ -2088,9 +2096,18 @@ class ReconcileApp(App[int]):
                     return
                 if row.kind == "column":
                     if row.pending > 0:
+                        top = e.top_pending_pair(row.name)
+                        va = vb = None
+                        page = 0
+                        if top:
+                            va, vb, _n = top
+                            page, _row_on_page = e.page_index_for_pair(row.name, va, vb)
                         self.place = Place(
                             screen="pair_list",
                             column=row.name,
+                            pair_val_a=va,
+                            pair_val_b=vb,
+                            page=page,
                             roster_filter=p.roster_filter,
                             last_pair=p.last_pair,
                             focused_name=row.name,
@@ -2968,6 +2985,10 @@ class ReconcileApp(App[int]):
             return
         gone = next((n for n in old_names if n not in new_names), None)
         self._stay_on_roster_after_column(gone or (p.focused_name or ""), old_names)
+
+    def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
+        if self.place.screen == "roster":
+            self._render_pane()
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         if self.place.screen == "roster":
