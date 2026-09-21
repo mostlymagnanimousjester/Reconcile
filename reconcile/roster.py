@@ -234,6 +234,7 @@ CHECK_COLS = (
     ("fold", "fold"),
 )
 CHECK_HEADERS = {h for h, _ in CHECK_COLS}
+CHECK_ATTR = {h: attr for h, attr in CHECK_COLS}
 
 
 def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str]]:
@@ -247,6 +248,18 @@ def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str
         if any(getattr(r, attr) == "y" for r in pending):
             visible.append((header, attr))
     return visible
+
+
+def check_column_pending_hits(eng: Engine, header: str) -> list[str]:
+    """Pending comparable names whose cell in that check column is y."""
+    attr = CHECK_ATTR.get(header)
+    if attr is None:
+        return []
+    return [
+        r.name
+        for r in visible_column_roster(eng)
+        if getattr(r, attr) == "y"
+    ]
 
 
 def _yn(flag: bool) -> str:

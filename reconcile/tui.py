@@ -41,6 +41,7 @@ m      pick one same exact pair (union of live draft ON columns, or every pendin
 :      regex column draft (comparable names; not a view filter). / is a deprecated alias
 =      exact sentinel (a/b side, then type the constant, Enter Run)
 Space  toggle focused column in the live column draft (ON / off). ERROR if no draft
+Y      draft every pending column that is y in the focused check column (money, trim, …). Then y confirm. ERROR if the cursor is not on a visible check
 y      confirm the live column draft; land on roster (next-below / first pending). ERROR if no draft to confirm
 
 PAIR LIST (Pending tab)
@@ -73,11 +74,11 @@ Suggest (extras only, below the A-not-B / B-not-A lists): rename in source files
 Not a mapping. a accepts the focused extra, not a suggestion.
 
 DRAFTS
-At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel; pair: cell step).
-After : / or =, selected columns show ON; y accept · Space toggle · Esc cancel.
+At most one draft: column XOR pair cells (column: roster / regex : or /, = sentinel, Y check column; pair: cell step).
+After : / or = or Y, selected columns show ON; y accept · Space toggle · Esc cancel.
 After y accepts a column draft, land back on the roster (next-below / first pending).
 A is refused while a pair draft is in flight (confirm or cancel first).
-After : / or =, m uses the live ON columns (Space still toggles ON/off). No column picker.
+After : / or = or Y, m uses the live ON columns (Space still toggles ON/off). No column picker.
 m is pair-only: pair list applies this pair; roster opens the pair picker (the union).
 y with no draft: ERROR no draft to confirm. u with nothing accepted: ERROR nothing accepted to undo.
 
@@ -94,11 +95,12 @@ NOTES
 Long strings wrap in the footer pane (the grid is a one-line navigator).
 This TUI never writes, opens, or copies into the source files.
 Pending = 0 is the goal: edit sources elsewhere then refresh, or accept snapshots.
-ERROR when a key does not apply on this screen (roster A / n/p / [ / ] / . / c; cell-step [ / ]; unmatched [ / ]).
+ERROR when a key does not apply on this screen (roster A / n/p / [ / ] / . / c; cell-step [ / ]; unmatched [ / ]; Y off a visible check).
 Roster y/n: y = all pending cells; n = not all.
 Roster insight columns: const A / const B / const both (values; hidden if unused) and trim / case / trim+case / num / ws / date / money / pct / idpad / bool / acctneg / xlsdate / inws / dash / fold (y if every pending cell matches; hidden if all n). Pair/cell keep per-pair hints (trim, case, date, money, bool, …). Insights never change remaining counts. Integer vs float display (1 vs 1.0) is num, not a separate column.
 top pair % is the share of this column's pending cells that sit in the largest pair.
 Sentinel means that side is one constant on all comparable (shared-key) rows. The header is the kind; the cell is the value (0, "", A=x B=y). Hint for =.
+Check columns (trim, money, …) hint for Y: draft every pending y-row of the focused check.
 Sentinel modal: a A or b B picks the side, then type the exact string, Enter Run.
 Context columns (c) are dedicated labeled columns (Flag). Groups are gN Flag+Region (tuple of members). Pair list: top-5 unique values or tuples with pending-row counts for this pair (foo×12 | bar×4 | +N more). Count = pending rows with that value in this pair.
 
@@ -492,6 +494,7 @@ class OverviewModal(ModalScreen[str | None]):
         Binding("u", "refuse", show=False, priority=True),
         Binding("U", "refuse", show=False, priority=True),
         Binding("y", "noop", show=False, priority=True),
+        Binding("Y", "refuse", show=False, priority=True),
         Binding("n", "no_pages", show=False, priority=True),
         Binding("p", "no_pages", show=False, priority=True),
         Binding("space", "noop", show=False, priority=True),
@@ -701,6 +704,7 @@ class ContextModal(ModalScreen[ContextPick | None]):
                 "/",
                 "=",
                 "?",
+                "Y",
             )
         ],
     ]
@@ -839,6 +843,7 @@ class MultiPairModal(ModalScreen[tuple[tuple[str, ...], str, str] | None]):
                 "/",
                 "=",
                 "?",
+                "Y",
             )
         ],
     ]
@@ -970,6 +975,7 @@ class ReconcileApp(App[int]):
         Binding("A", "accept_all", "Accept all", show=False),
         Binding("S", "next_sheet", "Next sheet", show=False),
         Binding("y", "confirm", "Confirm", show=False),
+        Binding("Y", "check_column_select", "Check column", show=False),
         Binding("u", "undo", "Undo", show=False),
         Binding("U", "undo_column", "Undo column", show=False),
         Binding("r", "refresh", "Refresh", show=False),
@@ -1130,6 +1136,10 @@ class ReconcileApp(App[int]):
         hints: list[str] = []
         if p.page is not None and p.screen in PAGED_SCREENS:
             hints.append(f"page {p.page + 1}/{self._page_count}")
+        if p.screen == "roster":
+            rows = self._roster_column_rows()
+            if any(h in CHECK_HEADERS for h, _ in roster_visible_insight_headers(rows)):
+                hints.append("Y all y in this check")
         if p.screen == "pair_list":
             hints.append(". repeat")
             hints.append("u undo")
@@ -1438,7 +1448,7 @@ class ReconcileApp(App[int]):
                 table.add_column(h)
 
     def _roster_table(self) -> DataTable:
-        table: DataTable = DataTable(cursor_type="row", id="grid", zebra_stripes=False)
+        table: DataTable = DataTable(cursor_type="cell", id="grid", zebra_stripes=False)
         self._add_columns(table, self._roster_headers())
         self._fill_roster(table)
         return table
@@ -1448,9 +1458,26 @@ class ReconcileApp(App[int]):
             return Text(value, style="dim")
         return value
 
+    def _roster_label_headers(self, table: DataTable) -> list[str]:
+        return [str(col.label) for col in table.columns.values()]
+
+    def _focused_roster_header(self) -> str | None:
+        if not self.query("#grid"):
+            return None
+        table = self.query_one("#grid", DataTable)
+        headers = self._roster_label_headers(table)
+        i = table.cursor_column
+        if i < 0 or i >= len(headers):
+            return None
+        return headers[i]
+
     def _fill_roster(self, table: DataTable) -> None:
         rows = self._roster_column_rows()
         headers = self._roster_headers(rows)
+        prev_header = None
+        current = self._roster_label_headers(table)
+        if current and 0 <= table.cursor_column < len(current):
+            prev_header = current[table.cursor_column]
         self._sync_columns(table, headers)
         self._table_keys = []
         draft = bool(self.engine.column_draft)
@@ -1525,7 +1552,10 @@ class ReconcileApp(App[int]):
             if focus_name and r.name == focus_name:
                 idx = i
                 break
-        table.move_cursor(row=idx)
+        col = 0
+        if prev_header and prev_header in headers:
+            col = headers.index(prev_header)
+        table.move_cursor(row=idx, column=col)
 
     def _tab_bar(self, current: str, pending_n: int | None = None) -> Horizontal:
         pending_label = f"Pending {pending_n}" if pending_n is not None else "Pending"
@@ -2566,6 +2596,30 @@ class ReconcileApp(App[int]):
         self.render_all()
         self.set_focus_work()
 
+    def action_check_column_select(self) -> None:
+        if self._in_input() or self._modal_active():
+            return
+        if self.place.screen != "roster":
+            self.set_error("ERROR: Y selects y-rows of a check column")
+            return
+        if self.draft_in_flight():
+            self.set_error("ERROR: confirm or cancel the current draft first")
+            self.render_all()
+            return
+        header = self._focused_roster_header()
+        if not header or header not in CHECK_HEADERS:
+            self.set_error("ERROR: Y selects y-rows of a check column")
+            return
+        try:
+            self.engine.start_check_column_draft(header)
+            self.place.focused_name = sorted(self.engine.column_draft)[0]
+            self.set_error(None)
+        except InTuiError as exc:
+            self.set_error(exc.message)
+            return
+        self.render_all()
+        self.set_focus_work()
+
     def action_regex(self) -> None:
         if self._in_input():
             return
@@ -2833,6 +2887,11 @@ class ReconcileApp(App[int]):
             return
         gone = next((n for n in old_names if n not in new_names), None)
         self._stay_on_roster_after_column(gone or (p.focused_name or ""), old_names)
+
+    def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        if self.place.screen == "roster":
+            event.stop()
+            self.action_drill()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if self.place.screen in {"roster", "pair_list"}:
