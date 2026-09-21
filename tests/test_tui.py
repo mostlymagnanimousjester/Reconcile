@@ -249,6 +249,7 @@ def test_help_xor_and_no_digit_tab_keys():
     assert "/" in xor
     assert "=" in xor
     assert ":" in xor
+    assert "Y" in xor
     lower = HELP.lower()
     assert "1 pending" not in lower
     assert "2 accepted" not in lower
@@ -281,6 +282,8 @@ def test_help_power_user_grain():
     assert "money" in HELP
     assert "xlsdate" in HELP
     assert "fold" in HELP
+    assert "Y      draft" in HELP or "Y all y" in HELP
+    assert "focused check" in HELP
 
 
 def test_slash_then_pair_y_does_not_accept_columns(tmp_path: Path):
@@ -3319,6 +3322,215 @@ def test_context_modal_space_and_groups_together(tmp_path: Path):
             assert "Flag" in labels
             assert "g0 Flag+Region" in labels
             assert labels.index("Flag") < labels.index("g0 Flag+Region")
+
+    asyncio.run(_run())
+
+
+def _money_two_pending_app(tmp_path: Path) -> ReconcileApp:
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        'id,cash,fee,note\n1,"$1,234","€2 000",foo\n2,"€2 000","$3,000",bar\n',
+    )
+    write_csv(pb, "id,cash,fee,note\n1,1234,2000,baz\n2,2000,3000,qux\n")
+    return ReconcileApp(
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    )
+
+
+async def _arrow_to_roster_header(pilot, app: ReconcileApp, header: str) -> None:
+    table = app.query_one("#grid")
+    labels = [str(col.label) for col in table.columns.values()]
+    assert header in labels
+    want = labels.index(header)
+    await pilot.press("home")
+    await pilot.pause()
+    for _ in range(want):
+        await pilot.press("right")
+        await pilot.pause()
+    labels = [str(col.label) for col in table.columns.values()]
+    assert labels[table.cursor_column] == header
+
+
+def test_Y_on_money_drafts_two_then_y_accepts_one_grain(tmp_path: Path):
+    app = _money_two_pending_app(tmp_path)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#grid")
+            assert table.cursor_type == "cell"
+            labels = [str(col.label) for col in table.columns.values()]
+            assert "money" in labels
+            footer = str(app.query_one("#footer").render())
+            assert "Y all y in this check" in footer
+            app.query_one("#grid").focus()
+            await pilot.press("Y")
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.tui_error and "Y selects y-rows of a check column" in app.tui_error
+            await _arrow_to_roster_header(pilot, app, "money")
+            await pilot.press("Y")
+            await pilot.pause()
+            assert app.engine.column_draft == {"cash", "fee"}
+            assert "note" not in app.engine.column_draft
+            banner = str(app.query_one("#banner").render())
+            assert "2 column" in banner
+            assert "y accept" in banner
+            assert "Space toggle" in banner
+            pending_before = app.engine.pending_cells_n()
+            note_pending = next(r for r in app.engine.roster() if r.name == "note").pending
+            await pilot.press("y")
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert next(r for r in app.engine.roster() if r.name == "cash").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "fee").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "note").pending == note_pending
+            assert app.engine.pending_cells_n() == pending_before - 4
+            assert app.engine.last_grain is not None
+            assert app.engine.last_grain[0] == "columns"
+            await pilot.press("u")
+            await pilot.pause()
+            assert next(r for r in app.engine.roster() if r.name == "cash").pending > 0
+            assert next(r for r in app.engine.roster() if r.name == "fee").pending > 0
+            assert app.engine.pending_cells_n() == pending_before
+
+    asyncio.run(_run())
+
+
+def test_Y_on_name_errors_no_draft(tmp_path: Path):
+    app = _money_two_pending_app(tmp_path)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            assert labels[table.cursor_column] == "name"
+            app.query_one("#grid").focus()
+            await pilot.press("Y")
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.tui_error and "Y selects y-rows of a check column" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_Y_when_no_money_column_visible_errors(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,foo\n2,bar\n")
+    write_csv(pb, "id,val\n1,baz\n2,qux\n")
+    app = ReconcileApp(
+        Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    )
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels = [str(col.label) for col in app.query_one("#grid").columns.values()]
+            assert "money" not in labels
+            for name in (
+                "trim",
+                "case",
+                "num",
+                "date",
+                "pct",
+                "idpad",
+                "bool",
+                "acctneg",
+                "xlsdate",
+                "inws",
+                "dash",
+                "fold",
+            ):
+                assert name not in labels
+            footer = str(app.query_one("#footer").render())
+            assert "Y all y in this check" not in footer
+            app.query_one("#grid").focus()
+            await pilot.press("Y")
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert app.tui_error and "Y selects y-rows of a check column" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_Y_refused_while_column_draft_live(tmp_path: Path):
+    app = _money_two_pending_app(tmp_path)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_regex_draft("cash|note")
+            app.render_all()
+            await pilot.pause()
+            assert app.engine.column_draft == {"cash", "note"}
+            app.query_one("#grid").focus()
+            await _arrow_to_roster_header(pilot, app, "money")
+            await pilot.press("Y")
+            await pilot.pause()
+            assert app.engine.column_draft == {"cash", "note"}
+            assert app.tui_error and "confirm or cancel" in app.tui_error
+
+    asyncio.run(_run())
+
+
+def test_Y_does_not_steal_pair_list_A_or_roster_a(tmp_path: Path):
+    app = _money_two_pending_app(tmp_path)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            pending = app.engine.pending_cells_n()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press("Y")
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert not app.engine.column_draft
+            assert app.engine.pending_cells_n() == pending
+            assert app.tui_error and "Y selects y-rows" in app.tui_error
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.place.screen == "roster"
+            app.place.focused_name = "note"
+            app.render_all()
+            await pilot.pause()
+            names = [r.name for r in app._table_keys if r is not None]
+            app.query_one("#grid").move_cursor(row=names.index("note"))
+            app.query_one("#grid").focus()
+            await pilot.press("a")
+            await pilot.pause()
+            assert next(r for r in app.engine.roster() if r.name == "note").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "cash").pending > 0
+
+    asyncio.run(_run())
+
+
+def test_Y_space_deselect_before_confirm(tmp_path: Path):
+    app = _money_two_pending_app(tmp_path)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#grid").focus()
+            await _arrow_to_roster_header(pilot, app, "money")
+            await pilot.press("Y")
+            await pilot.pause()
+            assert app.engine.column_draft == {"cash", "fee"}
+            names = [r.name for r in app._table_keys if r is not None]
+            fee_i = names.index("fee")
+            app.query_one("#grid").move_cursor(row=fee_i)
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.engine.column_draft == {"cash"}
+            await pilot.press("y")
+            await pilot.pause()
+            assert not app.engine.column_draft
+            assert next(r for r in app.engine.roster() if r.name == "cash").pending == 0
+            assert next(r for r in app.engine.roster() if r.name == "fee").pending > 0
 
     asyncio.run(_run())
 

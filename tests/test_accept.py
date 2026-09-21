@@ -528,3 +528,64 @@ def test_prune_place_maps_overview_screen_to_roster(tmp_path: Path):
     restored = eng.prune_place(Place(screen="overview", roster_filter="val"))
     assert restored.screen == "roster"
     assert restored.roster_filter == "val"
+
+
+def _money_two_pending(tmp_path: Path) -> Engine:
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(
+        pa,
+        'id,cash,fee,note\n1,"$1,234","€2 000",foo\n2,"€2 000","$3,000",bar\n',
+    )
+    write_csv(pb, "id,cash,fee,note\n1,1234,2000,baz\n2,2000,3000,qux\n")
+    return Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+
+
+def test_check_column_draft_money_y_rows_only(tmp_path: Path):
+    eng = _money_two_pending(tmp_path)
+    assert next(r for r in eng.roster() if r.name == "cash").money == "y"
+    assert next(r for r in eng.roster() if r.name == "fee").money == "y"
+    assert next(r for r in eng.roster() if r.name == "note").money == "n"
+    n = eng.start_check_column_draft("money")
+    assert n == 2
+    assert eng.column_draft == {"cash", "fee"}
+    assert "note" not in eng.column_draft
+    names = ("cash", "fee")
+    n = eng.confirm_column_draft()
+    eng.remember_grain(("columns", *names), n)
+    assert next(r for r in eng.roster() if r.name == "cash").pending == 0
+    assert next(r for r in eng.roster() if r.name == "fee").pending == 0
+    assert next(r for r in eng.roster() if r.name == "note").pending > 0
+    undone = eng.undo_last_grain()
+    assert undone > 0
+    assert next(r for r in eng.roster() if r.name == "cash").pending > 0
+    assert next(r for r in eng.roster() if r.name == "fee").pending > 0
+
+
+def test_check_column_draft_errors_on_name_and_hidden(tmp_path: Path):
+    eng = _money_two_pending(tmp_path)
+    with pytest.raises(InTuiError, match="Y selects y-rows"):
+        eng.start_check_column_draft("name")
+    assert not eng.draft_in_flight()
+    pa, pb = tmp_path / "plain_a.csv", tmp_path / "plain_b.csv"
+    write_csv(pa, "id,val\n1,foo\n2,bar\n")
+    write_csv(pb, "id,val\n1,baz\n2,qux\n")
+    hidden = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    assert next(r for r in hidden.roster() if r.name == "val").money == "n"
+    with pytest.raises(InTuiError, match="Y selects y-rows"):
+        hidden.start_check_column_draft("money")
+    assert not hidden.draft_in_flight()
+
+
+def test_check_column_draft_refuses_while_live(tmp_path: Path):
+    eng = _money_two_pending(tmp_path)
+    eng.start_regex_draft("cash|fee")
+    assert eng.column_draft == {"cash", "fee"}
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_check_column_draft("money")
+    assert eng.column_draft == {"cash", "fee"}
+    eng.cancel_drafts()
+    n = eng.start_pair_draft("note", "foo", "baz")
+    assert n >= 1
+    with pytest.raises(InTuiError, match="confirm or cancel"):
+        eng.start_check_column_draft("money")
+    assert eng.pair_draft_col == "note"

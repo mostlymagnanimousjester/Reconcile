@@ -498,6 +498,17 @@ class Engine:
             return []
         return hits_df.get_column("column").to_list()
 
+    def start_check_column_draft(self, check_header: str) -> int:
+        if self.draft_in_flight():
+            raise InTuiError("ERROR: confirm or cancel the current draft first")
+        if check_header not in roster_mod.CHECK_HEADERS:
+            raise InTuiError("ERROR: Y selects y-rows of a check column")
+        hits = roster_mod.check_column_pending_hits(self, check_header)
+        if not hits:
+            raise InTuiError("ERROR: Y selects y-rows of a check column")
+        self.column_draft = set(hits)
+        return len(hits)
+
     def start_sentinel_draft(self, side: str, sentinel: str) -> int:
         if self.draft_in_flight():
             raise InTuiError("ERROR: confirm or cancel the current draft first")
