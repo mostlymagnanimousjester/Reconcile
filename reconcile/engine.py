@@ -228,8 +228,12 @@ class Engine:
             + self.pending_extras_n()
         )
 
-    def advance_sheet(self) -> None:
-        """Load the next same-named pair. Clean slate; keep last good on failure."""
+    def advance_sheet(self, *, leave_unaccepted: bool = False) -> None:
+        """Load the next same-named pair. Clean slate; keep last good on failure.
+
+        ``leave_unaccepted`` skips the remaining-work gate after the TUI
+        confirm. It does not snapshot the leftover differences.
+        """
         if self.sheet_set is None:
             raise InTuiError(
                 "ERROR: S is next sheet only when launched with -sheets"
@@ -238,7 +242,7 @@ class Engine:
             if self.pair_draft_col is not None:
                 raise InTuiError("ERROR: confirm or cancel the pair draft first")
             raise InTuiError("ERROR: confirm or cancel the current draft first")
-        if self.sheet_remaining_work() != 0:
+        if self.sheet_remaining_work() != 0 and not leave_unaccepted:
             raise InTuiError("ERROR: remaining work on this sheet is not 0")
         if self.sheet_index >= len(self.sheet_set) - 1:
             raise InTuiError("ERROR: no next sheet")

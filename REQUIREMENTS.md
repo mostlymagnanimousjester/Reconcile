@@ -634,19 +634,21 @@ Hard fail at parse (stderr + exit `2`, before TUI), with the flag and the raw `S
 
 **Advance (`S` — next sheet).** Dedicated key. Does **not** steal today’s `A`.
 
-| Key | Today (unchanged) | `-sheets` when remaining work on **this sheet** is 0 |
+| Key | Today (unchanged) | `-sheets` |
 |---|---|---|
 | `A` | Bulk on **this screen**: entire column on the pair list / cell step (no pair draft); all unmatched keys on this side. Roster `A` is ERROR. Extras `A` is one extra. | Same. `A` never means next sheet — including on an empty roster. |
 | `]` | Next column-detail tab. Off detail: ERROR. | Same. Not next sheet. |
 | `S` | Unused (`s` reserved; no `f` / `s` / `j` in v1). | **Next sheet** only. |
 
-`S` is legal only when **all** of these hold:
+`S` advances when **all** of these hold:
 
 1. This process was launched with `-sheets` and there is a next name in the frozen list.
-2. Remaining work on the **current** sheet is 0: pending comparable columns + unmatched rows (A-only + B-only) + mismatched columns (extras) are all 0. Mid-column / mid-unmatched `S` is ERROR (do not advance with leftover cells, keys, or extras).
-3. No draft in flight (column or pair). Refuse like `A` during a pair draft: confirm or cancel first.
+2. No draft in flight (column or pair). Refuse like `A` during a pair draft: confirm or cancel first.
+3. Either remaining work on the **current** sheet is 0 (pending comparable columns + unmatched rows + mismatched columns), **or** the user explicitly confirms leaving those differences unaccepted.
 
-On success: data-load that next same-named pair as the new compare; drop the previous sheet’s in-memory snapshots / drafts / `last_pair` / context; **reset place to the roster** (home). Clean slate per sheet (no leftover snaps). Footer shows `sheet i/n` plus the current name, and `S next sheet` when remaining work is 0. HELP / `?` documents `S`.
+If remaining work is not 0, `S` does not ERROR and does not advance yet. It opens a confirm that names the three counts and the next sheet. `y` or `S` again leaves the sheet. `Esc` stays. Leaving does **not** snapshot the leftover differences; the next sheet is a clean slate.
+
+On success: data-load that next same-named pair as the new compare; drop the previous sheet’s in-memory snapshots / drafts / `last_pair` / context; **reset place to the roster** (home). Clean slate per sheet (no leftover snaps). Footer shows `sheet i/n` plus the current name, and `S next sheet` when a next name exists or remaining work is 0. HELP / `?` documents `S`.
 
 If a later pair’s sheet is missing at advance time (renamed since preflight): **refuse to start that pair** — in-TUI ERROR with path / name / available sheets; **keep the last good sheet**. Do not unload it.
 
@@ -838,7 +840,7 @@ Apply when focus is **not** in a text input (regex/sentinel modal). In a field: 
 | `c` | Context-column picker (column detail: pair list / cell step / non-Pending grids). ERROR off column detail |
 | `n` / `p` | Next/prev page on paged screens. Roster / overview modal: ERROR (page unused), do not increment `place.page`. Last page `n`: stay, ERROR, no wrap |
 | `q` | Quit; discard unconfirmed draft |
-| `S` | Next sheet when launched with `-sheets` and remaining work on this sheet is 0 and no draft (§12.1). Else ERROR (`remaining work`, `no next sheet`, or `S is next sheet only when launched with -sheets`). Does not steal `A` or `[` / `]`. |
+| `S` | Next sheet when launched with `-sheets` and no draft (§12.1). Remaining work 0 advances immediately. Remaining work > 0 opens a confirm: `y` or `S` leaves those differences unaccepted; `Esc` stays. Else ERROR (`no next sheet`, draft, or `S is next sheet only when launched with -sheets`). Does not steal `A` or `[` / `]`. |
 | `?` | Help modal (bindings grouped by screen). Esc closes. Footer does not dump the full key list |
 
 No `f` or `j` in v1. Lowercase `s` stays unused. `S` is next sheet (§12.1).
