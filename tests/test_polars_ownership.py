@@ -44,6 +44,8 @@ ALLOWLIST_FUNCS = frozenset(
         "roster",
         "_build_roster_cache",
         "_roster_agg_maps",
+        "_roster_fast_maps",
+        "_roster_insight_stats",
         # sentinel column names (schema-sized)
         "start_sentinel_draft",
         "sentinel_hits",

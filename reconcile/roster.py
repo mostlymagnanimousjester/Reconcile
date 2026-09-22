@@ -27,10 +27,23 @@ if TYPE_CHECKING:
     from reconcile.engine import Engine
 
 
-def _sync_pair_draft_cache(eng: Engine) -> None:
+def _sync_pair_draft_cache(
+    eng: Engine, *, dirty_columns: set[str] | None = None
+) -> None:
     if eng.pair_draft_col is None:
         eng._pair_draft_cells = None
         eng._pair_draft_n = 0
+        eng._pair_draft_triple = None
+        return
+    triple = (eng.pair_draft_col, eng.pair_draft_va or "", eng.pair_draft_vb or "")
+    col_clean = (
+        dirty_columns is not None and eng.pair_draft_col not in dirty_columns
+    )
+    if (
+        col_clean
+        and getattr(eng, "_pair_draft_triple", None) == triple
+        and eng._pair_draft_cells is not None
+    ):
         return
     frame = eng.pending_cells.filter(
         (pl.col("column") == eng.pair_draft_col)
@@ -39,16 +52,41 @@ def _sync_pair_draft_cache(eng: Engine) -> None:
     ).sort(eng.keys)
     eng._pair_draft_cells = frame
     eng._pair_draft_n = frame.height
+    eng._pair_draft_triple = triple
 
 
-def refresh_derived(eng: Engine) -> None:
-    """Recompute eager derived caches after snaps or a full rebuild."""
-    _sync_pair_draft_cache(eng)
-    eng._pair_ctx_by_col = {}
+def _invalidate_page_caches(eng: Engine, dirty_columns: set[str] | None) -> None:
+    """Pop per-column page caches. ``None`` = full rebuild; empty = none."""
+    from reconcile.pages import invalidate_page_caches
+
+    invalidate_page_caches(eng, dirty_columns)
+
+
+def refresh_derived(
+    eng: Engine, *, dirty_columns: set[str] | None = None
+) -> None:
+    """Recompute eager derived caches after snaps or a full rebuild.
+
+    Fast maps (pending / pairs / accepted / mismatch) run every time so
+    footer counts stay correct. Insight stats and the roster row list wait
+    until the first ``roster()`` / ``column_roster()`` after invalidation.
+    """
+    _sync_pair_draft_cache(eng, dirty_columns=dirty_columns)
+    _invalidate_page_caches(eng, dirty_columns)
+    _roster_fast_maps(eng)
+    eng._roster_cache = []
+    eng._roster_cache_valid = False
+
+
+def _ensure_roster_cache(eng: Engine) -> None:
+    if getattr(eng, "_roster_cache_valid", False):
+        return
     eng._roster_cache = _build_roster_cache(eng)
+    eng._roster_cache_valid = True
 
 
 def roster(eng: Engine, name_filter: str = "") -> list[RosterRow]:
+    _ensure_roster_cache(eng)
     rows = list(eng._roster_cache)
     if name_filter:
         needle = name_filter.lower()
@@ -95,11 +133,67 @@ def _empty_pair_groups() -> pl.DataFrame:
     )
 
 
-def _roster_agg_maps(
-    eng: Engine,
-) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
+def _roster_fast_maps(eng: Engine) -> None:
+    """Pending / pair groups / accepted / mismatch — needed immediately after accept."""
     pending_lf = eng.pending_cells.lazy()
-    stats_lf = pending_lf.group_by("column").agg(
+    pending_lf_count = pending_lf.group_by("column").len()
+    pairs_lf = (
+        pending_lf.group_by(["column", "val_a", "val_b"])
+        .len()
+        .rename({"len": "n"})
+        .sort(["column", "n", "val_a", "val_b"], descending=[False, True, False, False])
+    )
+    accepted_lf = eng.accepted_cells.lazy().group_by("column").len()
+    mismatch_lf = eng.mismatches.lazy().group_by("column").len()
+    pending_df, pairs_df, accepted_df, mismatch_df = pl.collect_all(
+        [pending_lf_count, pairs_lf, accepted_lf, mismatch_lf]
+    )
+    if pairs_df.is_empty():
+        eng._pair_groups_df = _empty_pair_groups()
+    else:
+        eng._pair_groups_df = pairs_df.select(
+            pl.col("column").cast(pl.Utf8),
+            pl.col("val_a").cast(pl.Utf8),
+            pl.col("val_b").cast(pl.Utf8),
+            pl.col("n").cast(pl.UInt32),
+        )
+    pending_by_col: dict[str, int] = {}
+    accepted_by_col: dict[str, int] = {}
+    mismatch_n: dict[str, int] = {}
+    top: dict[str, tuple[str, str, int]] = {}
+    if not pending_df.is_empty():
+        for rec in pending_df.to_dicts():
+            pending_by_col[str(rec["column"])] = int(rec["len"])
+    if not accepted_df.is_empty():
+        for rec in accepted_df.to_dicts():
+            accepted_by_col[str(rec["column"])] = int(rec["len"])
+    if not mismatch_df.is_empty():
+        for rec in mismatch_df.to_dicts():
+            mismatch_n[str(rec["column"])] = int(rec["len"])
+    if not eng._pair_groups_df.is_empty():
+        for rec in (
+            eng._pair_groups_df.group_by("column", maintain_order=True).first().to_dicts()
+        ):
+            top[str(rec["column"])] = (str(rec["val_a"]), str(rec["val_b"]), int(rec["n"]))
+    returned: set[str] = set()
+    if not eng.returned_cells_df.is_empty():
+        uniq = eng.returned_cells_df.select("column").unique()
+        for col in eng.comparable:
+            if uniq.filter(pl.col("column") == col).height > 0:
+                returned.add(col)
+    eng._pending_by_col = pending_by_col
+    eng._accepted_by_col = accepted_by_col
+    eng._mismatch_n = mismatch_n
+    eng._top_pair = top
+    eng._returned_columns = returned
+
+
+def _roster_insight_stats(eng: Engine) -> dict[str, dict[str, Any]]:
+    """Display-only insight flags. Does not change counts or pairing."""
+    if eng.pending_cells.is_empty():
+        eng._col_stats = {}
+        return eng._col_stats
+    stats_lf = eng.pending_cells.lazy().group_by("column").agg(
         pl.len().alias("pending"),
         (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).all().alias("trim"),
         (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).all().alias("case"),
@@ -136,18 +230,8 @@ def _roster_agg_maps(
         pl.col("val_a").n_unique().alias("n_a"),
         pl.col("val_b").n_unique().alias("n_b"),
     )
-    pairs_lf = (
-        pending_lf.group_by(["column", "val_a", "val_b"])
-        .len()
-        .rename({"len": "n"})
-        .sort(["column", "n", "val_a", "val_b"], descending=[False, True, False, False])
-    )
-    accepted_lf = eng.accepted_cells.lazy().group_by("column").len()
-    mismatch_lf = eng.mismatches.lazy().group_by("column").len()
-    stats_df, pairs_df, accepted_df, mismatch_df = pl.collect_all(
-        [stats_lf, pairs_lf, accepted_lf, mismatch_lf]
-    )
-    if not stats_df.is_empty() and not eng.pending_cells.is_empty():
+    stats_df = stats_lf.collect()
+    if not stats_df.is_empty():
         small = stats_df.filter((pl.col("n_a") <= 30) & (pl.col("n_b") <= 30))
         if small.is_empty():
             stats_df = stats_df.with_columns(pl.lit(None, dtype=pl.UInt32).alias("n_ab"))
@@ -170,45 +254,21 @@ def _roster_agg_maps(
                 .select("column", "n_ab")
             )
             stats_df = stats_df.join(nab, on="column", how="left")
-    if pairs_df.is_empty():
-        eng._pair_groups_df = _empty_pair_groups()
-    else:
-        eng._pair_groups_df = pairs_df.select(
-            pl.col("column").cast(pl.Utf8),
-            pl.col("val_a").cast(pl.Utf8),
-            pl.col("val_b").cast(pl.Utf8),
-            pl.col("n").cast(pl.UInt32),
-        )
-    pending_by_col: dict[str, int] = {}
-    accepted_by_col: dict[str, int] = {}
-    top_pair: dict[str, int] = {}
     col_stats: dict[str, dict[str, Any]] = {}
-    top: dict[str, tuple[str, str, int]] = {}
     if not stats_df.is_empty():
         for rec in stats_df.to_dicts():
-            col = rec["column"]
-            pending_by_col[col] = int(rec["pending"])
-            col_stats[col] = rec
-    if not eng._pair_groups_df.is_empty():
-        for rec in (
-            eng._pair_groups_df.group_by("column", maintain_order=True).first().to_dicts()
-        ):
-            n = int(rec["n"])
-            top_pair[rec["column"]] = n
-            top[rec["column"]] = (str(rec["val_a"]), str(rec["val_b"]), n)
-    if not accepted_df.is_empty():
-        for rec in accepted_df.to_dicts():
-            accepted_by_col[rec["column"]] = rec["len"]
-    mismatch_n: dict[str, int] = {}
-    if not mismatch_df.is_empty():
-        for rec in mismatch_df.to_dicts():
-            mismatch_n[rec["column"]] = rec["len"]
-    eng._pending_by_col = pending_by_col
-    eng._accepted_by_col = accepted_by_col
-    eng._mismatch_n = mismatch_n
+            col_stats[rec["column"]] = rec
     eng._col_stats = col_stats
-    eng._top_pair = top
-    return pending_by_col, accepted_by_col, top_pair, col_stats
+    return col_stats
+
+
+def _roster_agg_maps(
+    eng: Engine,
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, dict[str, Any]]]:
+    _roster_fast_maps(eng)
+    col_stats = _roster_insight_stats(eng)
+    top_pair = {col: n for col, (*_, n) in eng._top_pair.items()}
+    return eng._pending_by_col, eng._accepted_by_col, top_pair, col_stats
 
 
 SENTINEL_COLS = (
@@ -284,17 +344,14 @@ def _sentinel_map(eng: Engine) -> dict[str, tuple[str | None, str | None]]:
 
 
 def _build_roster_cache(eng: Engine) -> list[RosterRow]:
-    pending_by_col, accepted_by_col, top_pair, col_stats = _roster_agg_maps(eng)
+    pending_by_col = eng._pending_by_col
+    accepted_by_col = eng._accepted_by_col
+    col_stats = _roster_insight_stats(eng)
+    top_pair = {col: n for col, (*_, n) in eng._top_pair.items()}
     sentinels = _sentinel_map(eng)
     rows: list[RosterRow] = []
     matched_n = eng.matched_a.height
     mismatch_n = eng._mismatch_n
-    if eng.returned_cells_df.is_empty():
-        eng._returned_columns = set()
-    else:
-        eng._returned_columns = set(
-            eng.returned_cells_df.get_column("column").unique().to_list()
-        )
     for col in eng.comparable:
         pend = pending_by_col.get(col, 0)
         acc = accepted_by_col.get(col, 0)
@@ -409,6 +466,7 @@ def _build_roster_cache(eng: Engine) -> list[RosterRow]:
 
 
 def is_categorical(eng: Engine, column: str) -> bool:
+    _ensure_roster_cache(eng)
     for row in eng._roster_cache:
         if row.kind == "column" and row.name == column:
             return row.categorical == "yes"
@@ -466,52 +524,52 @@ def next_lever_place(eng: Engine, current: Place) -> Place:
                 view_tab="pending",
                 roster_filter="",
             )
-    rows = list(eng._roster_cache)
-    for row in rows:
-        if row.pending <= 0:
+    for col in eng.comparable:
+        if eng._pending_by_col.get(col, 0) <= 0:
             continue
-        if row.kind == "column":
-            hit = eng._top_pair.get(row.name)
-            va = vb = None
-            if hit:
-                va, vb = hit[0], hit[1]
-            return Place(
-                screen="pair_list",
-                column=row.name,
-                pair_val_a=va,
-                pair_val_b=vb,
-                roster_filter="",
-                last_pair=current.last_pair,
-                view_tab="pending",
-                focused_name=row.name,
-            )
-        if row.kind == "A-only":
-            fk = _first_pending_key(eng, "A")
-            return Place(
-                screen="a_only",
-                roster_filter="",
-                last_pair=current.last_pair,
-                focused_key=fk,
-                focused_name="A-only keys",
-            )
-        if row.kind == "B-only":
-            fk = _first_pending_key(eng, "B")
-            return Place(
-                screen="b_only",
-                roster_filter="",
-                last_pair=current.last_pair,
-                focused_key=fk,
-                focused_name="B-only keys",
-            )
-        if row.kind == "extra":
-            return Place(
-                screen="extras",
-                roster_filter="",
-                last_pair=current.last_pair,
-                extra_side=row.side,
-                extra_name=row.name,
-                focused_name=row.name,
-            )
+        hit = eng._top_pair.get(col)
+        va = vb = None
+        if hit:
+            va, vb = hit[0], hit[1]
+        return Place(
+            screen="pair_list",
+            column=col,
+            pair_val_a=va,
+            pair_val_b=vb,
+            roster_filter="",
+            last_pair=current.last_pair,
+            view_tab="pending",
+            focused_name=col,
+        )
+    if eng.pending_a_only_n() > 0:
+        fk = _first_pending_key(eng, "A")
+        return Place(
+            screen="a_only",
+            roster_filter="",
+            last_pair=current.last_pair,
+            focused_key=fk,
+            focused_name="A-only keys",
+        )
+    if eng.pending_b_only_n() > 0:
+        fk = _first_pending_key(eng, "B")
+        return Place(
+            screen="b_only",
+            roster_filter="",
+            last_pair=current.last_pair,
+            focused_key=fk,
+            focused_name="B-only keys",
+        )
+    for side, name in [("A", n) for n in eng.extras_a] + [("B", n) for n in eng.extras_b]:
+        if (side, name) not in eng.pending_extras:
+            continue
+        return Place(
+            screen="extras",
+            roster_filter="",
+            last_pair=current.last_pair,
+            extra_side=side,
+            extra_name=name,
+            focused_name=name,
+        )
     return Place(
         screen="roster",
         roster_filter="",

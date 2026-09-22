@@ -169,6 +169,77 @@ def test_equal_shared_rows_auto_hide_column_despite_unmatched(tmp_path: Path):
     assert "B-only" in full_kinds
 
 
+def test_sole_key_column_named_underscore_key(tmp_path: Path):
+    eng = _pair(
+        tmp_path,
+        "_key,val\n1,a\n2,c\n",
+        "_key,val\n1,b\n3,c\n",
+        keys="_key",
+    )
+    assert eng.pending_total() != 0
+    assert eng.pending_cells_n() == 1
+    rec = eng.pending_cells.to_dicts()[0]
+    assert rec["_key"] == "1"
+    assert rec["column"] == "val"
+    assert rec["val_a"] == "a"
+    assert rec["val_b"] == "b"
+    assert eng.pending_a_only_n() == 1
+    assert eng.pending_a_only["_key"].to_list() == ["2"]
+    assert eng.pending_b_only_n() == 1
+    assert eng.pending_b_only["_key"].to_list() == ["3"]
+    assert eng.matched_key_count() == 1
+
+
+def test_composite_key_including_underscore_key(tmp_path: Path):
+    eng = _pair(
+        tmp_path,
+        "id,_key,val\n1,k,a\n2,k,c\n",
+        "id,_key,val\n1,k,b\n3,k,c\n",
+        keys="id,_key",
+    )
+    assert eng.pending_cells_n() == 1
+    rec = eng.pending_cells.to_dicts()[0]
+    assert rec["id"] == "1"
+    assert rec["_key"] == "k"
+    assert rec["column"] == "val"
+    assert rec["val_a"] == "a"
+    assert rec["val_b"] == "b"
+    assert eng.pending_a_only.select("id", "_key").to_dicts() == [{"id": "2", "_key": "k"}]
+    assert eng.pending_b_only.select("id", "_key").to_dicts() == [{"id": "3", "_key": "k"}]
+
+
+def test_value_column_named_underscore_key(tmp_path: Path):
+    eng = _pair(tmp_path, "id,_key\n1,a\n", "id,_key\n1,b\n")
+    assert eng.pending_cells_n() == 1
+    rec = eng.pending_cells.to_dicts()[0]
+    assert rec["column"] == "_key"
+    assert rec["val_a"] == "a"
+    assert rec["val_b"] == "b"
+    assert eng.pending_a_only_n() == 0
+    assert eng.pending_b_only_n() == 0
+
+
+def test_internal_join_name_extends_past_key_collision(tmp_path: Path):
+    from reconcile.compare import _JOIN_STRUCT, _join_struct_name
+
+    assert _join_struct_name(["id"]) == _JOIN_STRUCT
+    extended = _JOIN_STRUCT + "_"
+    assert _join_struct_name([_JOIN_STRUCT, extended]) == _JOIN_STRUCT + "__"
+    eng = _pair(
+        tmp_path,
+        f"{_JOIN_STRUCT},val\n1,a\n2,c\n",
+        f"{_JOIN_STRUCT},val\n1,b\n3,c\n",
+        keys=_JOIN_STRUCT,
+    )
+    assert eng.pending_cells_n() == 1
+    rec = eng.pending_cells.to_dicts()[0]
+    assert rec[_JOIN_STRUCT] == "1"
+    assert rec["val_a"] == "a"
+    assert rec["val_b"] == "b"
+    assert eng.pending_a_only[_JOIN_STRUCT].to_list() == ["2"]
+    assert eng.pending_b_only[_JOIN_STRUCT].to_list() == ["3"]
+
+
 def test_visible_column_roster_excludes_unmatched_and_extras(tmp_path: Path):
     eng = _pair(
         tmp_path,

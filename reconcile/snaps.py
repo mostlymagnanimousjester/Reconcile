@@ -79,23 +79,25 @@ def _split_extras(eng: Engine) -> tuple[list[tuple[str, str]], list[tuple[str, s
     return pending, accepted
 
 
-def apply_snapshots(eng: Engine) -> None:
+def apply_snapshots(eng: Engine, *, dirty_columns: set[str] | None = None) -> None:
     _ensure_unmatched_snap_frames(eng)
     eng.pending_cells, eng.accepted_cells = _split_cells(eng)
     eng.pending_a_only, eng.accepted_a_only = _split_unmatched(eng, "A")
     eng.pending_b_only, eng.accepted_b_only = _split_unmatched(eng, "B")
     eng.pending_extras, eng.accepted_extras = _split_extras(eng)
-    refresh_derived(eng)
+    refresh_derived(eng, dirty_columns=dirty_columns)
 
 
 def _cell_snap_cols(eng: Engine) -> list[str]:
     return [*eng.keys, "column", "val_a", "val_b"]
 
 
-def _vstack_cell_snaps(eng: Engine, frame: pl.DataFrame) -> int:
+def _vstack_cell_snaps(
+    eng: Engine, frame: pl.DataFrame, dirty_columns: set[str] | None = None
+) -> int:
     cols = _cell_snap_cols(eng)
     if frame.is_empty():
-        apply_snapshots(eng)
+        apply_snapshots(eng, dirty_columns=dirty_columns if dirty_columns is not None else set())
         return 0
     frame = frame.select(cols)
     if eng.cell_snaps.is_empty():
@@ -110,14 +112,16 @@ def _vstack_cell_snaps(eng: Engine, frame: pl.DataFrame) -> int:
             if eng.cell_snaps.is_empty()
             else pl.concat([eng.cell_snaps, new], how="vertical")
         )
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns=dirty_columns)
     return n
 
 
 def accept_column(eng: Engine, column: str) -> int:
     if eng.pair_draft_col is not None:
         raise InTuiError("ERROR: confirm or cancel the pair draft first")
-    n = _vstack_cell_snaps(eng, eng.pending_cells.filter(pl.col("column") == column))
+    n = _vstack_cell_snaps(
+        eng, eng.pending_cells.filter(pl.col("column") == column), {column}
+    )
     eng.column_draft.discard(column)
     return n
 
@@ -128,7 +132,7 @@ def accept_pair(eng: Engine, column: str, val_a: str, val_b: str) -> int:
         & (pl.col("val_a") == val_a)
         & (pl.col("val_b") == val_b)
     )
-    return _vstack_cell_snaps(eng, frame)
+    return _vstack_cell_snaps(eng, frame, {column})
 
 
 def accept_pair_across_columns(
@@ -142,7 +146,7 @@ def accept_pair_across_columns(
         & (pl.col("val_a") == val_a)
         & (pl.col("val_b") == val_b)
     )
-    return _vstack_cell_snaps(eng, frame)
+    return _vstack_cell_snaps(eng, frame, set(columns))
 
 
 def accept_cell(
@@ -152,7 +156,7 @@ def accept_cell(
     data["column"] = [column]
     data["val_a"] = [val_a]
     data["val_b"] = [val_b]
-    return _vstack_cell_snaps(eng, pl.DataFrame(data))
+    return _vstack_cell_snaps(eng, pl.DataFrame(data), {column})
 
 
 def confirm_column_draft(eng: Engine) -> int:
@@ -163,7 +167,7 @@ def confirm_column_draft(eng: Engine) -> int:
     if not names:
         return 0
     return _vstack_cell_snaps(
-        eng, eng.pending_cells.filter(pl.col("column").is_in(names))
+        eng, eng.pending_cells.filter(pl.col("column").is_in(names)), set(names)
     )
 
 
@@ -187,7 +191,7 @@ def confirm_pair_draft(
         frame = frame.join(exc, on=eng.keys, how="anti")
     if frame.is_empty():
         raise InTuiError("ERROR: nothing to confirm (all unchecked)")
-    n = _vstack_cell_snaps(eng, frame)
+    n = _vstack_cell_snaps(eng, frame, {eng.pair_draft_col})
     eng.clear_pair_draft()
     return n
 
@@ -200,7 +204,7 @@ def _vstack_unmatched(eng: Engine, side: str, frame: pl.DataFrame) -> int:
     attr = _unmatched_attr(side)
     snaps: pl.DataFrame | None = getattr(eng, attr)
     if frame.is_empty():
-        apply_snapshots(eng)
+        apply_snapshots(eng, dirty_columns=set())
         return 0
     if snaps is None or snaps.is_empty():
         setattr(eng, attr, frame.unique())
@@ -214,7 +218,7 @@ def _vstack_unmatched(eng: Engine, side: str, frame: pl.DataFrame) -> int:
     else:
         n = frame.height
         setattr(eng, attr, pl.concat([snaps, frame], how="diagonal").unique())
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns=set())
     return n
 
 
@@ -237,14 +241,14 @@ def accept_extra(eng: Engine, side: str, name: str) -> int:
         return 0
     if snap not in eng.extra_snaps:
         eng.extra_snaps.append(snap)
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns=set())
     return 1
 
 
 def undo_column(eng: Engine, column: str) -> int:
     before = eng.cell_snaps.height
     eng.cell_snaps = eng.cell_snaps.filter(pl.col("column") != column)
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
 
 
@@ -252,7 +256,7 @@ def undo_cell(eng: Engine, key: tuple[str, ...], column: str) -> int:
     before = eng.cell_snaps.height
     expr = (pl.col("column") == column) & _key_eq_expr(eng.keys, key)
     eng.cell_snaps = eng.cell_snaps.filter(~expr)
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
 
 
@@ -265,7 +269,7 @@ def undo_pair(eng: Engine, column: str, val_a: str, val_b: str) -> int:
             & (pl.col("val_b") == val_b)
         )
     )
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
 
 
@@ -279,7 +283,7 @@ def undo_unmatched(eng: Engine, side: str, key: tuple[str, ...] | None = None) -
         setattr(eng, attr, snaps.head(0))
     else:
         setattr(eng, attr, snaps.filter(~_key_eq_expr(eng.keys, key)))
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns=set())
     return before - getattr(eng, attr).height
 
 
@@ -288,7 +292,7 @@ def undo_extra(eng: Engine, side: str, name: str) -> int:
     eng.extra_snaps = [
         s for s in eng.extra_snaps if not (s.side == side and s.name == name)
     ]
-    apply_snapshots(eng)
+    apply_snapshots(eng, dirty_columns=set())
     return before - len(eng.extra_snaps)
 
 

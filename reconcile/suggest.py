@@ -92,9 +92,13 @@ def suggest_extras(eng: Engine) -> list[dict[str, Any]]:
     Collisions (two recipes claiming the same extra) are all returned.
     The tool never picks. Omit callers should hide the block when empty.
     """
+    cached = getattr(eng, "_suggest_extras_cache", None)
+    if cached is not None:
+        return cached
     extras_a = list(eng.extras_a)
     extras_b = list(eng.extras_b)
     if not extras_a or not extras_b:
+        eng._suggest_extras_cache = []
         return []
     by_canon: dict[tuple[str, ...], list[str]] = {}
     for name in extras_b:
@@ -118,4 +122,5 @@ def suggest_extras(eng: Engine) -> list[dict[str, Any]]:
                     "pending": pending,
                 }
             )
+    eng._suggest_extras_cache = rows
     return rows

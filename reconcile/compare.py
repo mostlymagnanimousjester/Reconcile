@@ -54,8 +54,21 @@ def _check_duplicate_keys(df: pl.DataFrame, keys: list[str], side: str) -> None:
     )
 
 
-def _struct_key(keys: list[str]) -> pl.Expr:
-    return pl.struct(keys).alias("_key")
+# Temporary struct used only to join key tuples. A user column may be named
+# `_key`; this name must not be that, or the join overwrites and then drops it.
+_JOIN_STRUCT = "__reconcile_join_struct__"
+
+
+def _join_struct_name(keys: list[str]) -> str:
+    name = _JOIN_STRUCT
+    occupied = set(keys)
+    while name in occupied:
+        name += "_"
+    return name
+
+
+def _struct_key(keys: list[str], name: str) -> pl.Expr:
+    return pl.struct(keys).alias(name)
 
 
 def rebuild_frames(eng: Engine) -> None:
@@ -74,11 +87,24 @@ def rebuild_frames(eng: Engine) -> None:
     eng.extras_b = [n for n in eng.b.headers if n not in a_names]
     eng.context_pool = [n for n in eng.intersection if n not in eng.keys]
 
-    a_k = eng.a.frame.select(eng.keys).with_columns(_struct_key(eng.keys))
-    b_k = eng.b.frame.select(eng.keys).with_columns(_struct_key(eng.keys))
-    a_only_keys = a_k.join(b_k, on="_key", how="anti").drop("_key")
-    b_only_keys = b_k.join(a_k, on="_key", how="anti").drop("_key")
-    matched_keys = a_k.join(b_k, on="_key", how="inner").drop("_key")
+    join_name = _join_struct_name(eng.keys)
+    in_a, in_b = "__reconcile_in_a__", "__reconcile_in_b__"
+    a_k = eng.a.frame.select(eng.keys).with_columns(
+        _struct_key(eng.keys, join_name),
+        pl.lit(True).alias(in_a),
+    )
+    b_k = eng.b.frame.select(eng.keys).with_columns(
+        _struct_key(eng.keys, join_name),
+        pl.lit(True).alias(in_b),
+    )
+    classed = a_k.join(b_k, on=join_name, how="full", suffix="__join_r")
+    key_cols = [pl.coalesce(pl.col(k), pl.col(f"{k}__join_r")).alias(k) for k in eng.keys]
+    classed = classed.with_columns(key_cols)
+    a_only_keys = classed.filter(pl.col(in_b).is_null()).select(eng.keys)
+    b_only_keys = classed.filter(pl.col(in_a).is_null()).select(eng.keys)
+    matched_keys = classed.filter(
+        pl.col(in_a).is_not_null() & pl.col(in_b).is_not_null()
+    ).select(eng.keys)
 
     if a_only_keys.is_empty():
         eng.a_only = eng.a.frame.head(0)
