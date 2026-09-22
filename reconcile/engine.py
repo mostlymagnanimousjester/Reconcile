@@ -179,6 +179,8 @@ class Engine:
         self._all_matched_by_col: dict[str, pl.DataFrame] = {}
         self.sheet_set: list[str] | None = None
         self.sheet_index: int = 0
+        # Last accepted exact (val_a, val_b) kept across S. Not a snapshot.
+        self.carried_pair: tuple[str, str] | None = None
         self._rebuild()
 
     # --- construction ---
@@ -761,6 +763,9 @@ class Engine:
     def refresh(self) -> RefreshDelta:
         before_pending = self.pending_total()
         before_acc = self.accepted_total()
+        before_cols = self.pending_columns_n()
+        before_keys = self.unmatched_rows_n()
+        before_extras = self.pending_extras_n()
         prev_cell_snaps = self.cell_snaps
         prev_unmatched_a = self.unmatched_snaps_a
         prev_unmatched_b = self.unmatched_snaps_b
@@ -826,6 +831,14 @@ class Engine:
             if self.pair_draft_height() == 0:
                 self.clear_pair_draft()
         returned_n = returned_cells.height + returned_keys.height + len(self.returned_extras)
+        returned_names = [
+            c
+            for c in self.comparable
+            if returned_cells.filter(pl.col("column") == c).height > 0
+        ]
+        returned_tail = f"{returned_n} returned"
+        if returned_names:
+            returned_tail += " " + ", ".join(returned_names)
         delta = RefreshDelta(
             pending_before=before_pending,
             pending_after=self.pending_total(),
@@ -833,9 +846,10 @@ class Engine:
             accepted_after=self.accepted_total(),
             returned=returned_n,
             message=(
-                f"remaining work {before_pending}→{self.pending_total()}, "
-                f"accepted {before_acc}→{self.accepted_total()}, "
-                f"{returned_n} returned to pending"
+                f"pending columns {before_cols}→{self.pending_columns_n()} · "
+                f"unmatched keys {before_keys}→{self.unmatched_rows_n()} · "
+                f"mismatched columns {before_extras}→{self.pending_extras_n()} · "
+                f"{returned_tail}"
             ),
         )
         self.last_refresh_delta = delta

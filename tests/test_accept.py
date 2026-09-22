@@ -96,6 +96,22 @@ def test_cell_changes_return_to_pending(tmp_path: Path):
     assert delta.returned == 1
 
 
+def test_refresh_delta_uses_three_nouns_and_returned_columns(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,note\n1,Y,a\n")
+    write_csv(pb, "id,val,note\n1,Yes,b\n")
+    eng = Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=",")
+    same = eng.refresh()
+    assert same.message.startswith("pending columns 2→2 · unmatched keys 0→0 · mismatched columns 0→0")
+    assert "remaining work" not in same.message
+    eng.accept_column("val")
+    write_csv(pb, "id,val,note\n1,Yep,b\n")
+    delta = eng.refresh()
+    assert "pending columns 1→2" in delta.message
+    assert "returned" in delta.message
+    assert "val" in delta.message.split("returned", 1)[1]
+
+
 def test_equal_after_refresh_drops(tmp_path: Path):
     pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
     write_csv(pa, "id,val\n1,Y\n")
