@@ -290,7 +290,7 @@ All reconcile state lives in memory for this process only. There is no export/re
 
 Refresh is manual.
 
-On success: recompute counts and pages; show a short **delta in the footer** on its own line (e.g. remaining work `40→12`, accepted `10→8`, `3 returned to pending`). **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the roster.
+On success: recompute counts and pages; show a short **delta in the footer** on its own line using the three footer nouns (`pending columns 12→4 · unmatched keys 3→3 · mismatched columns 1→0 · 2 returned Status, Flag`). Name returned comparable-column headers in table A import order. Do not lump those nouns into one remaining-work figure. **Stay put** if that screen/column/pair still exists. If it vanished, **next lever** (§15.9). Else the roster.
 
 Do **not** open a jump-list overlay. Rows that **returned to pending** are marked in the lists already on screen (reverse video / standout, red-lens safe §15.8) until the next successful refresh replaces the set.
 
@@ -648,7 +648,7 @@ Hard fail at parse (stderr + exit `2`, before TUI), with the flag and the raw `S
 
 If remaining work is not 0, `S` does not ERROR and does not advance yet. It opens a confirm that names the three counts and the next sheet. `y` or `S` again leaves the sheet. `Esc` stays. Leaving does **not** snapshot the leftover differences; the next sheet is a clean slate.
 
-On success: data-load that next same-named pair as the new compare; drop the previous sheet’s in-memory snapshots / drafts / `last_pair` / context; **reset place to the roster** (home). Clean slate per sheet (no leftover snaps). Footer shows `sheet i/n` plus the current name, and `S next sheet` when a next name exists or remaining work is 0. HELP / `?` documents `S`.
+On success: data-load that next same-named pair as the new compare; drop the previous sheet’s in-memory snapshots / drafts / place `last_pair` / context; **reset place to the roster** (home). Clean slate per sheet (no leftover snaps). Keep only the last accepted exact `(valA, valB)` strings so `.` on the next sheet’s pair list drafts that pair on the current column when it is still pending. If it is not pending, in-TUI ERROR and stay. `u` does not undo `S`. Footer shows `sheet i/n` plus the current name, and `S next sheet` when a next name exists or remaining work is 0. HELP / `?` documents `S`.
 
 If a later pair’s sheet is missing at advance time (renamed since preflight): **refuse to start that pair** — in-TUI ERROR with path / name / available sheets; **keep the last good sheet**. Do not unload it.
 
@@ -709,7 +709,7 @@ A-only keys, B-only keys, and mismatched columns **must not** appear on this tab
 
 One row per pending comparable column (`kind` `column`, pending > 0), plus settled comparable columns when `v` is on. `name` is the exact header. Pending count is mismatched cells in that column.
 
-**Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**. The roster pane above the footer shows that pair’s raw A and B strings and its pending count for the focused column, plus any `const A` / `const B` / `const both` values. The pane is hidden when the focused column has no pending pair and no sentinel. `Enter` opens the pair list on that pair. Pair-list order stays count desc, then `valA`, `valB`. `a` on the roster still accepts the whole column.
+**Concentration** (columns only): pending count of the column’s largest exact `(valA, valB)` pair divided by that column’s pending count (0 if pending is 0). Shown as **top-pair %**. The roster pane above the footer shows that pair’s raw A and B strings with the first-difference mark, `N of M pending` (or `this column is one pair` when `N` is `M`), and the keystrokes `Enter` (this pair) and `a` (this column), plus any `const A` / `const B` / `const both` values. Invisible characters (leading/trailing space, NBSP, tab, CR/LF) are drawn with a fixed glyph in the pane. The pane is hidden when the focused column has no pending pair and no sentinel. When the roster has no column rows, the pane names unmatched keys and mismatched columns that are still non-zero and points at `i`; if both are zero it says pending is 0. `Enter` opens the pair list on that pair. Pair-list order stays count desc, then `valA`, `valB`. `a` on the roster still accepts the whole column.
 
 **One order (not a key):** table A import order (`eng.comparable` / original A headers, keys excluded). No pending/concentration sort and no sort-cycle. When `v` is on, keep two visual sections (pending, then accepted/equal); each section is still A import order.
 
@@ -755,7 +755,7 @@ One comparable column. **One thing at a time.**
 - `Enter` → **cell step** (pair draft of those exact strings). Grid, first-difference, per-row context columns.
 - `Esc` from cell step → pair list (draft cancelled if not confirmed).
 - `Esc` from pair list → roster.
-- `a` on a pair → immediate accept that pair; stay on the pair list, cursor on the pair that was below (or the new last remaining / empty).
+- `a` on a pair → immediate accept that pair; stay on the pair list, cursor on the pair that was below, while that column still has pending. When that column’s pending hits 0, return to the roster focused on the column that was below (same as roster `a`). `u` restores the pair.
 - `A` → immediate accept entire column.
 - Named tabs **Pending / Accepted / Equal / All matched** switch views. There are no `1`–`4` keys. Tab switch is refused (error, draft kept) while a pair draft is in flight.
 
@@ -770,7 +770,9 @@ Grid (cell step or non-Pending tabs), 100-row pages:
 
 **Context columns:** both-sides intersection, excluding keys and the column under examination; per-column, in memory; display-only. Picker `c` on column detail (pair list, cell step, and non-Pending grids). Space toggles **standalone** context (`ctx:Name`). Keys `0`–`9` (context picker only) toggle the focused column’s membership in **group N**. A column may be standalone and/or in several groups; the same column in two groups contributes to each group independently. Empty groups do not appear. Group N’s value is the tuple of member columns (table A import order among members), shown as `ctx:gN Flag+Region`. On the **pair list**, each standalone column and each non-empty group is a **dedicated labeled column**, not a concatenated blob. Each pair shows unique values (or unique tuples) as a compact delimited list of the **5 most occurring** values **with pair-row counts** (`foo 12 | bar 4 | baz 1`); if more unique values exist, mark truncation (`…`) and do not dump the rest. Counts are for that pair’s pending rows (the grain), not the whole table. A value (or tuple) present on both A and B of the same row counts once. On the cell step / non-Pending grids, show A|B raw per row in that same dedicated column (group cells show the member tuple on each side).
 
-**First-difference caret:** on the cell step footer pane and focused `A`/`B` cells, mark the first differing Python `str` index (after null→`""`). Reverse/standout on both sides. Prefix/length-only differences count. Exact, not speculative. Red-lens safe (§15.8).
+**First-difference caret:** on the roster pane (largest pending pair), the pair-list pane, the cell step pane, and focused `A`/`B` cells, mark the first differing Python `str` index (after null→`""`). Reverse/standout on both sides. Prefix/length-only differences count. Exact, not speculative. Red-lens safe (§15.8).
+
+The pair-list pane also states this pair’s count of the column’s pending and names `a` (this pair), `A` (this column), and `Enter` (cells). The cell-step pane leads with the focused key, `k of n` still checked, `a` this cell, and `y` confirm.
 
 Paging: key-tuple order. Pair list paging: 100.
 
@@ -786,13 +788,15 @@ Each row: key columns + all other columns on that side, raw — comparable **and
 
 `a` accept one key (then the next pending key **below** in this grid, or the new last remaining pending key; do not jump to the top or the roster); `A` accept all unmatched on this side then **next lever**; `u` undo; `Esc` roster.
 
+The pane leads with the side and the full composite key, then `a` this key and `A` this side, then the other columns on that side.
+
 ### 15.5 Mismatched columns
 
 Reachable from the overview modal (`i` then Enter), or next lever. Same list either way.
 
 Headers that exist on one side only. Exact header + **Side** `A` or `B`; empty `speculative`. Order: exact name. `a` / `u` that column; `a` stays on this list and moves to the extra that was **below** (or the new last remaining / empty). `Esc` roster.
 
-**Suggest** (this screen only, below the A-not-B / B-not-A list): deterministic rename recipes for the source files (strip, case, `_`/` `/`-` as one separator class, token sort). Each row is extra A name, extra B name, why (which normalizers fired), and preview (shared inner-join keys that would compare; pending `!=` count, null→`""`). Collisions: show every recipe; the tool never picks. Omit the block when none hit. Header-only scoring; do not `to_dicts()` tall value frames to score names. Not a mapping — the TUI does not bind or rename. Copy the target exact header, rename it in the workbook, `r`. `a` still accepts the focused extra, not a suggestion. Suggest is not focusable (`#grid` stays the navigator). Not on OverviewModal, not on the roster, not a new `place.screen`.
+**Suggest** (this screen only, below the A-not-B / B-not-A list): deterministic rename recipes for the source files (strip, case, `_`/` `/`-` as one separator class, token sort). Each row is extra A name, extra B name, why (which normalizers fired), and preview (shared inner-join keys that would compare; pending `!=` count, null→`""`). Collisions: show every recipe; the tool never picks. Omit the block when none hit. Header-only scoring; do not `to_dicts()` tall value frames to score names. Not a mapping — the TUI does not bind or rename. Copy the target exact header, rename it in the workbook, `r`. `a` still accepts the focused extra, not a suggestion. Suggest is not focusable (`#grid` stays the navigator). Not on OverviewModal, not on the roster, not a new `place.screen`. The extras pane repeats every recipe that names the focused header (normalizers, both exact headers, shared keys, keys that would still differ) and says rename then `r`.
 
 ### 15.6 Footer (always on)
 
@@ -804,7 +808,7 @@ Each number is one noun. Do **not** sum cells + unmatched rows + header names in
 - **unmatched rows** (A-only keys + B-only keys)
 - **mismatched columns** (headers on one side only)
 - `? help` (full bindings are in the `?` modal, grouped by screen)
-- Refresh delta after `r` (including returned-to-pending count)
+- Refresh delta after `r`: the three nouns as `before→after`, plus returned column names (and the returned count)
 - Page `n/m` when paged
 - Roster when a check column is visible: `Y all y in this check`
 - Pair list only extra: `. repeat · u undo`

@@ -1,5 +1,9 @@
 # Shipped simplifications
 
+- **Pane names the grain (shipped).** Roster: largest pair with first-difference mark, invisible-character glyphs, `N of M` (or one pair), `Enter` this pair, `a` this column. Pair list: `N of column` and `a` / `A` / `Enter`. Cell step: focused key, `k of n` checked, `a` / `y`. Unmatched: key first, then `a` / `A`. Extras: Suggest recipes that name the focused header (rename then `r`). Empty roster names the non-zero noun and points at `i`.
+- **Refresh delta uses the three footer nouns (shipped).** `pending columns`, `unmatched keys`, `mismatched columns` as `before→after`, plus returned column names. Cursor stays put.
+- **Last pair of a column returns to the roster (shipped).** `a` on the pair list or the last cell of that column, when pending hits 0, focuses the column that was below. `u` restores the pair.
+- **Last exact pair survives `S` (shipped).** Snapshots and place reset. `.` on the next sheet’s pair list drafts those A/B strings when they are still pending. `u` does not undo `S`.
 - **Roster pane shows the largest pending pair (shipped).** Focused column: raw `A` / `B` and that pair’s pending count, above the footer, plus any const values. `Enter` opens the pair list on that pair. Pair-list order stays count desc, then `valA`, `valB`. Roster `a` still accepts the column.
 
 - **`m` is pair-only (shipped).** No column-picker. `/`, `=`, and Space already choose columns. On the pair list, `m` applies **this pair** to the live column draft, or to every pending column that has that pair. On the roster, only the pair-picker (the union). Purpose: `""` → `0` (and similar) without a two-step wizard. Inspection tabs (Accepted / Equal / All matched) stay.

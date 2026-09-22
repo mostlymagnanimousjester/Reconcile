@@ -477,3 +477,54 @@ def test_tui_s_last_sheet_with_pending_is_no_next(tmp_path: Path):
             assert app.engine.a.sheet == "only"
 
     asyncio.run(_run())
+
+
+def test_dot_after_s_drafts_carried_exact_pair(tmp_path: Path):
+    a = tmp_path / "left.xlsx"
+    b = tmp_path / "right.xlsx"
+    write_xlsx_sheets(
+        a,
+        {
+            "data1": [["id", "val"], ["1", "Y"]],
+            "data2": [["id", "val"], ["1", "Y"]],
+        },
+    )
+    write_xlsx_sheets(
+        b,
+        {
+            "data1": [["id", "val"], ["1", "Yes"]],
+            "data2": [["id", "val"], ["1", "Yes"]],
+        },
+    )
+    eng = Engine.from_paths(str(a), str(b), ["id"], sheet_set=["data1", "data2"])
+    app = ReconcileApp(eng)
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_drill()
+            await pilot.pause()
+            app.action_accept()
+            await pilot.pause()
+            assert app.place.last_pair == ("val", "Y", "Yes")
+            assert app.engine.sheet_remaining_work() == 0
+            app.action_next_sheet()
+            await pilot.pause()
+            assert app.engine.a.sheet == "data2"
+            assert app.engine.carried_pair == ("Y", "Yes")
+            assert app.place.screen == "roster"
+            assert app.engine.pending_cells_n() == 1
+            app.action_undo()
+            await pilot.pause()
+            assert app.tui_error and "nothing accepted" in app.tui_error
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            await pilot.press(".")
+            await pilot.pause()
+            assert app.place.screen == "cell_step"
+            assert app.place.pair_val_a == "Y"
+            assert app.place.pair_val_b == "Yes"
+            assert app.engine.pair_draft_col == "val"
+
+    asyncio.run(_run())

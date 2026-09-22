@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -28,7 +29,7 @@ a      accept the current selection (roster column / pair / cell / unmatched key
 A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
 S      next sheet when launched with -sheets and no draft. If differences remain, a confirm asks you to leave them unaccepted (y or S); Esc stays. Last sheet: ERROR no next sheet. Does not steal A or [ / ]
 u      undo last accept as one unit. ERROR if nothing accepted yet
-r      refresh (re-read live files; last good state on failure)
+r      refresh (re-read live files; last good state on failure). Footer: pending columns, unmatched keys, mismatched columns, returned column names
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 ?      this help
 q      quit (discards unconfirmed draft)
@@ -36,7 +37,7 @@ n / p  page (ERROR if unpaged / at end). Digits 0-9 do nothing except inside c
 
 ROSTER (column roster, table A import order)
 a      accept this column in place (selection moves below; does not drill)
-Pane   largest pending pair (A, B, count) for the focused column. Enter opens that pair. a still accepts the column.
+Pane   largest pending pair: raw A/B, first difference, N of M (or one pair). Enter this pair. a this column.
 v      show/hide accepted and equal columns (default hidden)
 m      pick one same exact pair (union of live draft ON columns, or every pending column). No column picker
 :      regex column draft (comparable names; not a view filter). / is a deprecated alias
@@ -47,19 +48,21 @@ y      confirm the live column draft; land on roster (next-below / first pending
 
 PAIR LIST (Pending tab)
 Enter  cell step (pair draft of those exact strings)
-a      accept this pair (selection moves below)
+a      accept this pair (selection moves below). When this column's pending hits 0, return to the roster on the column below
+Pane   this pair's A/B, N of column pending. a this pair. A this column. Enter cells
 A      accept entire column
 m      apply this pair to the live column draft, or to every pending column that has it
 c      context-column picker (Space standalone; 0-9 groups only on that page)
 U      undo this column (pair list only; inverse of A; refused while a pair draft is in flight)
 n / p  next / previous page
-.      last pair: cell-step if already on that column's pair list; else that pair (column detail only)
+.      last pair: cell-step if already on that column's pair list; else that pair (column detail only). After S, the last exact A/B strings draft on this column's pair list when still pending
 [ / ]  next / previous named tab (no wrap)
 Esc    roster and cancel a live column draft
 Footer chrome here: . repeat · u undo (full list is this help)
 
 CELL STEP
-a      accept this cell (selection moves below)
+a      accept this cell (selection moves below). When the column's pending hits 0, return to the roster
+Pane   focused key, k of n checked. a this cell. y confirm
 Space  toggle focused cell in the pair draft (ON / off)
 y      confirm still-checked cells, then next lever. ERROR if no draft to confirm
 c      context-column picker (Space standalone; 0-9 groups only on that page)
@@ -69,6 +72,7 @@ Esc    back to pair list (cancels the pair draft)
 UNMATCHED KEYS / MISMATCHED COLUMNS  (open from i)
 a      accept this key / extra (selection moves below)
 A      unmatched: all on this side, then next lever. extras: one extra (same as a; no bulk-all-extras)
+Pane   unmatched: the key first, then a this key · A this side. extras: the header, and any Suggest recipe that names it (rename then r)
 n / p  page (keys)
 Esc    roster (cancels a live column draft)
 Suggest (extras only, below the A-not-B / B-not-A lists): rename in source files, then r.
@@ -115,34 +119,39 @@ A column can be standalone and in several groups. Empty groups do not appear.
 
 CSS = """
 Screen {
-    background: #24150c;
-    color: #fff3e0;
+    background: #1a0e08;
+    color: #fff6ea;
 }
 #banner {
-    background: #7a2216;
-    color: #ffd4a8;
+    background: #9a2e1c;
+    color: #ffe8cc;
     text-style: bold;
     height: auto;
     padding: 0 1;
+    border-bottom: tall #ffb347;
 }
 #banner.hidden {
     display: none;
 }
 #banner.draft {
-    background: #7a3c08;
-    color: #ffe27a;
+    background: #c46a08;
+    color: #fff6c2;
     text-style: bold;
+    border-bottom: tall #ffe27a;
 }
 #work {
     height: 1fr;
+    background: #24150c;
 }
 #pane {
     height: auto;
     max-height: 24;
     overflow-y: auto;
     padding: 0 1;
-    color: #fff3e0;
-    background: #2c180e;
+    color: #fff8f0;
+    background: #3d2416;
+    border-top: heavy #ffb347;
+    border-bottom: tall #e08a38;
 }
 #pane.hidden {
     display: none;
@@ -152,103 +161,129 @@ Screen {
     height: auto;
     min-height: 1;
     padding: 0 1;
-    background: #3c1a0c;
-    color: #ffe27a;
+    background: #4a1e0e;
+    color: #ffe9a8;
     text-style: bold;
+    border-top: tall #ffc14d;
 }
 #footer.busy {
-    color: #ffc44d;
+    color: #ffd56a;
+    text-style: bold italic;
 }
 #tabs {
     height: 3;
     padding: 0 1;
+    background: #2a160e;
 }
 Button {
-    background: #c45a24;
-    color: #fff8ec;
-    border: tall #f0a050;
+    background: #e06820;
+    color: #fffaf3;
+    border: tall #ffc070;
+    text-style: bold;
 }
 Button:hover, Button:focus, Button.-active {
-    background: #e06a2c;
-    color: #fffaf0;
-    border: tall #ffc070;
+    background: #ff8a32;
+    color: #2a1208;
+    border: tall #ffe0a0;
+    text-style: bold;
 }
 Button.-primary, Button.primary {
-    background: #c45a24;
-    color: #fff8ec;
-    border: tall #ffc070;
+    background: #e06820;
+    color: #fffaf3;
+    border: tall #ffe0a0;
 }
 #tabs Button {
-    background: #4a2412;
-    color: #ffe27a;
-    border: tall #e08a38;
+    background: #5a2c14;
+    color: #ffe9a8;
+    border: tall #ffb060;
+}
+#tabs Button.-active, #tabs Button:focus {
+    background: #ff9a3c;
+    color: #2a1208;
+    text-style: bold;
 }
 DataTable {
     height: 1fr;
     padding: 0 1;
+    background: #24150c;
+}
+DataTable > .datatable--header {
+    background: #6b3416;
+    color: #fff1b8;
+    text-style: bold;
+}
+DataTable > .datatable--cursor {
+    background: #ff8a32;
+    color: #2a1208;
+    text-style: bold reverse;
+}
+DataTable > .datatable--hover {
+    background: #5c3018;
+    color: #fff6ea;
 }
 #suggest-block {
     height: auto;
-    border-top: heavy #e08a38;
+    border-top: heavy #ffb347;
+    background: #3a2214;
     padding: 1 0 0 0;
     margin-top: 1;
 }
 #suggest-title {
     text-style: bold;
-    color: #ffe27a;
+    color: #ffe9a8;
     padding: 0 1;
+    background: #5a2c14;
 }
 #col-title {
     text-style: bold;
-    color: #ffe27a;
+    color: #ffe9a8;
     padding: 0 1;
     height: 1;
+    background: #3a2214;
 }
 #col-page {
-    color: #d2a87a;
+    color: #f0c090;
     padding: 0 1;
     height: 1;
     text-align: right;
+    background: #3a2214;
 }
 #col-bar {
     height: 1;
+    background: #3a2214;
 }
 #suggest {
     height: auto;
     max-height: 16;
-}
-DataTable > .datatable--cursor {
-    background: #d45a24;
-    color: #fff8ec;
-    text-style: reverse;
+    background: #3a2214;
 }
 .lever {
     text-style: bold underline;
-    color: #ffe27a;
+    color: #fff1b0;
 }
 .pending {
     text-style: bold;
-    color: #ffe27a;
+    color: #ffe566;
 }
 .accepted {
-    color: #d2a87a;
+    color: #e0b48a;
 }
 .equal {
-    color: #e8b898;
+    color: #f0c8a8;
 }
 .returned {
-    text-style: reverse;
-    color: #ffb347;
+    text-style: reverse bold;
+    color: #ffd27a;
 }
 .error {
     text-style: bold;
-    color: #ff6644;
+    color: #ff7755;
 }
 #modal {
     width: 80;
     height: auto;
     max-height: 90%;
-    background: #301c10;
+    background: #3a2214;
     border: heavy #ffb347;
     padding: 1 2;
 }
@@ -257,12 +292,15 @@ DataTable > .datatable--cursor {
     max-width: 120;
     height: auto;
     max-height: 90%;
-    background: #301c10;
+    background: #3a2214;
     border: heavy #ffb347;
     padding: 1 2;
 }
 #modal Input {
     margin: 1 0;
+    background: #2a160e;
+    color: #fff6ea;
+    border: tall #ffb347;
 }
 #help-scroll {
     height: auto;
@@ -273,10 +311,10 @@ DataTable > .datatable--cursor {
     padding: 1;
 }
 .dim {
-    color: #8a7058;
+    color: #c4a080;
 }
 .settled {
-    color: #8a7058;
+    color: #c4a080;
 }
 """
 
@@ -345,15 +383,84 @@ PAGED_SCREENS = {
 }
 ROSTER_EMPTY_PENDING = "No pending columns — v or i"
 ROSTER_EMPTY_NONE = "No columns — i"
-ROSTER_EMPTY_PANE = (
-    "v shows accepted and equal columns. "
-    "i opens unmatched keys and mismatched columns."
-)
+def _roster_idle_pane(engine: Engine) -> str:
+    """Name the remaining noun when the roster has no column rows."""
+    lines: list[str] = []
+    keys_n = engine.unmatched_rows_n()
+    extras_n = engine.pending_extras_n()
+    if keys_n:
+        lines.append(f"unmatched keys {keys_n} — i")
+    if extras_n:
+        lines.append(f"mismatched columns {extras_n} — i")
+    if not lines:
+        return "pending is 0"
+    return "\n".join(lines)
+
+
+_SPECIAL_WS = {
+    "\u00a0": "␣",
+    "\t": "→",
+    "\r": "␍",
+    "\n": "↵",
+    "\v": "↵",
+    "\f": "↵",
+}
+
+
+def _edge_spaces(value: str) -> list[bool]:
+    """Leading and trailing ASCII spaces, which otherwise vanish in the pane."""
+    n = len(value)
+    edge = [False] * n
+    i = 0
+    while i < n and value[i] == " ":
+        edge[i] = True
+        i += 1
+    j = n - 1
+    while j >= i and value[j] == " ":
+        edge[j] = True
+        j -= 1
+    return edge
+
+
+def _visible_char(ch: str, *, edge: bool) -> str:
+    mapped = _SPECIAL_WS.get(ch)
+    if mapped:
+        return mapped
+    if ch == " ":
+        return "·" if edge else " "
+    if unicodedata.category(ch) == "Zs":
+        return "␣"
+    return ch
+
+
+def _suggest_lines_for_extra(engine: Engine, side: str, name: str) -> list[str]:
+    """Suggest recipes that name this extra. Not a mapping."""
+    lines: list[str] = []
+    for rec in engine.suggest_extras():
+        if side == "A" and rec["name_a"] != name:
+            continue
+        if side == "B" and rec["name_b"] != name:
+            continue
+        if side not in ("A", "B"):
+            continue
+        why = format_why(rec["why"])
+        why_bit = f" ({why})" if why else ""
+        lines.append(
+            "Suggest: "
+            f"A {_display_text(str(rec['name_a']))} · "
+            f"B {_display_text(str(rec['name_b']))}"
+            f"{why_bit}. shared {rec['shared']} · "
+            f"still different {rec['pending']}. rename then r"
+        )
+    return lines
 
 
 def _display_text(value: str) -> str:
-    """Blank key/value cells stay visible in the pane and navigator."""
-    return value if value else "(empty)"
+    """Blank and invisible characters stay visible. Compare stays raw text."""
+    if not value:
+        return "(empty)"
+    edge = _edge_spaces(value)
+    return "".join(_visible_char(ch, edge=edge[i]) for i, ch in enumerate(value))
 
 
 def _display_list(value: str) -> str:
@@ -440,11 +547,14 @@ def _diff_text(label: str, value: str, other: str, first: int) -> Text:
     if not value:
         t.append(_display_text(value))
         return t
-    t.append(value[:first])
-    if first < len(value):
-        t.append(value[first], style="reverse bold")
-        t.append(value[first + 1 :])
-    elif len(value) != len(other):
+    edge = _edge_spaces(value)
+    for i, ch in enumerate(value):
+        shown = _visible_char(ch, edge=edge[i])
+        if i == first:
+            t.append(shown, style="reverse bold")
+        else:
+            t.append(shown)
+    if first >= len(value) and len(value) != len(other):
         t.append("∎", style="reverse bold")
     return t
 
@@ -1251,6 +1361,22 @@ class ReconcileApp(App[int]):
             va, vb = pair
             first = self.engine.first_diff(va, vb)
             t = Text()
+            if p.screen == "cell_step":
+                key = p.focused_key
+                if not key or len(key) != len(self.engine.keys):
+                    rec = self._focused_rec()
+                    if rec:
+                        key = self.engine.key_of(rec)
+                if key and len(key) == len(self.engine.keys):
+                    shown = " · ".join(
+                        f"{name} {_display_text(str(val))}"
+                        for name, val in zip(self.engine.keys, key)
+                    )
+                    t.append(shown + "\n", style="bold")
+                checked = max(0, self._draft_n - len(self.pair_draft_unchecked))
+                t.append(
+                    f"{checked} of {self._draft_n} checked · a this cell · y confirm\n"
+                )
             t.append_text(_diff_text("A:", va, vb, first))
             t.append("\n")
             t.append_text(_diff_text("B:", vb, va, first))
@@ -1277,13 +1403,26 @@ class ReconcileApp(App[int]):
                         else:
                             t.append(f"\n\n{view.header}\n")
                         t.append("\n".join(_context_summary_lines(summary)))
+                    pair_n = None
+                    if rec and rec.get("n") is not None:
+                        pair_n = int(rec["n"])
+                    col_n = self.engine._pending_by_col.get(p.column, 0)
+                    if pair_n is not None:
+                        t.append(
+                            f"\n{pair_n} of {col_n} pending · a this pair · A this column · Enter cells"
+                        )
             self._set_pane(t)
         elif p.screen in ("a_only", "b_only"):
             rec = self._focused_rec()
             if rec:
+                side = "A" if p.screen == "a_only" else "B"
                 t = Text()
+                t.append(f"{side}-only key\n", style="bold")
+                for name in self.engine.keys:
+                    t.append(f"{name}: {_display_text(str(rec.get(name, '')))}\n")
+                t.append("a this key · A this side\n")
                 for name, val in rec.items():
-                    if str(name).startswith("_"):
+                    if str(name).startswith("_") or name in self.engine.keys:
                         continue
                     t.append(f"{name}: {_display_text(str(val))}\n")
                 self._set_pane(t)
@@ -1294,19 +1433,24 @@ class ReconcileApp(App[int]):
             if rec:
                 tags = rec.get("speculative") or []
                 spec = ", ".join(tags) if isinstance(tags, list) else str(tags)
+                side = str(rec.get("side", ""))
+                name = str(rec.get("name", ""))
                 t = Text()
-                t.append(f"Side {rec.get('side', '')}\n", style="bold")
-                t.append(str(rec.get("name", "")))
+                t.append(f"Side {side}\n", style="bold")
+                t.append(_display_text(name))
+                t.append("\na this extra")
                 if spec:
                     line = _speculative_line(spec)
                     t.append(f"\n{line}", style="dim")
+                for line in _suggest_lines_for_extra(self.engine, side, name):
+                    t.append(f"\n{line}")
                 self._set_pane(t)
             else:
                 self._set_pane("")
         elif p.screen == "roster":
             rows = self._roster_column_rows()
             if not rows:
-                self._set_pane(ROSTER_EMPTY_PANE)
+                self._set_pane(_roster_idle_pane(self.engine))
             else:
                 row = self._focused_roster()
                 if row is None and self._table_keys and isinstance(self._table_keys[0], RosterRow):
@@ -1314,18 +1458,28 @@ class ReconcileApp(App[int]):
                 t = Text()
                 if row:
                     if row.sent_a:
-                        t.append(f"const A: {row.sent_a}\n")
+                        t.append(f"const A: {_display_text(row.sent_a)}\n")
                     if row.sent_b:
-                        t.append(f"const B: {row.sent_b}\n")
+                        t.append(f"const B: {_display_text(row.sent_b)}\n")
                     if row.sent_both:
-                        t.append(f"const both: {row.sent_both}\n")
+                        t.append(f"const both: {_display_text(row.sent_both)}\n")
                     if row.pending > 0:
                         top = self.engine.top_pending_pair(row.name)
                         if top:
                             va, vb, n = top
-                            t.append(f"A: {_display_text(va)}\n")
-                            t.append(f"B: {_display_text(vb)}\n")
-                            t.append(f"{n} pending")
+                            first = self.engine.first_diff(va, vb)
+                            t.append_text(_diff_text("A:", va, vb, first))
+                            t.append("\n")
+                            t.append_text(_diff_text("B:", vb, va, first))
+                            t.append("\n")
+                            if n == row.pending:
+                                t.append(
+                                    f"this column is one pair · {n} pending · Enter this pair · a this column"
+                                )
+                            else:
+                                t.append(
+                                    f"{n} of {row.pending} pending · Enter this pair · a this column"
+                                )
                 self._set_pane(t)
         else:
             self._set_pane("")
@@ -2223,29 +2377,45 @@ class ReconcileApp(App[int]):
                 pair = self._focused_pair()
                 if not pair or not p.column:
                     raise InTuiError("ERROR: no pending pairs")
+                old_names = [
+                    r.name
+                    for r in e.column_roster(
+                        p.roster_filter, include_settled=self.show_accepted_columns
+                    )
+                ]
                 nxt = e.next_pair_below(p.column, pair[0], pair[1])
                 n = e.accept_pair(p.column, pair[0], pair[1])
                 if n == 0:
                     raise InTuiError("ERROR: no pending pairs")
                 last = (p.column, pair[0], pair[1])
                 e.remember_grain(("pair", p.column, pair[0], pair[1]), n)
-                page = 0
-                if nxt:
-                    page, _ = e.page_index_for_pair(p.column, nxt[0], nxt[1])
-                self.place = Place(
-                    screen="pair_list",
-                    column=p.column,
-                    pair_val_a=nxt[0] if nxt else None,
-                    pair_val_b=nxt[1] if nxt else None,
-                    page=page,
-                    roster_filter=p.roster_filter,
-                    last_pair=last,
-                    view_tab="pending",
-                    focused_name=p.column,
-                )
+                if e._pending_by_col.get(p.column, 0) == 0:
+                    self.place.last_pair = last
+                    self._stay_on_roster_after_column(p.column, old_names)
+                else:
+                    page = 0
+                    if nxt:
+                        page, _ = e.page_index_for_pair(p.column, nxt[0], nxt[1])
+                    self.place = Place(
+                        screen="pair_list",
+                        column=p.column,
+                        pair_val_a=nxt[0] if nxt else None,
+                        pair_val_b=nxt[1] if nxt else None,
+                        page=page,
+                        roster_filter=p.roster_filter,
+                        last_pair=last,
+                        view_tab="pending",
+                        focused_name=p.column,
+                    )
             elif p.screen == "cell_step":
                 rec = self._focused_rec()
                 if rec and p.column:
+                    old_names = [
+                        r.name
+                        for r in e.column_roster(
+                            p.roster_filter, include_settled=self.show_accepted_columns
+                        )
+                    ]
                     key = e.key_of(rec)
                     n = e.accept_cell(key, p.column, rec["val_a"], rec["val_b"])
                     e.remember_grain(("cell", key, p.column), n)
@@ -2254,14 +2424,17 @@ class ReconcileApp(App[int]):
                     if nxt is None:
                         e.clear_pair_draft()
                         self.pair_draft_unchecked = set()
-                        self.place = Place(
-                            screen="pair_list",
-                            column=p.column,
-                            roster_filter=p.roster_filter,
-                            last_pair=p.last_pair,
-                            view_tab="pending",
-                            focused_name=p.column,
-                        )
+                        if e._pending_by_col.get(p.column, 0) == 0:
+                            self._stay_on_roster_after_column(p.column, old_names)
+                        else:
+                            self.place = Place(
+                                screen="pair_list",
+                                column=p.column,
+                                roster_filter=p.roster_filter,
+                                last_pair=p.last_pair,
+                                view_tab="pending",
+                                focused_name=p.column,
+                            )
                     else:
                         self.place.focused_key = nxt
                         page, _ = e.page_index_for_pair_key(nxt)
@@ -2349,7 +2522,11 @@ class ReconcileApp(App[int]):
     def _advance_loaded_sheet(self, *, leave_unaccepted: bool) -> None:
         def _run() -> None:
             try:
+                carried = self.engine.carried_pair
+                if self.place.last_pair:
+                    carried = (self.place.last_pair[1], self.place.last_pair[2])
                 self.engine.advance_sheet(leave_unaccepted=leave_unaccepted)
+                self.engine.carried_pair = carried
                 self.place = Place()
                 self.pair_draft_unchecked = set()
                 self.show_accepted_columns = False
@@ -2788,6 +2965,11 @@ class ReconcileApp(App[int]):
             self.render_all()
             return
         lp = self.place.last_pair
+        using_carried = False
+        if not lp and e.carried_pair and p.column and p.screen == "pair_list":
+            va, vb = e.carried_pair
+            lp = (p.column, va, vb)
+            using_carried = True
         if not lp:
             self.set_error("ERROR: no last pair to repeat")
             self.render_all()
@@ -2816,6 +2998,10 @@ class ReconcileApp(App[int]):
             self.render_all()
             return
         if n == 0:
+            if using_carried:
+                self.set_error("ERROR: that pair is not pending")
+                self.render_all()
+                return
             self.place = e.next_lever_place(Place(column=col, roster_filter=self.place.roster_filter, last_pair=lp))
         else:
             self.pair_draft_unchecked = set()
@@ -2951,6 +3137,10 @@ class ReconcileApp(App[int]):
             e.column_draft = {name for name in e.column_draft if name in still_pending}
         e.remember_grain(("pairs", val_a, val_b, *columns), n)
         if p.screen == "pair_list" and p.column:
+            self.place.last_pair = (p.column, val_a, val_b)
+            if e._pending_by_col.get(p.column, 0) == 0:
+                self._stay_on_roster_after_column(p.column, old_names)
+                return
             if p.pair_val_a == val_a and (p.pair_val_b or "") == val_b:
                 page = 0
                 if nxt_pair:

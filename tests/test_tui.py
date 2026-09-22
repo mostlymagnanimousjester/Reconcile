@@ -14,6 +14,8 @@ from reconcile.tui import (
     ReconcileApp,
     RegexModal,
     SentinelModal,
+    _diff_text,
+    _display_text,
     select_after_accept,
 )
 from tests.xlsxutil import write_csv
@@ -302,7 +304,9 @@ def test_roster_pane_hides_yn_legend(tmp_path: Path):
             assert "y = all pending" not in text
             assert "A:" in text and "a" in text
             assert "B:" in text and "c" in text
-            assert "1 pending" in text
+            assert "1 of 2 pending" in text
+            assert "Enter this pair" in text
+            assert "a this column" in text
 
     asyncio.run(_run())
 
@@ -323,7 +327,8 @@ def test_roster_pane_keeps_sentinel_value(tmp_path: Path):
             assert "const A:" in text
             assert "0" in text
             assert "y = all pending" not in text
-            assert "1 pending" in text
+            assert "1 of 2 pending" in text
+            assert "Enter this pair" in text
 
     asyncio.run(_run())
 
@@ -347,7 +352,8 @@ def test_roster_pane_largest_pair_enter_keeps_list_order(tmp_path: Path):
             pane = str(app.query_one("#pane").render())
             assert "A:" in pane and "aa" in pane
             assert "B:" in pane and "AA" in pane
-            assert "3 pending" in pane
+            assert "3 of 4 pending" in pane
+            assert "Enter this pair" in pane
             assert "zz" not in pane
             assert "largest pending pair" in HELP
             app.query_one("#grid").focus()
@@ -386,7 +392,7 @@ def test_roster_pane_follows_column_and_a_accepts_in_place(tmp_path: Path):
             app.query_one("#grid").focus()
             await pilot.pause()
             pane = str(app.query_one("#pane").render())
-            assert "aa" in pane and "3 pending" in pane
+            assert "aa" in pane and "3 of 4 pending" in pane
             await pilot.press("down")
             await pilot.pause()
             row = app._focused_roster()
@@ -394,8 +400,8 @@ def test_roster_pane_follows_column_and_a_accepts_in_place(tmp_path: Path):
             pane = str(app.query_one("#pane").render())
             assert "ww" in pane
             assert "WW" in pane
-            assert "1 pending" in pane
-            assert "3 pending" not in pane
+            assert "1 of 4 pending" in pane
+            assert "3 of 4 pending" not in pane
             pending_before = app.engine.pending_cells_n()
             await pilot.press("a")
             await pilot.pause()
@@ -403,6 +409,155 @@ def test_roster_pane_follows_column_and_a_accepts_in_place(tmp_path: Path):
             assert app.engine.pending_cells_n() == pending_before - 4
             assert next(r for r in app.engine.roster() if r.name == "beta").pending == 0
             assert next(r for r in app.engine.roster() if r.name == "alpha").pending == 4
+
+    asyncio.run(_run())
+
+
+def test_visible_glyphs_and_first_diff():
+    assert _display_text("") == "(empty)"
+    assert _display_text("a ") == "a·"
+    assert _display_text(" a") == "·a"
+    assert _display_text("a b") == "a b"
+    assert _display_text("a\u00a0b") == "a␣b"
+    assert _display_text("\t") == "→"
+    assert _display_text("a\nb") == "a↵b"
+    marked = _diff_text("A:", "ab", "ac", 1)
+    assert marked.plain == "A: ab"
+    assert any(span.start == 4 and "reverse" in str(span.style) for span in marked.spans)
+
+
+def test_roster_pane_one_pair_names_the_grain(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "this column is one pair" in pane
+            assert "1 pending" in pane
+            assert "Enter this pair" in pane
+            assert "a this column" in pane
+
+    asyncio.run(_run())
+
+
+def test_roster_pane_shows_invisible_characters(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a \n")
+    write_csv(pb, "id,val\n1,a\u00a0\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "·" in pane
+            assert "␣" in pane
+
+    asyncio.run(_run())
+
+
+def test_empty_roster_names_remaining_noun(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,a\n")
+    write_csv(pb, "id,val\n1,a\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert pane.strip() == "pending is 0"
+
+    asyncio.run(_run())
+
+
+def test_unmatched_pane_leads_with_key(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,year,val\n1,2020,only\n")
+    write_csv(pb, "id,year,val\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id", "year"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "a_only"
+            app.render_all()
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert pane.startswith("A-only key")
+            assert "id: 1" in pane
+            assert "year: 2020" in pane
+            assert "a this key · A this side" in pane
+            assert pane.index("id: 1") < pane.index("val:")
+
+    asyncio.run(_run())
+
+
+def test_cell_step_pane_leads_with_key_and_checked(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n2,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n2,Yes\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.start_pair_draft("val", "Y", "Yes")
+            app.place.screen = "cell_step"
+            app.place.column = "val"
+            app.place.pair_val_a = "Y"
+            app.place.pair_val_b = "Yes"
+            app.place.focused_key = ("1",)
+            app.render_all()
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert pane.startswith("id 1")
+            assert "2 of 2 checked · a this cell · y confirm" in pane
+            footer = str(app.query_one("#footer").render())
+            assert "a this cell" not in footer
+
+    asyncio.run(_run())
+
+
+def test_extras_pane_names_suggest_recipe(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val,Status Code\n1,Y,a\n")
+    write_csv(pb, "id,val,status_code\n1,Yes,b\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.place.screen = "extras"
+            app.render_all()
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "Suggest:" in pane
+            assert "Status Code" in pane
+            assert "status_code" in pane
+            assert "rename then r" in pane
+            assert "a this extra" in pane
+
+    asyncio.run(_run())
+
+
+def test_pair_list_pane_names_share_and_keys(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,aa\n2,aa\n3,aa\n4,zz\n")
+    write_csv(pb, "id,val\n1,AA\n2,AA\n3,AA\n4,ZZ\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_drill()
+            await pilot.pause()
+            pane = str(app.query_one("#pane").render())
+            assert "3 of 4 pending · a this pair · A this column · Enter cells" in pane
 
     asyncio.run(_run())
 
@@ -751,8 +906,8 @@ def test_pair_exhausted_returns_to_this_column_pair_list(tmp_path: Path):
             app.query_one("#grid").focus()
             app.action_accept()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
             assert app.engine.pair_draft_col is None
             assert next(r for r in app.engine.roster() if r.name == "Flag").pending == 1
 
@@ -924,11 +1079,13 @@ def test_u_undoes_last_accept_after_next_lever(tmp_path: Path):
             assert app.place.column == "Status"
             app.action_accept()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 0
             app.action_undo()
             await pilot.pause()
+            assert app.place.screen == "pair_list"
+            assert app.place.column == "Status"
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 2
             assert app.engine.last_grain is None
 
@@ -1161,8 +1318,7 @@ def test_u_after_next_lever_prefers_last_grain_even_if_new_pair_has_snaps(tmp_pa
             assert app.place.column == "Status"
             app.action_accept()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
+            assert app.place.screen == "roster"
             assert next(r for r in app.engine.roster() if r.name == "Status").pending == 0
             assert next(r for r in app.engine.roster() if r.name == "Flag").accepted == 1
             app.action_undo()
@@ -1252,8 +1408,12 @@ def test_A_on_zero_pending_pair_list_stays(tmp_path: Path):
             app.query_one("#grid").focus()
             app.action_accept()
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
+            app.place.screen = "pair_list"
+            app.place.column = "Status"
+            app.render_all()
+            await pilot.pause()
             pending = app.engine.pending_total()
             app.action_accept_all()
             await pilot.pause()
@@ -2173,8 +2333,13 @@ def test_a_and_enter_on_empty_pair_list_error(tmp_path: Path):
             app.query_one("#grid").focus()
             await pilot.press("a")
             await pilot.pause()
-            assert app.place.screen == "pair_list"
-            assert app.place.column == "Status"
+            assert app.place.screen == "roster"
+            assert app.place.focused_name == "Flag"
+            app.place.screen = "pair_list"
+            app.place.column = "Status"
+            app.render_all()
+            await pilot.pause()
+            app.query_one("#grid").focus()
             pending = app.engine.pending_total()
             await pilot.press("a")
             await pilot.pause()
@@ -2382,7 +2547,7 @@ def test_overview_enter_opens_a_only(tmp_path: Path):
             shown = str(table.get_row_at(0)[0])
             assert "No pending columns" in shown
             pane = str(app.query_one("#pane").render())
-            assert "i opens" in pane
+            assert "unmatched keys 1 — i" in pane
             app.action_overview()
             await pilot.pause()
             modal = app.screen
@@ -3143,8 +3308,10 @@ def test_pending_displays_match_engine(tmp_path: Path):
             app.action_accept()
             await pilot.pause()
             leftover = next(r.pending for r in app.engine.roster() if r.name == "Status")
+            assert leftover == 0
+            assert app.place.screen == "roster"
             statics = " ".join(str(s.render()) for s in app.query(Static))
-            assert f"{leftover} pending" in statics
+            assert "pending columns 0" in statics
 
     asyncio.run(_run())
 
