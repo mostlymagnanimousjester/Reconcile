@@ -12,11 +12,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
+from textual.coordinate import Coordinate
 from textual.widgets import Button, DataTable, Input, Static
 
 from reconcile.engine import Engine, InTuiError, Place, RosterRow
 from reconcile.insights import CONTEXT_VALUE_SEP, format_context_tuple
-from reconcile.roster import CHECK_HEADERS, roster_visible_insight_headers
+from reconcile.roster import CHECK_COLS, CHECK_HEADERS, roster_visible_insight_headers
 from reconcile.suggest import format_preview, format_why
 
 HELP = """\
@@ -859,12 +860,41 @@ class ContextModal(ModalScreen[ContextPick | None]):
         gids = [str(g) for g in range(10) if name in self.groups.get(g, set())]
         return " · ".join(gids)
 
+    def _context_row_sig(self) -> tuple:
+        return tuple(
+            (n, n in self.selected, self._groups_label(n)) for n in self.names
+        )
+
     def _fill(self) -> None:
         table = self.query_one("#ctx", DataTable)
+        sig = self._context_row_sig()
+        prev = getattr(self, "_fill_sig", None)
+        if (
+            prev == sig
+            and table.row_count == len(self.names)
+            and table.row_count > 0
+        ):
+            return
+        if (
+            isinstance(prev, tuple)
+            and len(prev) == len(sig)
+            and table.row_count == len(sig)
+            and sig
+            and all(prev[i][0] == sig[i][0] for i in range(len(sig)))
+        ):
+            for i, (old, new) in enumerate(zip(prev, sig)):
+                if old == new:
+                    continue
+                _n, on, groups = new
+                table.update_cell_at(Coordinate(i, 0), "[x]" if on else "[ ]")
+                table.update_cell_at(Coordinate(i, 1), groups)
+            self._fill_sig = sig
+            return
+        self._fill_sig = sig
         table.clear()
-        for n in self.names:
-            mark = "[x]" if n in self.selected else "[ ]"
-            table.add_row(mark, self._groups_label(n), n, key=n)
+        for n, on, groups in sig:
+            mark = "[x]" if on else "[ ]"
+            table.add_row(mark, groups, n, key=n)
 
     def _focused_column(self) -> str | None:
         table = self.query_one("#ctx", DataTable)
@@ -1169,6 +1199,8 @@ class ReconcileApp(App[int]):
         self._roster_index = 0
         self._table_keys: list[Any] = []
         self._mounted_screen: str | None = None
+        self._grid_sig: tuple | None = None
+        self._grid_focus: Any = None
         self._page_count = 1
         self._draft_n = 0
         self.show_accepted_columns = False
@@ -1504,6 +1536,8 @@ class ReconcileApp(App[int]):
         return Static("Empty.")
 
     def _remount_work(self, roster_rows: list[RosterRow] | None = None) -> None:
+        self._grid_sig = None
+        self._grid_focus = None
         work = self.query_one("#work", Vertical)
         for child in list(work.children):
             child.remove()
@@ -1542,13 +1576,30 @@ class ReconcileApp(App[int]):
         self._remount_work()
         self._mounted_screen = self._work_layout_key()
 
-    def _sync_columns(self, table: DataTable, headers: list[str]) -> None:
+    def _sync_columns(
+        self, table: DataTable, headers: list[str], *, unchanged: bool = False
+    ) -> bool:
+        """Align headers. Return True when the caller must re-add rows.
+
+        ``unchanged`` leaves an existing grid in place so a no-op render
+        does not ``clear()`` and rebuild every cell.
+        """
         current = [str(col.label) for col in table.columns.values()]
         if current != headers:
             table.clear(columns=True)
             self._add_columns(table, headers)
-        else:
-            table.clear()
+            return True
+        if unchanged and table.row_count > 0:
+            return False
+        table.clear()
+        return True
+
+    def _grid_matches(self, table: DataTable, sig: tuple, focus: Any) -> bool:
+        return table.row_count > 0 and sig == self._grid_sig and focus == self._grid_focus
+
+    def _remember_grid(self, sig: tuple, focus: Any) -> None:
+        self._grid_sig = sig
+        self._grid_focus = focus
 
     def _set_col_title(self, text: str) -> None:
         if self.query("#col-title"):
@@ -1690,6 +1741,122 @@ class ReconcileApp(App[int]):
             return None
         return headers[i]
 
+    def _roster_grid_sig(self, rows: list[RosterRow], headers: list[str]) -> tuple:
+        stable = tuple(
+            (
+                r.kind,
+                r.name,
+                r.side,
+                int(r.pending),
+                r.top_pair_pct,
+                r.equal,
+                r.categorical,
+                bool(r.returned),
+                int(r.accepted),
+                r.sent_a,
+                r.sent_b,
+                r.sent_both,
+                tuple((getattr(r, attr) or "") for _, attr in CHECK_COLS),
+            )
+            for r in rows
+        )
+        drafts = tuple(r.name in self.engine.column_draft for r in rows)
+        return (
+            "roster",
+            stable,
+            drafts,
+            tuple(headers),
+            self.show_accepted_columns,
+            self.place.roster_filter,
+            bool(self.engine.column_draft),
+        )
+
+    def _roster_draft_mark(self, row: RosterRow) -> str | Text:
+        if row.pending <= 0:
+            return ""
+        if row.name in self.engine.column_draft:
+            return Text("[ON]", style="bold")
+        return Text("[off]", style="dim")
+
+    def _roster_name_label(
+        self, row: RosterRow, index: int, first_pending_i: int | None, draft: bool
+    ) -> Text:
+        settled = row.pending <= 0
+        styles: list[str] = []
+        if first_pending_i is not None and index == first_pending_i:
+            styles.append("bold underline")
+        if row.returned:
+            styles.append("reverse")
+        if settled:
+            styles.append("dim")
+        elif draft and row.name in self.engine.column_draft:
+            styles.append("bold")
+        elif draft:
+            styles.append("dim")
+        elif not settled:
+            styles.append("bold")
+        return Text(row.name + "  ", style=" ".join(styles) if styles else "")
+
+    def _move_roster_cursor(
+        self,
+        table: DataTable,
+        rows: list[RosterRow],
+        headers: list[str],
+        prev_header: str | None,
+    ) -> None:
+        idx = 0
+        focus_name = self.place.focused_name
+        for i, row in enumerate(rows):
+            if focus_name and row.name == focus_name:
+                idx = i
+                break
+        col = 0
+        if prev_header and prev_header in headers:
+            col = headers.index(prev_header)
+        table.move_cursor(row=idx, column=col)
+
+    def _try_patch_roster_draft(
+        self,
+        table: DataTable,
+        rows: list[RosterRow],
+        headers: list[str],
+        sig: tuple,
+        focus: Any,
+        prev_header: str | None,
+    ) -> bool:
+        """Update draft marks in place when only those cells changed."""
+        old = self._grid_sig
+        if not (
+            isinstance(old, tuple)
+            and old[0] == "roster"
+            and sig[0] == "roster"
+            and old[1] == sig[1]
+            and old[2] != sig[2]
+            and old[3:] == sig[3:]
+            and table.row_count == len(rows)
+            and rows
+            and "draft" in headers
+        ):
+            return False
+        draft = bool(self.engine.column_draft)
+        first_pending_i = next((i for i, row in enumerate(rows) if row.pending > 0), None)
+        name_i = headers.index("name")
+        draft_i = headers.index("draft")
+        for i, (was, now) in enumerate(zip(old[2], sig[2])):
+            if was == now:
+                continue
+            row = rows[i]
+            table.update_cell_at(Coordinate(i, draft_i), self._roster_draft_mark(row))
+            table.update_cell_at(
+                Coordinate(i, name_i),
+                self._roster_name_label(row, i, first_pending_i, draft),
+            )
+        self._table_keys = list(rows)
+        if focus != self._grid_focus:
+            self._move_roster_cursor(table, rows, headers, prev_header)
+        self._remember_grid(sig, focus)
+        return True
+
     def _fill_roster(
         self, table: DataTable, roster_rows: list[RosterRow] | None = None
     ) -> None:
@@ -1699,7 +1866,14 @@ class ReconcileApp(App[int]):
         current = self._roster_label_headers(table)
         if current and 0 <= table.cursor_column < len(current):
             prev_header = current[table.cursor_column]
-        self._sync_columns(table, headers)
+        sig = self._roster_grid_sig(rows, headers)
+        focus = self.place.focused_name
+        if self._try_patch_roster_draft(table, rows, headers, sig, focus, prev_header):
+            return
+        if not self._sync_columns(
+            table, headers, unchanged=self._grid_matches(table, sig, focus)
+        ):
+            return
         self._table_keys = []
         draft = bool(self.engine.column_draft)
         insight_attrs = roster_visible_insight_headers(rows)
@@ -1714,35 +1888,15 @@ class ReconcileApp(App[int]):
                 empty[headers.index("pending")] = _align("0", ROSTER_NUM_W, "right")
             table.add_row(*empty)
             self._table_keys = [None]
+            self._remember_grid(sig, focus)
             return
         first_pending_i = next((i for i, r in enumerate(rows) if r.pending > 0), None)
         for i, r in enumerate(rows):
             settled = r.pending <= 0
-            if draft:
-                if settled:
-                    check: str | Text = ""
-                elif r.name in self.engine.column_draft:
-                    check = Text("[ON]", style="bold")
-                else:
-                    check = Text("[off]", style="dim")
-            styles = []
-            if first_pending_i is not None and i == first_pending_i:
-                styles.append("bold underline")
-            if r.returned:
-                styles.append("reverse")
-            if settled:
-                styles.append("dim")
-            elif draft and r.name in self.engine.column_draft:
-                styles.append("bold")
-            elif draft:
-                styles.append("dim")
-            elif not settled:
-                styles.append("bold")
-            label = Text(r.name + "  ", style=" ".join(styles) if styles else "")
             cells: list[Any] = []
             if draft:
-                cells.append(check)
-            cells.append(label)
+                cells.append(self._roster_draft_mark(r))
+            cells.append(self._roster_name_label(r, i, first_pending_i, draft))
             if self.show_accepted_columns:
                 status = self._column_status(r)
                 if status == "pending":
@@ -1767,16 +1921,8 @@ class ReconcileApp(App[int]):
             key = (r.kind, r.name, r.side)
             table.add_row(*cells, key=str(key))
             self._table_keys.append(r)
-        idx = 0
-        focus_name = self.place.focused_name
-        for i, r in enumerate(rows):
-            if focus_name and r.name == focus_name:
-                idx = i
-                break
-        col = 0
-        if prev_header and prev_header in headers:
-            col = headers.index(prev_header)
-        table.move_cursor(row=idx, column=col)
+        self._move_roster_cursor(table, rows, headers, prev_header)
+        self._remember_grid(sig, focus)
 
     def _tab_bar(self, current: str, pending_n: int | None = None) -> Horizontal:
         pending_label = f"Pending {pending_n}" if pending_n is not None else "Pending"
@@ -1820,10 +1966,38 @@ class ReconcileApp(App[int]):
         views = self.engine.context_views(col)
         ctx_headers = [v.header for v in views]
         headers = ["A", "B", "pending", *ctx_headers, "hints"]
-        self._sync_columns(table, headers)
         recs, page, pages = self.engine.pair_page(col, self.place.page)
         self.place.page = page
         self._page_count = pages
+        returned_hits: list[bool] = []
+        if recs:
+            returned_hits = self.engine.pairs_returned_mask(
+                col, [(rec["val_a"], rec["val_b"]) for rec in recs]
+            )
+        body: list[tuple] = []
+        focus_i = 0
+        want_a, want_b = self.place.pair_val_a, self.place.pair_val_b
+        for i, rec in enumerate(recs):
+            va, vb = rec["val_a"], rec["val_b"]
+            tags = ", ".join(self.engine.cell_insights(va, vb))
+            returned = bool(returned_hits[i]) if i < len(returned_hits) else False
+            ctx = tuple(
+                _truncate_on_sep(str(rec.get(v.pair_key) or ""), CTX_CELL_MAX) for v in views
+            )
+            body.append((va, vb, int(rec["n"]), ctx, returned, tags))
+            if want_a is not None and va == want_a and vb == want_b:
+                focus_i = i
+        if recs:
+            focus = (recs[focus_i]["val_a"], recs[focus_i]["val_b"])
+        else:
+            focus = (self.place.pair_val_a, self.place.pair_val_b)
+        sig = ("pair", col, page, tuple(headers), tuple(body))
+        if not self._sync_columns(
+            table, headers, unchanged=self._grid_matches(table, sig, focus)
+        ):
+            if recs:
+                self.place.pair_val_a, self.place.pair_val_b = focus
+            return
         self._table_keys = []
         if not recs:
             table.add_row(
@@ -1834,35 +2008,24 @@ class ReconcileApp(App[int]):
                 "",
             )
             self._table_keys = [None]
+            self._remember_grid(sig, focus)
             return
-        focus = 0
-        want_a, want_b = self.place.pair_val_a, self.place.pair_val_b
-        returned_hits = self.engine.pairs_returned_mask(
-            col, [(rec["val_a"], rec["val_b"]) for rec in recs]
-        )
         for i, rec in enumerate(recs):
-            va, vb = rec["val_a"], rec["val_b"]
-            tags = ", ".join(self.engine.cell_insights(va, vb))
-            returned = bool(returned_hits[i]) if i < len(returned_hits) else False
+            va, vb, n, ctx, returned, tags = body[i]
             style = "reverse" if returned else "bold"
             label_a = Text(_ellipsis(_display_text(va), PAIR_AB_MAX), style=style)
             label_b = Text(_ellipsis(_display_text(vb), PAIR_AB_MAX), style=style)
-            ctx_cells = [
-                _truncate_on_sep(str(rec.get(v.pair_key) or ""), CTX_CELL_MAX) for v in views
-            ]
             table.add_row(
                 label_a,
                 label_b,
-                _align(str(int(rec["n"])), PAIR_PENDING_W, "right"),
-                *ctx_cells,
+                _align(str(n), PAIR_PENDING_W, "right"),
+                *ctx,
                 tags,
             )
             self._table_keys.append(rec)
-            if want_a is not None and va == want_a and vb == want_b:
-                focus = i
-        table.move_cursor(row=focus)
-        rec = recs[focus]
-        self.place.pair_val_a, self.place.pair_val_b = rec["val_a"], rec["val_b"]
+        table.move_cursor(row=focus_i)
+        self.place.pair_val_a, self.place.pair_val_b = focus
+        self._remember_grid(sig, focus)
 
     def _move_cursor_to_focused_key(self, table: DataTable) -> None:
         want = self.place.focused_key
@@ -1920,6 +2083,98 @@ class ReconcileApp(App[int]):
         self._refresh_tab_bar(tab_current, pending_n)
         self._fill_cell_rows(table, col)
 
+    def _cell_grid_sig(
+        self,
+        col: str,
+        tab: str,
+        page: int,
+        headers: list[str],
+        recs: list[dict[str, Any]],
+        views: list,
+        draft: bool,
+    ) -> tuple[tuple, Any]:
+        stable = []
+        flags = []
+        for rec in recs:
+            key = self.engine.key_of(rec)
+            ctx = tuple(
+                (
+                    tuple(str(rec.get(f"{m}__ctx_a", "") or "") for m in v.members),
+                    tuple(str(rec.get(f"{m}__ctx_b", "") or "") for m in v.members),
+                )
+                for v in views
+            )
+            stable.append(
+                (key, rec.get("val_a"), rec.get("val_b"), bool(rec.get("_returned")), ctx)
+            )
+            if draft:
+                flags.append(key not in self.pair_draft_unchecked)
+            else:
+                flags.append(None)
+        sig = (
+            "cell",
+            self.place.screen,
+            col,
+            tab,
+            page,
+            tuple(headers),
+            tuple(stable),
+            tuple(flags),
+        )
+        return sig, self.place.focused_key
+
+    def _try_patch_cell_draft(
+        self,
+        table: DataTable,
+        recs: list[dict[str, Any]],
+        headers: list[str],
+        sig: tuple,
+        focus: Any,
+        draft: bool,
+    ) -> bool:
+        """Update the sel mark (and non-focus A style) when only checks changed."""
+        old = self._grid_sig
+        if not (
+            draft
+            and isinstance(old, tuple)
+            and old[0] == "cell"
+            and sig[0] == "cell"
+            and old[1:7] == sig[1:7]
+            and old[7] != sig[7]
+            and "sel" in headers
+            and table.row_count == len(recs)
+            and recs
+        ):
+            return False
+        focus_i = 0
+        if self.place.focused_key:
+            for i, rec in enumerate(recs):
+                if self.engine.key_of(rec) == self.place.focused_key:
+                    focus_i = i
+                    break
+        a_i = headers.index("A")
+        for i, (was, now) in enumerate(zip(old[7], sig[7])):
+            if was == now:
+                continue
+            rec = recs[i]
+            on = bool(now)
+            mark = Text("[ON]", style="bold") if on else Text("[off]", style="dim")
+            table.update_cell_at(Coordinate(i, 0), mark)
+            if i != focus_i:
+                returned = bool(rec.get("_returned"))
+                table.update_cell_at(
+                    Coordinate(i, a_i),
+                    Text(
+                        _display_text(rec["val_a"]),
+                        style="reverse" if returned or on else "bold",
+                    ),
+                )
+        self._table_keys = list(recs)
+        if focus != self._grid_focus:
+            self._move_cursor_to_focused_key(table)
+        self._remember_grid(sig, focus)
+        return True
+
     def _fill_cell_rows(self, table: DataTable, col: str) -> None:
         tab = self.place.view_tab
         views = self.engine.context_views(col)
@@ -1933,24 +2188,34 @@ class ReconcileApp(App[int]):
             *ctx_headers,
             "hints",
         ]
-        self._sync_columns(table, headers)
-        self._table_keys = []
         if on_cell_step:
             va, vb = self.place.pair_val_a or "", self.place.pair_val_b or ""
             self._follow_focused_key_page(self.engine.page_index_for_pair_key)
             recs, page, pages = self.engine.pair_cells_page(col, va, vb, self.place.page)
-            self.place.page = page
-            self._page_count = pages
-            if not recs:
-                table.add_row(*([""] * (len(headers) - 1)), "(none)")
-                self._table_keys = [None]
-                return
-            focus_i = 0
-            if self.place.focused_key:
-                for i, rec in enumerate(recs):
-                    if self.engine.key_of(rec) == self.place.focused_key:
-                        focus_i = i
-                        break
+        else:
+            recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
+        self.place.page = page
+        self._page_count = pages
+        sig, focus = self._cell_grid_sig(col, tab, page, headers, recs, views, draft)
+        if self._try_patch_cell_draft(table, recs, headers, sig, focus, draft):
+            return
+        if not self._sync_columns(
+            table, headers, unchanged=self._grid_matches(table, sig, focus)
+        ):
+            return
+        self._table_keys = []
+        if not recs:
+            table.add_row(*([""] * (len(headers) - 1)), "(none)")
+            self._table_keys = [None]
+            self._remember_grid(sig, focus)
+            return
+        focus_i = 0
+        if self.place.focused_key:
+            for i, rec in enumerate(recs):
+                if self.engine.key_of(rec) == self.place.focused_key:
+                    focus_i = i
+                    break
+        if on_cell_step:
             for i, rec in enumerate(recs):
                 key = self.engine.key_of(rec)
                 returned = bool(rec.get("_returned"))
@@ -1975,20 +2240,8 @@ class ReconcileApp(App[int]):
                 table.add_row(*row_cells)
                 self._table_keys.append(rec)
             self._move_cursor_to_focused_key(table)
+            self._remember_grid(sig, focus)
             return
-        recs, page, pages = self.engine.cells_for_tab(col, tab, self.place.page)
-        self.place.page = page
-        self._page_count = pages
-        if not recs:
-            table.add_row(*([""] * (len(headers) - 1)), "(none)")
-            self._table_keys = [None]
-            return
-        focus_i = 0
-        if self.place.focused_key:
-            for i, rec in enumerate(recs):
-                if self.engine.key_of(rec) == self.place.focused_key:
-                    focus_i = i
-                    break
         for i, rec in enumerate(recs):
             tags = ""
             if rec.get("val_a") != rec.get("val_b"):
@@ -2006,6 +2259,7 @@ class ReconcileApp(App[int]):
             table.add_row(*key_cells, va_t, vb_t, *ctx_cells, tags)
             self._table_keys.append(rec)
         self._move_cursor_to_focused_key(table)
+        self._remember_grid(sig, focus)
 
     def _unmatched(self, side: str) -> Vertical:
         table: DataTable = DataTable(cursor_type="row", id="grid")

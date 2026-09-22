@@ -39,10 +39,21 @@ def _ensure_unmatched_snap_frames(eng: Engine) -> None:
 
 
 def _split_on_unique(
-    left: pl.DataFrame, snaps: pl.DataFrame, on: list[str]
+    left: pl.DataFrame,
+    snaps: pl.DataFrame,
+    on: list[str],
+    *,
+    already_unique: bool = False,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Left-join ``left`` to unique snaps. Pending order is left-frame order."""
-    marked = snaps.select(on).unique().with_columns(pl.lit(True).alias("_snap"))
+    """Left-join ``left`` to snaps. Pending order is left-frame order.
+
+    Cell snaps pass ``already_unique`` so the growing snap table is not
+    re-uniqued. Unmatched snaps (including schema-drift, which never reaches
+    here) still unique their own frame.
+    """
+    base = snaps.select(on)
+    marked = base if already_unique else base.unique()
+    marked = marked.with_columns(pl.lit(True).alias("_snap"))
     joined = left.join(marked, on=on, how="left")
     pending = joined.filter(pl.col("_snap").is_null()).drop("_snap")
     accepted = joined.filter(pl.col("_snap").is_not_null()).drop("_snap")
@@ -52,9 +63,12 @@ def _split_on_unique(
 def _split_cells(eng: Engine) -> tuple[pl.DataFrame, pl.DataFrame]:
     if eng.mismatches.is_empty() or eng.cell_snaps.is_empty():
         return eng.mismatches, eng.mismatches.head(0)
-    return _split_on_unique(
-        eng.mismatches, eng.cell_snaps, [*eng.keys, "column", "val_a", "val_b"]
-    )
+    on = [*eng.keys, "column", "val_a", "val_b"]
+    keys = eng._cell_snap_keys
+    if keys.is_empty() and not eng.cell_snaps.is_empty():
+        keys = eng.cell_snaps.select(on).unique()
+        eng._cell_snap_keys = keys
+    return _split_on_unique(eng.mismatches, keys, on, already_unique=True)
 
 
 def _split_unmatched(eng: Engine, side: str) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -111,6 +125,11 @@ def _vstack_cell_snaps(
             new
             if eng.cell_snaps.is_empty()
             else pl.concat([eng.cell_snaps, new], how="vertical")
+        )
+        eng._cell_snap_keys = (
+            new
+            if eng._cell_snap_keys.is_empty()
+            else pl.concat([eng._cell_snap_keys, new], how="vertical")
         )
     apply_snapshots(eng, dirty_columns=dirty_columns)
     return n
@@ -245,9 +264,15 @@ def accept_extra(eng: Engine, side: str, name: str) -> int:
     return 1
 
 
+def _drop_cell_snaps(eng: Engine, expr: pl.Expr) -> None:
+    """Remove snap rows matching ``expr`` from the store and the key cache."""
+    eng.cell_snaps = eng.cell_snaps.filter(~expr)
+    eng._cell_snap_keys = eng._cell_snap_keys.filter(~expr)
+
+
 def undo_column(eng: Engine, column: str) -> int:
     before = eng.cell_snaps.height
-    eng.cell_snaps = eng.cell_snaps.filter(pl.col("column") != column)
+    _drop_cell_snaps(eng, pl.col("column") == column)
     apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
 
@@ -255,19 +280,18 @@ def undo_column(eng: Engine, column: str) -> int:
 def undo_cell(eng: Engine, key: tuple[str, ...], column: str) -> int:
     before = eng.cell_snaps.height
     expr = (pl.col("column") == column) & _key_eq_expr(eng.keys, key)
-    eng.cell_snaps = eng.cell_snaps.filter(~expr)
+    _drop_cell_snaps(eng, expr)
     apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
 
 
 def undo_pair(eng: Engine, column: str, val_a: str, val_b: str) -> int:
     before = eng.cell_snaps.height
-    eng.cell_snaps = eng.cell_snaps.filter(
-        ~(
-            (pl.col("column") == column)
-            & (pl.col("val_a") == val_a)
-            & (pl.col("val_b") == val_b)
-        )
+    _drop_cell_snaps(
+        eng,
+        (pl.col("column") == column)
+        & (pl.col("val_a") == val_a)
+        & (pl.col("val_b") == val_b),
     )
     apply_snapshots(eng, dirty_columns={column})
     return before - eng.cell_snaps.height
