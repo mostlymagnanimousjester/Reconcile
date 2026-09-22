@@ -31,6 +31,21 @@ def invalidate_equal_caches(eng: Engine) -> None:
     eng._empty_matched_sentinel = None
 
 
+def invalidate_unmatched_key_caches(
+    eng: Engine, *, accepted: bool = True, returned: bool = True
+) -> None:
+    """Drop cached unmatched accepted / returned key frames.
+
+    Rebuilt on the next ``unmatched_page``. Snapshot apply and
+    ``refresh_derived`` clear both. ``refresh`` clears returned keys after
+    it assigns ``returned_keys_df``.
+    """
+    if accepted:
+        eng._unmatched_accepted_keys = None
+    if returned:
+        eng._unmatched_returned_keys = None
+
+
 def invalidate_page_caches(eng: Engine, dirty_columns: set[str] | None) -> None:
     """Drop pair-ctx / tab / pair-cell / union caches.
 
@@ -309,15 +324,24 @@ def _attach_pair_context_summaries(
     return out
 
 
-def _pair_ctx_frame(eng: Engine, column: str, page: int) -> pl.DataFrame:
-    """Page-scoped pair context. Outer key stays the column for pop()."""
+def _pair_ctx_frame(
+    eng: Engine, column: str, page: int, groups: pl.DataFrame | None = None
+) -> pl.DataFrame:
+    """Page-scoped pair context. Outer key stays the column for pop().
+
+    ``groups`` is the per-column slice from ``pair_groups`` so the caller
+    does not filter the wide frame a second time.
+    """
     col_cache = eng._pair_ctx_by_col.get(column)
     if col_cache is not None and page in col_cache:
         return col_cache[page]
-    groups = eng.pair_groups(column)
+    if groups is None:
+        groups = eng.pair_groups(column)
     total = groups.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
+    if col_cache is not None and page in col_cache:
+        return col_cache[page]
     chunk = groups.slice(page * PAGE_SIZE, PAGE_SIZE)
     computed = _attach_pair_context_summaries(eng, column, chunk)
     if col_cache is None:
@@ -332,7 +356,7 @@ def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]]
     total = groups.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
-    chunk = _pair_ctx_frame(eng, column, page)
+    chunk = _pair_ctx_frame(eng, column, page, groups)
     return _page_dicts(chunk), page, pages
 
 
@@ -482,10 +506,56 @@ def _attach_cell_returned(
     )
 
 
+def _unmatched_accepted_keys(eng: Engine, side: str) -> pl.DataFrame:
+    cache = eng._unmatched_accepted_keys
+    if cache is None:
+        cache = {}
+        eng._unmatched_accepted_keys = cache
+    hit = cache.get(side)
+    if hit is not None:
+        return hit
+    accepted = eng.accepted_a_only if side == "A" else eng.accepted_b_only
+    if accepted.is_empty():
+        frame = _empty_df({k: pl.Utf8 for k in eng.keys}).with_columns(
+            pl.lit(True).alias("_accepted")
+        )
+    else:
+        frame = (
+            accepted.select(eng.keys)
+            .unique()
+            .with_columns(pl.lit(True).alias("_accepted"))
+        )
+    cache[side] = frame
+    return frame
+
+
+def _unmatched_returned_keys(eng: Engine, side: str) -> pl.DataFrame:
+    cache = eng._unmatched_returned_keys
+    if cache is None:
+        cache = {}
+        eng._unmatched_returned_keys = cache
+    hit = cache.get(side)
+    if hit is not None:
+        return hit
+    ret = eng.returned_keys_df
+    if ret.is_empty():
+        frame = _empty_df({k: pl.Utf8 for k in eng.keys}).with_columns(
+            pl.lit(True).alias("_returned")
+        )
+    else:
+        frame = (
+            ret.filter(pl.col("side") == side)
+            .select(eng.keys)
+            .unique()
+            .with_columns(pl.lit(True).alias("_returned"))
+        )
+    cache[side] = frame
+    return frame
+
+
 def unmatched_page(
     eng: Engine, side: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
-    accepted = eng.accepted_a_only if side == "A" else eng.accepted_b_only
     frame = eng.a_only if side == "A" else eng.b_only
     total = frame.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -493,24 +563,17 @@ def unmatched_page(
     chunk = frame.slice(page * PAGE_SIZE, PAGE_SIZE)
     if chunk.is_empty():
         return [], page, pages
-    if accepted.is_empty():
+    acc_keys = _unmatched_accepted_keys(eng, side)
+    if acc_keys.is_empty():
         chunk = chunk.with_columns(pl.lit(False).alias("_accepted"))
     else:
-        chunk = chunk.join(
-            accepted.select(eng.keys).unique().with_columns(pl.lit(True).alias("_accepted")),
-            on=eng.keys,
-            how="left",
-        ).with_columns(pl.col("_accepted").fill_null(False))
-    ret = eng.returned_keys_df
-    if ret.is_empty():
+        chunk = chunk.join(acc_keys, on=eng.keys, how="left").with_columns(
+            pl.col("_accepted").fill_null(False)
+        )
+    ret_keys = _unmatched_returned_keys(eng, side)
+    if ret_keys.is_empty():
         chunk = chunk.with_columns(pl.lit(False).alias("_returned"))
     else:
-        ret_keys = (
-            ret.filter(pl.col("side") == side)
-            .select(eng.keys)
-            .unique()
-            .with_columns(pl.lit(True).alias("_returned"))
-        )
         chunk = chunk.join(ret_keys, on=eng.keys, how="left").with_columns(
             pl.col("_returned").fill_null(False)
         )

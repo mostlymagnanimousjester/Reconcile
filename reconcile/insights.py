@@ -520,6 +520,66 @@ def xlsdate_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
     return ra.is_not_null() & rb.is_not_null() & (ra == rb) & (sa.is_not_null() | sb.is_not_null())
 
 
+def roster_stat_date_exprs(
+    col_a: str = "val_a", col_b: str = "val_b"
+) -> tuple[pl.Expr, pl.Expr]:
+    """One calendar parse per side for the roster stats plan.
+
+    Pair and cell hints keep ``same_date_expr`` / ``xlsdate_expr``.
+    """
+    return (
+        unambiguous_date_expr(col_a).alias("_date_a"),
+        unambiguous_date_expr(col_b).alias("_date_b"),
+    )
+
+
+def roster_stat_serial_exprs(
+    col_a: str = "val_a",
+    col_b: str = "val_b",
+    date_a: str = "_date_a",
+    date_b: str = "_date_b",
+) -> tuple[pl.Expr, pl.Expr]:
+    """Excel serials from dates already materialized on the row."""
+
+    def _one(col: str, date_col: str, alias: str) -> pl.Expr:
+        raw = pl.col(col)
+        is_serial = raw.str.contains(r"^[0-9]+$")
+        n = raw.cast(pl.Int64, strict=False)
+        in_range = n.is_not_null() & (n >= 0) & (n <= _SERIAL_MAX)
+        not_date = pl.col(date_col).is_null()
+        return (
+            pl.when(is_serial & in_range & not_date)
+            .then(pl.lit(_EXCEL_EPOCH) + pl.duration(days=n))
+            .otherwise(pl.lit(None))
+            .alias(alias)
+        )
+
+    return _one(col_a, date_a, "_ser_a"), _one(col_b, date_b, "_ser_b")
+
+
+def same_date_from_materialized(
+    date_a: str = "_date_a", date_b: str = "_date_b"
+) -> pl.Expr:
+    da = pl.col(date_a)
+    db = pl.col(date_b)
+    return da.is_not_null() & db.is_not_null() & (da == db)
+
+
+def xlsdate_from_materialized(
+    date_a: str = "_date_a",
+    date_b: str = "_date_b",
+    ser_a: str = "_ser_a",
+    ser_b: str = "_ser_b",
+) -> pl.Expr:
+    da = pl.col(date_a)
+    db = pl.col(date_b)
+    sa = pl.col(ser_a)
+    sb = pl.col(ser_b)
+    ra = pl.coalesce(da, sa)
+    rb = pl.coalesce(db, sb)
+    return ra.is_not_null() & rb.is_not_null() & (ra == rb) & (sa.is_not_null() | sb.is_not_null())
+
+
 def inws_expr(col_a: str = "val_a", col_b: str = "val_b") -> pl.Expr:
     return pl.col(col_a).str.replace_all(r"\s+", " ") == pl.col(col_b).str.replace_all(r"\s+", " ")
 

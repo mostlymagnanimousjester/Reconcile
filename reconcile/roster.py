@@ -19,8 +19,10 @@ from reconcile.insights import (
     inws_expr,
     money_expr,
     pct_expr,
-    same_date_expr,
-    xlsdate_expr,
+    roster_stat_date_exprs,
+    roster_stat_serial_exprs,
+    same_date_from_materialized,
+    xlsdate_from_materialized,
 )
 
 if TYPE_CHECKING:
@@ -68,12 +70,18 @@ def refresh_derived(
     """Recompute eager derived caches after snaps or a full rebuild.
 
     Fast maps (pending / pairs / accepted / mismatch) run every time so
-    footer counts stay correct. Insight stats and the roster row list wait
-    until the first ``roster()`` / ``column_roster()`` after invalidation.
+    footer counts stay correct. Insight stats recompute only for dirty
+    columns when the cache is already warm. A full reload (``None``) drops
+    the cache so the next roster paint computes every column. The roster
+    row list still waits for the first ``roster()`` / ``column_roster()``.
     """
     _sync_pair_draft_cache(eng, dirty_columns=dirty_columns)
     _invalidate_page_caches(eng, dirty_columns)
     _roster_fast_maps(eng)
+    _sync_insight_stats(eng, dirty_columns)
+    from reconcile.pages import invalidate_unmatched_key_caches
+
+    invalidate_unmatched_key_caches(eng)
     eng._roster_cache = []
     eng._roster_cache_valid = False
 
@@ -133,6 +141,38 @@ def _empty_pair_groups() -> pl.DataFrame:
     )
 
 
+def _pair_groups_by_column(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """Per-column slices in the same order as the wide pair frame."""
+    if frame.is_empty():
+        return {}
+    parts = frame.partition_by("column", maintain_order=True, as_dict=True)
+    out: dict[str, pl.DataFrame] = {}
+    for key, part in parts.items():
+        col = key[0] if isinstance(key, tuple) else key
+        out[str(col)] = part.select("val_a", "val_b", "n")
+    return out
+
+
+def returned_names_in_import_order(
+    comparable: list[str], uniq: pl.DataFrame
+) -> list[str]:
+    """Returned column names in table A import order.
+
+    ``uniq`` is the distinct returned ``column`` values. Membership is one
+    semi-join, not a Python loop of per-name filters.
+    """
+    if not comparable or uniq.is_empty():
+        return []
+    order = pl.DataFrame(
+        {"column": comparable, "_ord": list(range(len(comparable)))}
+    )
+    hit = order.join(uniq, on="column", how="semi").sort("_ord")
+    if hit.is_empty():
+        return []
+    col = hit.get_column("column")
+    return [str(col[i]) for i in range(hit.height)]
+
+
 def _roster_fast_maps(eng: Engine) -> None:
     """Pending / pair groups / accepted / mismatch — needed immediately after accept."""
     pending_lf = eng.pending_cells.lazy()
@@ -177,10 +217,9 @@ def _roster_fast_maps(eng: Engine) -> None:
             top[str(rec["column"])] = (str(rec["val_a"]), str(rec["val_b"]), int(rec["n"]))
     returned: set[str] = set()
     if not eng.returned_cells_df.is_empty():
-        uniq = eng.returned_cells_df.select("column").unique()
-        for col in eng.comparable:
-            if uniq.filter(pl.col("column") == col).height > 0:
-                returned.add(col)
+        uniq = eng.returned_cells_df.select(pl.col("column").cast(pl.Utf8)).unique()
+        returned = set(returned_names_in_import_order(list(eng.comparable), uniq))
+    eng._pair_groups_by_col = _pair_groups_by_column(eng._pair_groups_df)
     eng._pending_by_col = pending_by_col
     eng._accepted_by_col = accepted_by_col
     eng._mismatch_n = mismatch_n
@@ -188,12 +227,9 @@ def _roster_fast_maps(eng: Engine) -> None:
     eng._returned_columns = returned
 
 
-def _roster_insight_stats(eng: Engine) -> dict[str, dict[str, Any]]:
-    """Display-only insight flags. Does not change counts or pairing."""
-    if eng.pending_cells.is_empty():
-        eng._col_stats = {}
-        return eng._col_stats
-    stats_lf = eng.pending_cells.lazy().group_by("column").agg(
+def _insight_stats_agg() -> list[pl.Expr]:
+    """Same ``.all()`` predicates as the pre-cache roster, dates parsed once."""
+    return [
         pl.len().alias("pending"),
         (pl.col("val_a").str.strip_chars() == pl.col("val_b").str.strip_chars()).all().alias("trim"),
         (pl.col("val_a").str.to_lowercase() == pl.col("val_b").str.to_lowercase()).all().alias("case"),
@@ -217,49 +253,112 @@ def _roster_insight_stats(eng: Engine) -> dict[str, dict[str, Any]]:
             | (pl.col("val_a") != pl.col("val_a").str.strip_chars())
             | (pl.col("val_b") != pl.col("val_b").str.strip_chars())
         ).all().alias("ws"),
-        same_date_expr().all().alias("same_date"),
+        same_date_from_materialized().all().alias("same_date"),
         money_expr().all().alias("money"),
         pct_expr().all().alias("pct"),
         idpad_expr().all().alias("idpad"),
         bool_expr().all().alias("bool"),
         acctneg_expr().all().alias("acctneg"),
-        xlsdate_expr().all().alias("xlsdate"),
+        xlsdate_from_materialized().all().alias("xlsdate"),
         inws_expr().all().alias("inws"),
         dash_expr().all().alias("dash"),
         fold_expr().all().alias("fold"),
         pl.col("val_a").n_unique().alias("n_a"),
         pl.col("val_b").n_unique().alias("n_b"),
+    ]
+
+
+def _compute_insight_stats(
+    eng: Engine, columns: set[str] | None
+) -> dict[str, dict[str, Any]]:
+    """Display-only insight flags for every pending column, or ``columns``."""
+    if eng.pending_cells.is_empty():
+        return {}
+    lf = eng.pending_cells.lazy()
+    if columns is not None:
+        if not columns:
+            return {}
+        lf = lf.filter(pl.col("column").is_in(list(columns)))
+    stats_df = (
+        lf.with_columns(*roster_stat_date_exprs())
+        .with_columns(*roster_stat_serial_exprs())
+        .group_by("column")
+        .agg(*_insight_stats_agg())
+        .collect()
     )
-    stats_df = stats_lf.collect()
-    if not stats_df.is_empty():
-        small = stats_df.filter((pl.col("n_a") <= 30) & (pl.col("n_b") <= 30))
-        if small.is_empty():
-            stats_df = stats_df.with_columns(pl.lit(None, dtype=pl.UInt32).alias("n_ab"))
-        else:
-            names = small.get_column("column").to_list()
-            nab = (
-                eng.pending_cells.filter(pl.col("column").is_in(names))
-                .group_by("column")
-                .agg(
-                    pl.col("val_a").unique().sort().alias("ua"),
-                    pl.col("val_b").unique().sort().alias("ub"),
-                )
-                .with_columns(
-                    pl.col("ua")
-                    .list.concat(pl.col("ub"))
-                    .list.unique()
-                    .list.len()
-                    .alias("n_ab"),
-                )
-                .select("column", "n_ab")
+    if stats_df.is_empty():
+        return {}
+    small = stats_df.filter((pl.col("n_a") <= 30) & (pl.col("n_b") <= 30))
+    if small.is_empty():
+        stats_df = stats_df.with_columns(pl.lit(None, dtype=pl.UInt32).alias("n_ab"))
+    else:
+        names = small.get_column("column")
+        nab = (
+            eng.pending_cells.filter(pl.col("column").is_in(names.implode()))
+            .group_by("column")
+            .agg(
+                pl.col("val_a").unique().sort().alias("ua"),
+                pl.col("val_b").unique().sort().alias("ub"),
             )
-            stats_df = stats_df.join(nab, on="column", how="left")
+            .with_columns(
+                pl.col("ua")
+                .list.concat(pl.col("ub"))
+                .list.unique()
+                .list.len()
+                .alias("n_ab"),
+            )
+            .select("column", "n_ab")
+        )
+        stats_df = stats_df.join(nab, on="column", how="left")
     col_stats: dict[str, dict[str, Any]] = {}
-    if not stats_df.is_empty():
-        for rec in stats_df.to_dicts():
-            col_stats[rec["column"]] = rec
-    eng._col_stats = col_stats
+    for rec in stats_df.to_dicts():
+        col_stats[rec["column"]] = rec
     return col_stats
+
+
+def _sync_insight_stats(eng: Engine, dirty_columns: set[str] | None) -> None:
+    """Keep ``_col_stats`` across roster invalidation.
+
+    ``None`` is a full reload: recompute when the cache is warm, otherwise
+    leave it cold for the first roster paint. A dirty set recomputes those
+    columns and drops keys whose pending went to 0.
+    """
+    if dirty_columns is None:
+        if eng._col_stats_warm:
+            eng._col_stats = _compute_insight_stats(eng, None)
+            eng._col_stats_warm = True
+        else:
+            eng._col_stats = {}
+            eng._col_stats_warm = False
+        return
+    if not eng._col_stats_warm:
+        return
+    pending = eng._pending_by_col
+    for col in list(eng._col_stats):
+        if pending.get(col, 0) <= 0:
+            del eng._col_stats[col]
+    still = {c for c in dirty_columns if pending.get(c, 0) > 0}
+    for col in dirty_columns:
+        if col not in still:
+            eng._col_stats.pop(col, None)
+    if still:
+        eng._col_stats.update(_compute_insight_stats(eng, still))
+
+
+def _roster_insight_stats(eng: Engine) -> dict[str, dict[str, Any]]:
+    """Merge cached per-column stats. First paint computes whatever is missing."""
+    if not eng._col_stats_warm:
+        eng._col_stats = _compute_insight_stats(eng, None)
+        eng._col_stats_warm = True
+        return eng._col_stats
+    missing = {
+        col
+        for col in eng.comparable
+        if eng._pending_by_col.get(col, 0) > 0 and col not in eng._col_stats
+    }
+    if missing:
+        eng._col_stats.update(_compute_insight_stats(eng, missing))
+    return eng._col_stats
 
 
 def _roster_agg_maps(
@@ -295,6 +394,24 @@ CHECK_COLS = (
 )
 CHECK_HEADERS = {h for h, _ in CHECK_COLS}
 CHECK_ATTR = {h: attr for h, attr in CHECK_COLS}
+# RosterRow attribute → stats key from the ``.all()`` aggregation.
+CHECK_STAT = {
+    "trim": "trim",
+    "case": "case",
+    "trim_case": "both",
+    "num": "numeric",
+    "ws": "ws",
+    "date": "same_date",
+    "money": "money",
+    "pct": "pct",
+    "idpad": "idpad",
+    "bool": "bool",
+    "acctneg": "acctneg",
+    "xlsdate": "xlsdate",
+    "inws": "inws",
+    "dash": "dash",
+    "fold": "fold",
+}
 
 
 def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str]]:
@@ -311,15 +428,28 @@ def roster_visible_insight_headers(rows: list[RosterRow]) -> list[tuple[str, str
 
 
 def check_column_pending_hits(eng: Engine, header: str) -> list[str]:
-    """Pending comparable names whose cell in that check column is y."""
+    """Pending comparable names whose cell in that check column is y.
+
+    Uses warm ``_col_stats`` when present. A cold cache computes stats
+    instead of building every roster row to read one check.
+    """
     attr = CHECK_ATTR.get(header)
     if attr is None:
         return []
-    return [
-        r.name
-        for r in visible_column_roster(eng)
-        if getattr(r, attr) == "y"
-    ]
+    stat_key = CHECK_STAT.get(attr)
+    if stat_key is None:
+        return []
+    stats = _roster_insight_stats(eng)
+    hits: list[str] = []
+    for col in eng.comparable:
+        if eng._pending_by_col.get(col, 0) <= 0:
+            continue
+        st = stats.get(col)
+        if not st:
+            continue
+        if bool(st[stat_key]):
+            hits.append(col)
+    return hits
 
 
 def _yn(flag: bool) -> str:
@@ -481,6 +611,26 @@ def _first_pending_key(eng: Engine, side: str) -> tuple[str, ...] | None:
     return tuple(str(rec[k]) for k in eng.keys)
 
 
+def _cached_pair_n(eng: Engine, col: str, va: str, vb: str) -> int | None:
+    """Pending pair height from pair groups or the pair-cell cache.
+
+    ``None`` means neither cache can answer (caller may scan).
+    """
+    by_col = getattr(eng, "_pair_groups_by_col", None)
+    if isinstance(by_col, dict):
+        groups = by_col.get(col)
+        if groups is None or groups.is_empty():
+            return 0
+        hit = groups.filter((pl.col("val_a") == va) & (pl.col("val_b") == vb)).select("n")
+        if hit.is_empty():
+            return 0
+        return int(hit.item())
+    cached = getattr(eng, "_pair_cells_cache", {}).get((col, va, vb))
+    if cached is not None:
+        return int(cached.height)
+    return None
+
+
 def place_from_last_pair(
     eng: Engine, last_pair: tuple[str, str, str] | None, roster_filter: str = ""
 ) -> Place | None:
@@ -489,9 +639,11 @@ def place_from_last_pair(
     col, va, vb = last_pair
     if col not in eng.comparable:
         return None
-    n = eng.pending_cells.filter(
-        (pl.col("column") == col) & (pl.col("val_a") == va) & (pl.col("val_b") == vb)
-    ).height
+    n = _cached_pair_n(eng, col, va, vb)
+    if n is None:
+        n = eng.pending_cells.filter(
+            (pl.col("column") == col) & (pl.col("val_a") == va) & (pl.col("val_b") == vb)
+        ).height
     if n == 0:
         return None
     page, _ = eng.page_index_for_pair(col, va, vb)

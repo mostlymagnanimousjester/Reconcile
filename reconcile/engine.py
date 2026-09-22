@@ -136,6 +136,7 @@ class Engine:
         self.b = side_b
         self.keys = keys
         self.cell_snaps: pl.DataFrame = _empty_cell_snaps(keys)
+        self._cell_snap_keys: pl.DataFrame = _empty_cell_snaps(keys)
         self.unmatched_snaps_a: pl.DataFrame | None = None
         self.unmatched_snaps_b: pl.DataFrame | None = None
         self.extra_snaps: list[ExtraSnap] = []
@@ -174,6 +175,10 @@ class Engine:
         self._accepted_by_col: dict[str, int] = {}
         self._mismatch_n: dict[str, int] = {}
         self._col_stats: dict[str, dict[str, Any]] = {}
+        self._col_stats_warm: bool = False
+        self._pair_groups_by_col: dict[str, pl.DataFrame] = {}
+        self._unmatched_accepted_keys: dict[str, pl.DataFrame] | None = None
+        self._unmatched_returned_keys: dict[str, pl.DataFrame] | None = None
         self._returned_columns: set[str] = set()
         self._extra_tags: dict[tuple[str, str], list[str]] = {}
         self._pair_ctx_by_col: dict[str, dict[int, pl.DataFrame]] = {}
@@ -547,11 +552,7 @@ class Engine:
             raise InTuiError("ERROR: confirm or cancel the column draft first")
         if self.pair_draft_col is not None:
             raise InTuiError("ERROR: confirm or cancel the current pair draft first")
-        frame = self.pending_cells.filter(
-            (pl.col("column") == column)
-            & (pl.col("val_a") == val_a)
-            & (pl.col("val_b") == val_b)
-        ).sort(self.keys)
+        frame = pages_mod._pair_cells_frame(self, column, val_a, val_b)
         n = frame.height
         if n == 0:
             return 0
@@ -830,6 +831,7 @@ class Engine:
             returned_keys = _empty_df({"side": pl.Utf8, **{k: pl.Utf8 for k in self.keys}})
         self.returned_cells_df = returned_cells
         self.returned_keys_df = returned_keys
+        pages_mod.invalidate_unmatched_key_caches(self, accepted=False, returned=True)
         self.returned_extras = set()
         if self.column_draft:
             keep = set()
@@ -842,15 +844,13 @@ class Engine:
                 self.clear_pair_draft()
         returned_n = returned_cells.height + returned_keys.height + len(self.returned_extras)
         returned_hit = (
-            returned_cells.select("column").unique()
+            returned_cells.select(pl.col("column").cast(pl.Utf8)).unique()
             if not returned_cells.is_empty()
             else returned_cells.select("column")
         )
-        returned_names = [
-            c
-            for c in self.comparable
-            if returned_hit.filter(pl.col("column") == c).height > 0
-        ]
+        returned_names = roster_mod.returned_names_in_import_order(
+            list(self.comparable), returned_hit
+        )
         returned_tail = f"{returned_n} returned"
         if returned_names:
             returned_tail += " " + ", ".join(returned_names)

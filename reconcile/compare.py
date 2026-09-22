@@ -150,6 +150,12 @@ def pair_groups(eng: Engine, column: str) -> pl.DataFrame:
         {"val_a": [], "val_b": [], "n": []},
         schema={"val_a": pl.Utf8, "val_b": pl.Utf8, "n": pl.UInt32},
     )
+    by_col = getattr(eng, "_pair_groups_by_col", None)
+    if isinstance(by_col, dict):
+        hit = by_col.get(column)
+        if hit is None or hit.is_empty():
+            return empty
+        return hit
     cached = getattr(eng, "_pair_groups_df", None)
     if cached is None or cached.is_empty():
         return empty
