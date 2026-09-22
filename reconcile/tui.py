@@ -30,7 +30,7 @@ a      accept the current selection (roster column / pair / cell / unmatched key
 A      bulk: entire column on pair list; all unmatched keys on this side. Roster A is ERROR (use a / y). Extras A is one extra (same as a)
 S      next sheet when launched with -sheets and no draft. If differences remain, a confirm asks you to leave them unaccepted (y or S); Esc stays. Last sheet: ERROR no next sheet. Does not steal A or [ / ]
 u      undo last accept as one unit. ERROR if nothing accepted yet
-r      refresh (re-read live files; last good state on failure). Footer: pending columns, unmatched keys, mismatched columns, returned column names
+r      refresh (re-read live files; last good state on failure). Footer line 2: last refresh: pending columns, unmatched keys, mismatched columns, returned column names
 i      overview modal (counts + unmatched keys / mismatched columns). Esc closes.
 ?      this help
 q      quit (discards unconfirmed draft)
@@ -44,7 +44,7 @@ m      pick one same exact pair (union of live draft ON columns, or every pendin
 :      regex column draft (comparable names; not a view filter). / is a deprecated alias
 =      exact sentinel (a/b side, then type the constant, Enter Run)
 Space  toggle focused column in the live column draft (ON / off). ERROR if no draft
-Y      draft every pending column that is y in the focused check column (money, trim, …). Then y confirm. ERROR if the cursor is not on a visible check
+Y      draft every pending column that is y in the focused check column (money, trim, …). Pane and footer name that check (money: y on every pending cell · Y drafts those columns; Y all y in money). Then y confirm. ERROR if the cursor is not on a visible check
 y      confirm the live column draft; land on roster (next-below / first pending). ERROR if no draft to confirm
 
 PAIR LIST (Pending tab)
@@ -63,7 +63,7 @@ Footer chrome here: . repeat · u undo (full list is this help)
 
 CELL STEP
 a      accept this cell (selection moves below). When the column's pending hits 0, return to the roster
-Pane   focused key, k of n checked. a this cell. y confirm
+Pane   focused key, k of n ON. a this cell. y confirm
 Space  toggle focused cell in the pair draft (ON / off)
 y      confirm still-checked cells, then next lever. ERROR if no draft to confirm
 c      context-column picker (Space standalone; 0-9 groups only on that page)
@@ -479,6 +479,124 @@ def _ellipsis(text: str, max_w: int) -> str:
     return text[: max_w - 1] + "…"
 
 
+def _pair_ab_grid_texts(val_a: str, val_b: str, focus: int) -> tuple[str, str]:
+    """Pair-list A/B cells. Tail-cut, unless the first difference is past that head.
+
+    ``focus`` is the raw first-difference index. Display glyphs are one cell
+    per raw character, so the same index lands in the grid window.
+    """
+    shown = (_display_text(val_a), _display_text(val_b))
+    if all(len(text) <= PAIR_AB_MAX for text in shown):
+        return shown
+    head = PAIR_AB_MAX - 1
+
+    def mark_of(text: str) -> int:
+        if focus < len(text):
+            return focus
+        return len(text)
+
+    if all(len(text) <= PAIR_AB_MAX or mark_of(text) < head for text in shown):
+        return (_ellipsis(shown[0], PAIR_AB_MAX), _ellipsis(shown[1], PAIR_AB_MAX))
+
+    inner = PAIR_AB_MAX - 1
+    longest = max(len(text) for text in shown)
+    start = focus - (inner // 2)
+    start = max(1, min(start, max(1, longest - inner)))
+
+    def cut(text: str) -> str:
+        if len(text) <= PAIR_AB_MAX:
+            return text
+        begin = start if start < len(text) else max(1, len(text) - inner)
+        mark = focus if focus < len(text) else len(text) - 1
+        if mark < begin:
+            begin = max(1, mark)
+        # Reaching this string's end: keep the shared start. Sliding backward
+        # would refill a shorter side with the same prefix and hide a length diff.
+        if begin + inner >= len(text):
+            if mark >= begin + inner:
+                begin = max(1, mark - inner + 1)
+            return "…" + text[begin : begin + inner]
+        visible = inner - 1
+        if mark >= begin + visible:
+            begin = max(1, mark - visible + 1)
+        if mark < begin:
+            begin = max(1, mark)
+        body = text[begin : begin + visible]
+        if begin + len(body) < len(text):
+            body += "…"
+        return "…" + body
+
+    return (cut(shown[0]), cut(shown[1]))
+
+
+_HELP_SECTION_TITLES = (
+    "KEYS",
+    "EVERYWHERE",
+    "ROSTER",
+    "PAIR LIST",
+    "CELL STEP",
+    "UNMATCHED KEYS",
+    "DRAFTS",
+    "TABS / PLACE",
+    "NOTES",
+    "CONTEXT PICKER",
+)
+
+
+def _is_help_section_title(line: str) -> bool:
+    for name in _HELP_SECTION_TITLES:
+        if line == name or line.startswith(name + " ") or line.startswith(name + "("):
+            return True
+    return False
+
+
+def _escape_brackets(text: str) -> str:
+    """Keep literal brackets out of Textual markup. Binding text is not a style tag."""
+    return text.replace("\\", "\\\\").replace("[", "\\[")
+
+
+def _help_markup() -> str:
+    """Section titles are bold and underlined. Binding lines stay plain markup-escaped text."""
+    out: list[str] = []
+    for line in HELP.splitlines():
+        if _is_help_section_title(line):
+            if out and out[-1] != "":
+                out.append("")
+            out.append(f"[bold underline]{_escape_brackets(line)}[/]")
+        else:
+            out.append(_escape_brackets(line))
+    return "\n".join(out)
+
+
+def _overview_markup(engine: Engine) -> str:
+    """Four blocks: bold nouns, dim identity, secondary counts, then the entry table."""
+    nouns = (
+        f"pending columns {engine.pending_columns_n()}",
+        f"unmatched keys {engine.unmatched_rows_n()}",
+        f"mismatched columns {engine.pending_extras_n()}",
+    )
+    lines = ["OVERVIEW (counts)", ""]
+    lines.extend(f"[bold]{noun}[/]" for noun in nouns)
+    lines.append("")
+    lines.extend(f"[dim]{_escape_brackets(line)}[/]" for line in engine.identity_lines())
+    lines.append("")
+    lines.append(f"matched keys: {engine.matched_key_count()}")
+    lines.append(
+        f"A-only keys pending {engine.pending_a_only_n()}  accepted {engine.accepted_a_only.height}"
+    )
+    lines.append(
+        f"B-only keys pending {engine.pending_b_only_n()}  accepted {engine.accepted_b_only.height}"
+    )
+    lines.append(f"accepted extras {len(engine.accepted_extras)}")
+    lines.append(
+        f"mismatched cells pending {engine.pending_cells_n()}  accepted {engine.accepted_cells.height}"
+    )
+    lines.append(f"total remaining {engine.pending_total()}  (exit 0 when this is 0)")
+    lines.append("")
+    lines.append("Enter an entry to open that list. Esc closes. a/A do not accept here.")
+    return "\n".join(lines)
+
+
 def _truncate_on_sep(text: str, max_w: int, sep: str = CONTEXT_VALUE_SEP) -> str:
     """Fit a context summary by dropping trailing separator-separated parts."""
     if len(text) <= max_w:
@@ -572,7 +690,9 @@ class HelpModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-modal"):
-            yield ScrollableContainer(Static(HELP, id="help", markup=False), id="help-scroll")
+            yield ScrollableContainer(
+                Static(_help_markup(), id="help", markup=True), id="help-scroll"
+            )
             yield Static("Esc closes · Up/Down/PgUp/PgDn scroll", classes="dim")
 
     def on_mount(self) -> None:
@@ -619,29 +739,8 @@ class OverviewModal(ModalScreen[str | None]):
         self.engine = engine
 
     def compose(self) -> ComposeResult:
-        e = self.engine
-        lines = [
-            "OVERVIEW (counts)",
-            "",
-            f"pending columns {e.pending_columns_n()}",
-            f"unmatched keys {e.unmatched_rows_n()}",
-            f"mismatched columns {e.pending_extras_n()}",
-            "",
-        ]
-        lines.extend(e.identity_lines())
-        lines += [
-            "",
-            f"matched keys: {e.matched_key_count()}",
-            f"A-only keys pending {e.pending_a_only_n()}  accepted {e.accepted_a_only.height}",
-            f"B-only keys pending {e.pending_b_only_n()}  accepted {e.accepted_b_only.height}",
-            f"mismatched columns pending {e.pending_extras_n()}  accepted {len(e.accepted_extras)}",
-            f"mismatched cells pending {e.pending_cells_n()}  accepted {e.accepted_cells.height}",
-            f"total remaining {e.pending_total()}  (exit 0 when this is 0)",
-            "",
-            "Enter an entry to open that list. Esc closes. a/A do not accept here.",
-        ]
         with Vertical(id="modal"):
-            yield Static("\n".join(lines), id="overview-body")
+            yield Static(_overview_markup(self.engine), id="overview-body", markup=True)
             table: DataTable = DataTable(cursor_type="row", id="ov-entries")
             table.add_columns("entry", "pending")
             yield table
@@ -1326,12 +1425,14 @@ class ReconcileApp(App[int]):
             ]
         )
         hints: list[str] = []
-        if p.page is not None and p.screen in PAGED_SCREENS:
-            hints.append(f"page {p.page + 1}/{self._page_count}")
         if p.screen == "roster":
             rows = roster_rows if roster_rows is not None else self._roster_column_rows()
             if any(h in CHECK_HEADERS for h, _ in roster_visible_insight_headers(rows)):
-                hints.append("Y all y in this check")
+                header = self._focused_roster_header()
+                if header in CHECK_HEADERS:
+                    hints.append(f"Y all y in {header}")
+                else:
+                    hints.append("Y all y in this check")
         if p.screen == "pair_list":
             hints.append(". repeat")
             hints.append("u undo")
@@ -1345,7 +1446,7 @@ class ReconcileApp(App[int]):
         line1 = f"{' · '.join(counts)}  |  {' · '.join(hints)}"
         lines = [line1]
         if e.last_refresh_delta:
-            lines.append(e.last_refresh_delta.message)
+            lines.append(f"last refresh: {e.last_refresh_delta.message}")
         footer = self.query_one("#footer", Static)
         footer.set_class(bool(self._busy_note), "busy")
         footer.update("\n".join(lines))
@@ -1410,11 +1511,14 @@ class ReconcileApp(App[int]):
                     t.append(shown + "\n", style="bold")
                 checked = max(0, self._draft_n - len(self.pair_draft_unchecked))
                 t.append(
-                    f"{checked} of {self._draft_n} checked · a this cell · y confirm\n"
+                    f"{checked} of {self._draft_n} ON · a this cell · y confirm\n"
                 )
             t.append_text(_diff_text("A:", va, vb, first))
             t.append("\n")
             t.append_text(_diff_text("B:", vb, va, first))
+            tags = self.engine.cell_insights(va, vb)
+            if tags:
+                t.append("\nhints: " + ", ".join(tags))
             if p.column:
                 if p.screen == "cell_step":
                     key = p.focused_key
@@ -1515,6 +1619,15 @@ class ReconcileApp(App[int]):
                                 t.append(
                                     f"{n} of {row.pending} pending · Enter this pair · a this column"
                                 )
+                    header = self._focused_roster_header()
+                    if header in CHECK_HEADERS:
+                        named = (
+                            f"{header}: y on every pending cell · Y drafts those columns"
+                        )
+                        if t.plain:
+                            t.append("\n" + named)
+                        else:
+                            t.append(named)
                 self._set_pane(t)
         else:
             self._set_pane("")
@@ -1622,10 +1735,23 @@ class ReconcileApp(App[int]):
             id="col-bar",
         )
 
-    def _column_title(self, col: str, pending_n: int, extra: str = "") -> str:
-        if extra:
-            return f"{col} — {extra} — {pending_n} pending"
-        return f"{col} — {pending_n} pending"
+    def _column_title(self, col: str, view: str = "") -> str:
+        """Column name. Accepted / Equal / All matched add a short view subtitle."""
+        subtitles = {
+            "accepted": "Accepted",
+            "equal": "Equal",
+            "all_matched": "All matched",
+        }
+        subtitle = subtitles.get(view, "")
+        if subtitle:
+            return f"{col} — {subtitle}"
+        return col
+
+    def _column_title_for_place(self) -> str:
+        col = self.place.column or ""
+        if self.place.screen in {"accepted", "equal", "all_matched"}:
+            return self._column_title(col, self.place.screen)
+        return self._column_title(col)
 
     def _refresh_tab_bar(self, current: str, pending_n: int | None = None) -> None:
         if not self.query("#tabs"):
@@ -1673,14 +1799,20 @@ class ReconcileApp(App[int]):
             n = view.members[0]
             a = _display_text(str(rec.get(f"{n}__ctx_a", "") or ""))
             b = _display_text(str(rec.get(f"{n}__ctx_b", "") or ""))
-            return f"A: {a}  B: {b}"
-        a = format_context_tuple(
-            [str(rec.get(f"{m}__ctx_a", "") or "") for m in view.members]
-        )
-        b = format_context_tuple(
-            [str(rec.get(f"{m}__ctx_b", "") or "") for m in view.members]
-        )
-        return f"A: {a}  B: {b}"
+        else:
+            a = format_context_tuple(
+                [
+                    _display_text(str(rec.get(f"{m}__ctx_a", "") or ""))
+                    for m in view.members
+                ]
+            )
+            b = format_context_tuple(
+                [
+                    _display_text(str(rec.get(f"{m}__ctx_b", "") or ""))
+                    for m in view.members
+                ]
+            )
+        return f"A: {a}\nB: {b}"
 
     def _column_status(self, row: RosterRow) -> str:
         if row.pending > 0:
@@ -1950,7 +2082,7 @@ class ReconcileApp(App[int]):
         table: DataTable = DataTable(cursor_type="row", id="grid")
         self._fill_pair_list(table, col)
         return Vertical(
-            self._col_bar(self._column_title(col, pending_n)),
+            self._col_bar(self._column_title(col)),
             self._tab_bar("pending", pending_n),
             table,
         )
@@ -1958,7 +2090,7 @@ class ReconcileApp(App[int]):
     def _fill_pair_view(self, table: DataTable) -> None:
         col = self.place.column or ""
         pending_n = self._column_pending_n(col)
-        self._set_col_title(self._column_title(col, pending_n))
+        self._set_col_title(self._column_title(col))
         self._refresh_tab_bar("pending", pending_n)
         self._fill_pair_list(table, col)
 
@@ -2013,8 +2145,10 @@ class ReconcileApp(App[int]):
         for i, rec in enumerate(recs):
             va, vb, n, ctx, returned, tags = body[i]
             style = "reverse" if returned else "bold"
-            label_a = Text(_ellipsis(_display_text(va), PAIR_AB_MAX), style=style)
-            label_b = Text(_ellipsis(_display_text(vb), PAIR_AB_MAX), style=style)
+            focus_at = self.engine.first_diff(va, vb)
+            text_a, text_b = _pair_ab_grid_texts(va, vb, focus_at)
+            label_a = Text(text_a, style=style)
+            label_b = Text(text_b, style=style)
             table.add_row(
                 label_a,
                 label_b,
@@ -2052,18 +2186,12 @@ class ReconcileApp(App[int]):
     def _cell_grid(self) -> Vertical:
         col = self.place.column or ""
         tab = self.place.view_tab
-        title = {
-            "pending": "Pending (cell step)",
-            "accepted": "Accepted",
-            "equal": "Equal",
-            "all_matched": "All matched",
-        }.get(tab, tab)
         table: DataTable = DataTable(cursor_type="row", id="grid")
         self._fill_cell_rows(table, col)
         tab_current = tab if self.place.screen != "cell_step" else "pending"
         pending_n = self._column_pending_n(col)
         return Vertical(
-            self._col_bar(self._column_title(col, pending_n, title)),
+            self._col_bar(self._column_title_for_place()),
             self._tab_bar(tab_current, pending_n),
             table,
         )
@@ -2071,14 +2199,8 @@ class ReconcileApp(App[int]):
     def _fill_cell_grid(self, table: DataTable) -> None:
         col = self.place.column or ""
         tab = self.place.view_tab
-        title = {
-            "pending": "Pending (cell step)",
-            "accepted": "Accepted",
-            "equal": "Equal",
-            "all_matched": "All matched",
-        }.get(tab, tab)
         pending_n = self._column_pending_n(col)
-        self._set_col_title(self._column_title(col, pending_n, title))
+        self._set_col_title(self._column_title_for_place())
         tab_current = tab if self.place.screen != "cell_step" else "pending"
         self._refresh_tab_bar(tab_current, pending_n)
         self._fill_cell_rows(table, col)
@@ -2283,11 +2405,13 @@ class ReconcileApp(App[int]):
         self._page_count = pages
         frame = self.engine.a_only if side == "A" else self.engine.b_only
         cols = list(frame.columns)
-        headers = ["st", *cols]
+        headers = ["status", *cols]
         current = [str(col.label) for col in table.columns.values()]
         if current != headers:
             table.clear(columns=True)
-            table.add_columns(*headers)
+            table.add_column("status", width=10)
+            for col_name in cols:
+                table.add_column(col_name)
         else:
             table.clear()
         self._table_keys = []
@@ -2296,7 +2420,7 @@ class ReconcileApp(App[int]):
             self._table_keys = [None]
         else:
             for rec in recs:
-                st = "acc" if rec.get("_accepted") else "pend"
+                st = "accepted" if rec.get("_accepted") else "pending"
                 style = "dim" if rec.get("_accepted") else "bold"
                 if rec.get("_returned"):
                     style = "reverse"
@@ -2308,7 +2432,7 @@ class ReconcileApp(App[int]):
                     )
                     for c in cols
                 ]
-                table.add_row(st, *vals)
+                table.add_row(Text(st, style=style), *vals)
                 self._table_keys.append(rec)
             self._move_cursor_to_focused_key(table)
         pending_n = (
@@ -2355,8 +2479,8 @@ class ReconcileApp(App[int]):
         rows = self.engine.suggest_extras() if rows is None else rows
         for rec in rows:
             table.add_row(
-                rec["name_a"],
-                rec["name_b"],
+                _display_text(str(rec["name_a"])),
+                _display_text(str(rec["name_b"])),
                 format_why(rec["why"]),
                 format_preview(rec["shared"], rec["pending"]),
             )
@@ -2371,20 +2495,19 @@ class ReconcileApp(App[int]):
             self._fill_suggest(self.query_one("#suggest", DataTable), rows)
 
     def _fill_extras(self, table: DataTable) -> None:
-        self._sync_columns(table, ["side", "name", "pending", "speculative"])
+        self._sync_columns(table, ["side", "name", "pending"])
         rows = self.engine.extras_rows()
         self._table_keys = []
         if not rows:
-            table.add_row("—", "(none)", "0", "")
+            table.add_row("—", "(none)", "0")
             self._table_keys = [None]
         else:
             for rec in rows:
                 style = "reverse" if rec["returned"] else ("bold" if rec["pending"] else "dim")
                 table.add_row(
                     rec["side"],
-                    Text(rec["name"], style=style),
+                    Text(_display_text(str(rec["name"])), style=style),
                     str(int(rec["pending"])),
-                    ", ".join(rec["speculative"]),
                 )
                 self._table_keys.append(rec)
             idx = 0
@@ -3435,6 +3558,7 @@ class ReconcileApp(App[int]):
     def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
         if self.place.screen == "roster":
             self._render_pane()
+            self._render_footer()
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         if self.place.screen == "roster":
