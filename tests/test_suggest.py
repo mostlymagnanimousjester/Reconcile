@@ -19,7 +19,7 @@ from reconcile.suggest import (
     format_preview,
     why_names,
 )
-from reconcile.tui import HELP, OverviewModal, ReconcileApp
+from reconcile.tui import HELP, OverviewModal, ReconcileApp, _display_text
 from tests.xlsxutil import write_csv
 
 
@@ -190,8 +190,8 @@ def test_tui_suggest_below_grid_not_on_overview(tmp_path: Path):
             assert "rename" in title.lower()
             assert "then r" in title
             row = suggest.get_row_at(0)
-            assert "cust_id" in str(row[0])
-            assert "Cust ID" in str(row[1])
+            assert str(row[0]) == _display_text("cust_id")
+            assert str(row[1]) == _display_text("Cust ID")
             assert "case" in str(row[2])
             assert " / " in str(row[3])
             labels = [str(col.label) for col in suggest.columns.values()]
@@ -204,6 +204,26 @@ def test_tui_suggest_below_grid_not_on_overview(tmp_path: Path):
             labels = [str(app.screen.query_one("#ov-entries").get_row_at(i)[0]) for i in range(3)]
             assert "Suggest" not in labels
             assert "Mismatched columns" in labels
+
+    asyncio.run(_run())
+
+
+def test_suggest_grid_uses_display_text_for_edge_space(tmp_path: Path):
+    eng = _engine_from_frames(
+        tmp_path,
+        {"id": ["1"], "val": ["a"], "cust_id": ["1"]},
+        {"id": ["1"], "val": ["b"], "Cust ID ": ["2"]},
+    )
+    app = ReconcileApp(eng, Place(screen="extras"))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            suggest = app.query_one("#suggest")
+            row = suggest.get_row_at(0)
+            assert str(row[0]) == _display_text("cust_id")
+            assert str(row[1]) == _display_text("Cust ID ")
+            assert str(row[1]).endswith("·")
 
     asyncio.run(_run())
 

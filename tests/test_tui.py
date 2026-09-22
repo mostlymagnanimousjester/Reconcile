@@ -7,6 +7,7 @@ from textual.widgets import Button, Input, Static
 from reconcile.engine import Engine, Place
 from reconcile.tui import (
     HELP,
+    PAIR_AB_MAX,
     ContextModal,
     HelpModal,
     MultiPairModal,
@@ -16,6 +17,7 @@ from reconcile.tui import (
     SentinelModal,
     _diff_text,
     _display_text,
+    _pair_ab_grid_texts,
     select_after_accept,
 )
 from tests.xlsxutil import write_csv
@@ -80,11 +82,15 @@ def test_footer_page_n_over_m(tmp_path: Path):
             app.render_all()
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
-            assert "page 1/2" in footer
+            page = str(app.query_one("#col-page").render())
+            assert "page 1/2" in page
+            assert "page " not in footer
             app.action_page_next()
             await pilot.pause()
             footer = str(app.query_one("#footer").render())
-            assert "page 2/2" in footer
+            page = str(app.query_one("#col-page").render())
+            assert "page 2/2" in page
+            assert "page " not in footer
             assert "? help" in footer
             assert "Enter cells" not in footer
             assert "a cell" not in footer
@@ -143,16 +149,21 @@ def test_square_brackets_cycle_column_tabs(tmp_path: Path):
             app.action_drill()
             await pilot.pause()
             assert app.place.screen == "pair_list"
+            assert str(app.query_one("#col-title").render()).strip() == "val"
+            assert "pending" not in str(app.query_one("#col-title").render()).lower()
             await pilot.press("]")
             await pilot.pause()
             assert app.place.screen == "accepted"
             assert app.place.view_tab == "accepted"
+            assert str(app.query_one("#col-title").render()).strip() == "val — Accepted"
             await pilot.press("]")
             await pilot.pause()
             assert app.place.screen == "equal"
+            assert str(app.query_one("#col-title").render()).strip() == "val — Equal"
             await pilot.press("]")
             await pilot.pause()
             assert app.place.screen == "all_matched"
+            assert str(app.query_one("#col-title").render()).strip() == "val — All matched"
             await pilot.press("]")
             await pilot.pause()
             assert app.place.screen == "all_matched"
@@ -493,6 +504,12 @@ def test_unmatched_pane_leads_with_key(tmp_path: Path):
             assert "year: 2020" in pane
             assert "a this key · A this side" in pane
             assert pane.index("id: 1") < pane.index("val:")
+            labels = [str(col.label) for col in app.query_one("#grid").columns.values()]
+            assert labels[0] == "status"
+            assert "st" not in labels
+            status = str(app.query_one("#grid").get_row_at(0)[0])
+            assert status == "pending"
+            assert status != "pend"
 
     asyncio.run(_run())
 
@@ -516,7 +533,9 @@ def test_cell_step_pane_leads_with_key_and_checked(tmp_path: Path):
             await pilot.pause()
             pane = str(app.query_one("#pane").render())
             assert pane.startswith("id 1")
-            assert "2 of 2 checked · a this cell · y confirm" in pane
+            assert "2 of 2 ON · a this cell · y confirm" in pane
+            assert "checked" not in pane
+            assert "hints: bool" in pane
             footer = str(app.query_one("#footer").render())
             assert "a this cell" not in footer
 
@@ -541,6 +560,9 @@ def test_extras_pane_names_suggest_recipe(tmp_path: Path):
             assert "status_code" in pane
             assert "rename then r" in pane
             assert "a this extra" in pane
+            labels = [str(col.label) for col in app.query_one("#grid").columns.values()]
+            assert labels == ["side", "name", "pending"]
+            assert "speculative" not in labels
 
     asyncio.run(_run())
 
@@ -558,6 +580,68 @@ def test_pair_list_pane_names_share_and_keys(tmp_path: Path):
             await pilot.pause()
             pane = str(app.query_one("#pane").render())
             assert "3 of 4 pending · a this pair · A this column · Enter cells" in pane
+            assert "hints: case" in pane
+            table = app.query_one("#grid")
+            labels = [str(col.label) for col in table.columns.values()]
+            hints_col = list(table.columns.values())[labels.index("hints")]
+            assert hints_col.width == 16
+
+    asyncio.run(_run())
+
+
+def test_pair_list_grid_windows_late_first_diff(tmp_path: Path):
+    """A shared prefix longer than the pair-list cell must not hide the first difference."""
+    prefix = "a" * 40
+    va, vb = prefix + "X", prefix + "Y"
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, f"id,val\n1,{va}\n")
+    write_csv(pb, f"id,val\n1,{vb}\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_drill()
+            await pilot.pause()
+            assert app.place.screen == "pair_list"
+            table = app.query_one("#grid")
+            cell_a = str(table.get_row_at(0)[0])
+            cell_b = str(table.get_row_at(0)[1])
+            assert cell_a.startswith("…") and cell_b.startswith("…")
+            assert "X" in cell_a and "Y" in cell_b
+            assert len(cell_a) <= PAIR_AB_MAX and len(cell_b) <= PAIR_AB_MAX
+            assert cell_a != cell_b
+            pane = str(app.query_one("#pane").render())
+            assert prefix in pane
+            assert "X" in pane and "Y" in pane
+            shown_a, shown_b = _pair_ab_grid_texts(va, vb, 40)
+            assert cell_a == shown_a and cell_b == shown_b
+
+    asyncio.run(_run())
+
+
+def test_footer_refresh_delta_is_prefixed(tmp_path: Path):
+    pa, pb = tmp_path / "a.csv", tmp_path / "b.csv"
+    write_csv(pa, "id,val\n1,Y\n")
+    write_csv(pb, "id,val\n1,Yes\n")
+    app = ReconcileApp(Engine.from_paths(str(pa), str(pb), ["id"], a_delim=",", b_delim=","))
+
+    async def _run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.engine.refresh()
+            app.render_all()
+            await pilot.pause()
+            footer = str(app.query_one("#footer").render())
+            lines = footer.splitlines()
+            assert lines[0].startswith("pending columns")
+            assert not lines[0].startswith("last refresh:")
+            assert lines[1].startswith(
+                "last refresh: pending columns "
+            )
+            assert "unmatched keys " in lines[1]
+            assert "mismatched columns " in lines[1]
+            assert "returned" in lines[1]
 
     asyncio.run(_run())
 
@@ -780,7 +864,9 @@ def test_n_after_cell_a_changes_page(tmp_path: Path):
             await pilot.pause()
             assert app.place.page == 1
             footer = str(app.query_one("#footer").render())
-            assert "page 2/3" in footer
+            page = str(app.query_one("#col-page").render())
+            assert "page 2/3" in page
+            assert "page " not in footer
 
     asyncio.run(_run())
 
@@ -1593,6 +1679,20 @@ def test_help_modal_not_footer_cheat_sheet(tmp_path: Path):
             assert "ROSTER" in body
             assert "PAIR LIST" in body
             assert "CELL STEP" in body
+            visual = app.screen.query_one("#help").visual
+            plain = visual.plain
+            assert "\n\nROSTER" in plain
+            assert "[ / ]" in plain
+            roster_at = plain.index("ROSTER")
+            roster_styles = [
+                str(sp.style) for sp in visual.spans if sp.start <= roster_at < sp.end
+            ]
+            assert any("bold" in style and "underline" in style for style in roster_styles)
+            enter_at = plain.index("Enter  drill")
+            assert not any(
+                sp.start <= enter_at < sp.end and "bold" in str(sp.style)
+                for sp in visual.spans
+            )
             await pilot.press("escape")
             await pilot.pause()
             assert not isinstance(app.screen, HelpModal)
@@ -2089,7 +2189,9 @@ def test_last_page_n_stays_no_wrap(tmp_path: Path):
             await pilot.pause()
             assert app.place.page == 1
             footer = str(app.query_one("#footer").render())
-            assert "page 2/2" in footer
+            page = str(app.query_one("#col-page").render())
+            assert "page 2/2" in page
+            assert "page " not in footer
             await pilot.press("n")
             await pilot.pause()
             assert app.place.page == 1
@@ -2380,6 +2482,9 @@ def test_a_on_accepted_unmatched_key_errors(tmp_path: Path):
             await pilot.pause()
             rec = app._focused_rec()
             assert rec is not None and rec.get("_accepted")
+            status = str(app.query_one("#grid").get_row_at(0)[0])
+            assert status == "accepted"
+            assert "dim" in str(app.query_one("#grid").get_row_at(0)[0].style)
             await pilot.press("a")
             await pilot.pause()
             assert app.place.screen == "a_only"
@@ -2744,9 +2849,27 @@ def test_footer_counts_are_split_nouns_not_lumped_cells(tmp_path: Path):
             assert "m same pair" not in footer
             app.action_overview()
             await pilot.pause()
-            body = str(app.screen.query_one("#overview-body").render())
-            assert "mismatched columns pending 1" in body
+            body_w = app.screen.query_one("#overview-body")
+            body = body_w.visual.plain
+            assert "mismatched columns 1" in body
+            assert "mismatched columns pending" not in body
             assert "extras pending" not in body
+            assert body.count("pending columns") == 1
+            assert body.count("unmatched keys") == 1
+            assert body.count("mismatched columns") == 1
+            assert "matched keys:" in body
+            assert "total remaining" in body
+            assert "A-only keys pending" in body
+            noun_at = body.index("pending columns")
+            noun_styles = [
+                str(sp.style) for sp in body_w.visual.spans if sp.start <= noun_at < sp.end
+            ]
+            assert any("bold" in style for style in noun_styles)
+            keys_at = body.index("keys:")
+            id_styles = [
+                str(sp.style) for sp in body_w.visual.spans if sp.start <= keys_at < sp.end
+            ]
+            assert any("dim" in style for style in id_styles)
             table = app.screen.query_one("#ov-entries")
             labels = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
             assert "Mismatched columns" in labels
@@ -3514,7 +3637,9 @@ def test_cell_step_group_context_is_per_row_tuple(tmp_path: Path):
             assert "Flag" in labels
             assert "g0 Flag+Region" in labels
             g_i = labels.index("g0 Flag+Region")
-            assert str(table.get_row_at(0)[g_i]) == "A: red|east  B: blue|west"
+            assert str(table.get_row_at(0)[g_i]) == "A: red|east\nB: blue|west"
+            id_i = labels.index("id")
+            assert "\n" not in str(table.get_row_at(0)[id_i])
             pane = str(app.query_one("#pane").render())
             assert "g0 Flag+Region" in pane
             assert "A: red|east" in pane
@@ -3658,6 +3783,11 @@ def test_Y_on_money_drafts_two_then_y_accepts_one_grain(tmp_path: Path):
             assert not app.engine.column_draft
             assert app.tui_error and "Y selects y-rows of a check column" in app.tui_error
             await _arrow_to_roster_header(pilot, app, "money")
+            footer = str(app.query_one("#footer").render())
+            assert "Y all y in money" in footer
+            assert "Y all y in this check" not in footer
+            pane = str(app.query_one("#pane").render())
+            assert "money: y on every pending cell · Y drafts those columns" in pane
             await pilot.press("Y")
             await pilot.pause()
             assert app.engine.column_draft == {"cash", "fee"}
