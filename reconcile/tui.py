@@ -1263,21 +1263,24 @@ class ReconcileApp(App[int]):
             self._draft_n = e.column_draft_n()
         else:
             self._draft_n = 0
+        roster_rows = (
+            self._roster_column_rows() if self.place.screen == "roster" else None
+        )
         layout = self._work_layout_key()
         if layout != self._mounted_screen:
-            self._remount_work()
+            self._remount_work(roster_rows=roster_rows)
             self._mounted_screen = layout
         else:
-            self._refill_work()
-        self._render_pane()
-        self._render_footer()
+            self._refill_work(roster_rows=roster_rows)
+        self._render_pane(roster_rows=roster_rows)
+        self._render_footer(roster_rows=roster_rows)
         self._paint_banner()
         self.call_after_refresh(self.set_focus_work)
 
     def _work_layout_key(self) -> str:
         return self.place.screen
 
-    def _render_footer(self) -> None:
+    def _render_footer(self, roster_rows: list[RosterRow] | None = None) -> None:
         e = self.engine
         p = self.place
         counts: list[str] = []
@@ -1294,7 +1297,7 @@ class ReconcileApp(App[int]):
         if p.page is not None and p.screen in PAGED_SCREENS:
             hints.append(f"page {p.page + 1}/{self._page_count}")
         if p.screen == "roster":
-            rows = self._roster_column_rows()
+            rows = roster_rows if roster_rows is not None else self._roster_column_rows()
             if any(h in CHECK_HEADERS for h, _ in roster_visible_insight_headers(rows)):
                 hints.append("Y all y in this check")
         if p.screen == "pair_list":
@@ -1348,7 +1351,7 @@ class ReconcileApp(App[int]):
         pane.update(content)
         pane.set_class(not plain.strip(), "hidden")
 
-    def _render_pane(self) -> None:
+    def _render_pane(self, roster_rows: list[RosterRow] | None = None) -> None:
         p = self.place
         pair = None
         if p.screen == "cell_step" and p.pair_val_a is not None:
@@ -1448,7 +1451,7 @@ class ReconcileApp(App[int]):
             else:
                 self._set_pane("")
         elif p.screen == "roster":
-            rows = self._roster_column_rows()
+            rows = roster_rows if roster_rows is not None else self._roster_column_rows()
             if not rows:
                 self._set_pane(_roster_idle_pane(self.engine))
             else:
@@ -1484,10 +1487,10 @@ class ReconcileApp(App[int]):
         else:
             self._set_pane("")
 
-    def _work_body(self):
+    def _work_body(self, roster_rows: list[RosterRow] | None = None):
         screen = self.place.screen
         if screen == "roster":
-            return self._roster_table()
+            return self._roster_table(roster_rows)
         if screen == "pair_list":
             return self._pair_view()
         if screen in ("cell_step", "accepted", "equal", "all_matched"):
@@ -1500,25 +1503,25 @@ class ReconcileApp(App[int]):
             return self._extras()
         return Static("Empty.")
 
-    def _remount_work(self) -> None:
+    def _remount_work(self, roster_rows: list[RosterRow] | None = None) -> None:
         work = self.query_one("#work", Vertical)
         for child in list(work.children):
             child.remove()
-        body = self._work_body()
+        body = self._work_body(roster_rows)
         # remove() is deferred. Roster and extras both use #grid as the work
         # child; wrapping a bare DataTable avoids DuplicateIds on the sibling.
         if isinstance(body, DataTable):
             body = Vertical(body)
         work.mount(body)
 
-    def _refill_work(self) -> None:
+    def _refill_work(self, roster_rows: list[RosterRow] | None = None) -> None:
         if not self.query("#grid"):
-            self._remount_work()
+            self._remount_work(roster_rows)
             return
         screen = self.place.screen
         table = self.query_one("#grid", DataTable)
         if screen == "roster":
-            self._fill_roster(table)
+            self._fill_roster(table, roster_rows)
             return
         if screen == "pair_list":
             self._fill_pair_view(table)
@@ -1662,10 +1665,11 @@ class ReconcileApp(App[int]):
             else:
                 table.add_column(h)
 
-    def _roster_table(self) -> DataTable:
+    def _roster_table(self, roster_rows: list[RosterRow] | None = None) -> DataTable:
         table: DataTable = DataTable(cursor_type="cell", id="grid", zebra_stripes=False)
-        self._add_columns(table, self._roster_headers())
-        self._fill_roster(table)
+        rows = roster_rows if roster_rows is not None else self._roster_column_rows()
+        self._add_columns(table, self._roster_headers(rows))
+        self._fill_roster(table, rows)
         return table
 
     def _dim_text(self, value: str, settled: bool) -> Text | str:
@@ -1686,8 +1690,10 @@ class ReconcileApp(App[int]):
             return None
         return headers[i]
 
-    def _fill_roster(self, table: DataTable) -> None:
-        rows = self._roster_column_rows()
+    def _fill_roster(
+        self, table: DataTable, roster_rows: list[RosterRow] | None = None
+    ) -> None:
+        rows = roster_rows if roster_rows is not None else self._roster_column_rows()
         headers = self._roster_headers(rows)
         prev_header = None
         current = self._roster_label_headers(table)
@@ -1788,11 +1794,7 @@ class ReconcileApp(App[int]):
         return Horizontal(*buttons, id="tabs")
 
     def _column_pending_n(self, col: str) -> int:
-        row = next(
-            (r for r in self.engine.roster() if r.kind == "column" and r.name == col),
-            None,
-        )
-        return int(row.pending) if row else 0
+        return self.engine._pending_by_col.get(col, 0)
 
     def _pair_view(self) -> Vertical:
         col = self.place.column or ""

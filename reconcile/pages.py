@@ -28,6 +28,29 @@ def invalidate_equal_caches(eng: Engine) -> None:
     """Equals / all-matched frames depend on matched rows, not snaps."""
     eng._equal_by_col = {}
     eng._all_matched_by_col = {}
+    eng._empty_matched_sentinel = None
+
+
+def invalidate_page_caches(eng: Engine, dirty_columns: set[str] | None) -> None:
+    """Drop pair-ctx / tab / pair-cell / union caches.
+
+    ``None`` = full rebuild. Empty set = pending cells unchanged. A set of
+    names pops only those columns (multi-column ``m`` included).
+    """
+    if dirty_columns is None:
+        eng._pair_ctx_by_col = {}
+        eng._tab_frames = {}
+        eng._pair_cells_cache = {}
+        eng._union_pairs_cache = {}
+        return
+    for col in dirty_columns:
+        eng._pair_ctx_by_col.pop(col, None)
+        for key in [k for k in eng._tab_frames if k[0] == col]:
+            del eng._tab_frames[key]
+        for key in [k for k in eng._pair_cells_cache if k[0] == col]:
+            del eng._pair_cells_cache[key]
+    if dirty_columns:
+        eng._union_pairs_cache = {}
 
 
 def _page_dicts(frame: pl.DataFrame) -> list[dict[str, Any]]:
@@ -286,13 +309,21 @@ def _attach_pair_context_summaries(
     return out
 
 
-def _pair_ctx_frame(eng: Engine, column: str) -> pl.DataFrame:
-    cached = eng._pair_ctx_by_col.get(column)
-    if cached is not None:
-        return cached
+def _pair_ctx_frame(eng: Engine, column: str, page: int) -> pl.DataFrame:
+    """Page-scoped pair context. Outer key stays the column for pop()."""
+    col_cache = eng._pair_ctx_by_col.get(column)
+    if col_cache is not None and page in col_cache:
+        return col_cache[page]
     groups = eng.pair_groups(column)
-    computed = _attach_pair_context_summaries(eng, column, groups)
-    eng._pair_ctx_by_col[column] = computed
+    total = groups.height
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    chunk = groups.slice(page * PAGE_SIZE, PAGE_SIZE)
+    computed = _attach_pair_context_summaries(eng, column, chunk)
+    if col_cache is None:
+        col_cache = {}
+        eng._pair_ctx_by_col[column] = col_cache
+    col_cache[page] = computed
     return computed
 
 
@@ -301,42 +332,44 @@ def pair_page(eng: Engine, column: str, page: int) -> tuple[list[dict[str, Any]]
     total = groups.height
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, pages - 1))
-    chunk = groups.slice(page * PAGE_SIZE, PAGE_SIZE)
-    ctx = _pair_ctx_frame(eng, column)
-    extra = [c for c in ctx.columns if c not in ("val_a", "val_b", "n", "column")]
-    if extra and not chunk.is_empty():
-        chunk = chunk.join(ctx.select(["val_a", "val_b", *extra]), on=["val_a", "val_b"], how="left")
-        chunk = chunk.with_columns([pl.col(c).fill_null("") for c in extra])
+    chunk = _pair_ctx_frame(eng, column, page)
     return _page_dicts(chunk), page, pages
 
 
-def _equal_frame(eng: Engine, column: str) -> pl.DataFrame:
-    cached = eng._equal_by_col.get(column)
-    if cached is not None:
-        return cached
-    empty = _empty_df(_empty_mismatch_schema(eng.keys))
-    if eng.matched_a.is_empty() or column not in eng.comparable:
-        eng._equal_by_col[column] = empty
-        return empty
-    a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
-    b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
-    frame = a.join(b, on=eng.keys, how="inner").filter(pl.col("val_a") == pl.col("val_b"))
-    eng._equal_by_col[column] = frame
-    return frame
+def _matched_empty(eng: Engine) -> pl.DataFrame:
+    cached = getattr(eng, "_empty_matched_sentinel", None)
+    if cached is None:
+        cached = _empty_df(_empty_mismatch_schema(eng.keys))
+        eng._empty_matched_sentinel = cached
+    return cached
 
 
 def _all_matched_frame(eng: Engine, column: str) -> pl.DataFrame:
     cached = eng._all_matched_by_col.get(column)
     if cached is not None:
         return cached
-    empty = _empty_df(_empty_mismatch_schema(eng.keys))
+    empty = _matched_empty(eng)
     if eng.matched_a.is_empty() or column not in eng.comparable:
         eng._all_matched_by_col[column] = empty
         return empty
     a = eng.matched_a.select(eng.keys + [column]).rename({column: "val_a"})
     b = eng.matched_b.select(eng.keys + [column]).rename({column: "val_b"})
-    frame = a.join(b, on=eng.keys, how="inner")
+    frame = a.join(b, on=eng.keys, how="inner").sort(eng.keys)
     eng._all_matched_by_col[column] = frame
+    return frame
+
+
+def _equal_frame(eng: Engine, column: str) -> pl.DataFrame:
+    cached = eng._equal_by_col.get(column)
+    if cached is not None:
+        return cached
+    all_matched = _all_matched_frame(eng, column)
+    empty = _matched_empty(eng)
+    if all_matched.is_empty():
+        eng._equal_by_col[column] = empty
+        return empty
+    frame = all_matched.filter(pl.col("val_a") == pl.col("val_b"))
+    eng._equal_by_col[column] = frame
     return frame
 
 
@@ -349,11 +382,17 @@ def _pair_cells_frame(eng: Engine, column: str, val_a: str, val_b: str) -> pl.Da
         and eng.pair_draft_vb == val_b
     ):
         return cached
-    return eng.pending_cells.filter(
+    key = (column, val_a, val_b)
+    hit = eng._pair_cells_cache.get(key)
+    if hit is not None:
+        return hit
+    frame = eng.pending_cells.filter(
         (pl.col("column") == column)
         & (pl.col("val_a") == val_a)
         & (pl.col("val_b") == val_b)
     ).sort(eng.keys)
+    eng._pair_cells_cache[key] = frame
+    return frame
 
 
 def pair_cells_page(
@@ -365,15 +404,19 @@ def pair_cells_page(
 def cells_for_tab(
     eng: Engine, column: str, tab: str, page: int
 ) -> tuple[list[dict[str, Any]], int, int]:
-    if tab == "accepted":
-        frame = eng.accepted_cells.filter(pl.col("column") == column)
-    elif tab == "equal":
-        frame = _equal_frame(eng, column)
-    elif tab == "all_matched":
-        frame = _all_matched_frame(eng, column)
-    else:
-        frame = eng.pending_cells.filter(pl.col("column") == column)
-    return _page_with_context(eng, frame.sort(eng.keys), page, column)
+    cache_key = (column, tab)
+    frame = eng._tab_frames.get(cache_key)
+    if frame is None:
+        if tab == "accepted":
+            frame = eng.accepted_cells.filter(pl.col("column") == column).sort(eng.keys)
+        elif tab == "equal":
+            frame = _equal_frame(eng, column)
+        elif tab == "all_matched":
+            frame = _all_matched_frame(eng, column)
+        else:
+            frame = eng.pending_cells.filter(pl.col("column") == column).sort(eng.keys)
+        eng._tab_frames[cache_key] = frame
+    return _page_with_context(eng, frame, page, column)
 
 
 def pairs_returned_mask(
@@ -630,12 +673,17 @@ def union_pairs(
     )
     if not columns or eng.pending_cells.is_empty():
         return _page(empty, page)
-    frame = eng.pending_cells.filter(pl.col("column").is_in(list(columns)))
-    if frame.is_empty():
-        return _page(empty, page)
-    grouped = (
-        frame.group_by(["val_a", "val_b"])
-        .agg(pl.len().alias("n"), pl.col("column").n_unique().alias("n_cols"))
-        .sort(["n", "val_a", "val_b"], descending=[True, False, False])
-    )
+    cache_key = frozenset(columns)
+    grouped = eng._union_pairs_cache.get(cache_key)
+    if grouped is None:
+        frame = eng.pending_cells.filter(pl.col("column").is_in(list(columns)))
+        if frame.is_empty():
+            grouped = empty
+        else:
+            grouped = (
+                frame.group_by(["val_a", "val_b"])
+                .agg(pl.len().alias("n"), pl.col("column").n_unique().alias("n_cols"))
+                .sort(["n", "val_a", "val_b"], descending=[True, False, False])
+            )
+        eng._union_pairs_cache[cache_key] = grouped
     return _page(grouped, page)

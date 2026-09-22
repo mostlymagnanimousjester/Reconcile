@@ -156,8 +156,10 @@ class Engine:
         self.last_refresh_delta: RefreshDelta | None = None
         self.last_grain: tuple[Any, ...] | None = None
         self._roster_cache: list[RosterRow] = []
+        self._roster_cache_valid: bool = False
         self._pair_draft_cells: pl.DataFrame | None = None
         self._pair_draft_n: int = 0
+        self._pair_draft_triple: tuple[str, str, str] | None = None
         self._pair_groups_df: pl.DataFrame = pl.DataFrame(
             {"column": [], "val_a": [], "val_b": [], "n": []},
             schema={
@@ -174,9 +176,14 @@ class Engine:
         self._col_stats: dict[str, dict[str, Any]] = {}
         self._returned_columns: set[str] = set()
         self._extra_tags: dict[tuple[str, str], list[str]] = {}
-        self._pair_ctx_by_col: dict[str, pl.DataFrame] = {}
+        self._pair_ctx_by_col: dict[str, dict[int, pl.DataFrame]] = {}
         self._equal_by_col: dict[str, pl.DataFrame] = {}
         self._all_matched_by_col: dict[str, pl.DataFrame] = {}
+        self._empty_matched_sentinel: pl.DataFrame | None = None
+        self._tab_frames: dict[tuple[str, str], pl.DataFrame] = {}
+        self._pair_cells_cache: dict[tuple[str, str, str], pl.DataFrame] = {}
+        self._union_pairs_cache: dict[frozenset[str], pl.DataFrame] = {}
+        self._suggest_extras_cache: list[dict[str, Any]] | None = None
         self.sheet_set: list[str] | None = None
         self.sheet_index: int = 0
         # Last accepted exact (val_a, val_b) kept across S. Not a snapshot.
@@ -262,6 +269,7 @@ class Engine:
         self.sheet_index = next_index
 
     def _rebuild(self) -> None:
+        self._suggest_extras_cache = None
         compare_mod.rebuild_frames(self)
         compare_mod.sort_unmatched(self)
         self._apply_snapshots()
@@ -285,7 +293,7 @@ class Engine:
         return len(self.pending_extras)
 
     def pending_columns_n(self) -> int:
-        return sum(1 for r in self._roster_cache if r.kind == "column" and r.pending > 0)
+        return sum(1 for n in self._pending_by_col.values() if n > 0)
 
     def unmatched_rows_n(self) -> int:
         return self.pending_a_only_n() + self.pending_b_only_n()
@@ -454,6 +462,7 @@ class Engine:
         self.pair_draft_vb = None
         self._pair_draft_cells = None
         self._pair_draft_n = 0
+        self._pair_draft_triple = None
 
     def toggle_column_draft(self, name: str) -> None:
         if not self.column_draft and self.pair_draft_col is None:
@@ -551,6 +560,7 @@ class Engine:
         self.pair_draft_vb = val_b
         self._pair_draft_cells = frame
         self._pair_draft_n = n
+        self._pair_draft_triple = (column, val_a, val_b)
         return n
 
     # --- accept ---
@@ -831,10 +841,15 @@ class Engine:
             if self.pair_draft_height() == 0:
                 self.clear_pair_draft()
         returned_n = returned_cells.height + returned_keys.height + len(self.returned_extras)
+        returned_hit = (
+            returned_cells.select("column").unique()
+            if not returned_cells.is_empty()
+            else returned_cells.select("column")
+        )
         returned_names = [
             c
             for c in self.comparable
-            if returned_cells.filter(pl.col("column") == c).height > 0
+            if returned_hit.filter(pl.col("column") == c).height > 0
         ]
         returned_tail = f"{returned_n} returned"
         if returned_names:
